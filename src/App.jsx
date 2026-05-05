@@ -22,7 +22,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_0-OVkFmYhQpomL9UDpA-3g_A5E3qwds';
 
 const supabaseConfigured =
   !SUPABASE_URL.includes('YOUR-PROJECT') &&
-  SUPABASE_ANON_KEY.length > 50 &&
+  SUPABASE_ANON_KEY.length > 20 &&
   !SUPABASE_ANON_KEY.includes('YOUR-ANON');
 
 // ═══════════════════════════════════════════════════════════════════
