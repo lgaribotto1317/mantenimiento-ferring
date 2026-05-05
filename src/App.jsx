@@ -17,8 +17,8 @@ import {
 //   VITE_SUPABASE_URL       = https://xxxxx.supabase.co
 //   VITE_SUPABASE_ANON_KEY  = eyJ... (your anon public key)
 // ═══════════════════════════════════════════════════════════════════
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://YOUR-PROJECT.supabase.co';
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'YOUR-ANON-KEY';
+const SUPABASE_URL = 'https://qdcmrirwkfesaqxvhxgh.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_0-OVkFmYhQpomL9UDpA-3g_A5E3qwds';
 
 const supabaseConfigured =
   !SUPABASE_URL.includes('YOUR-PROJECT') &&
