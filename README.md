@@ -18,3 +18,4 @@ Variables de entorno necesarias (configurar en el panel de Vercel):
 - SheetJS (Excel)
 - Lucide React (iconos)
 - Supabase (base de datos compartida)
+<!-- trigger build -->
