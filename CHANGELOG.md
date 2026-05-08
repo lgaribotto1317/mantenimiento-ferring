@@ -1,9 +1,23 @@
 Changelog — Reporte Diario de Mantenimiento Ferring
+v2.1 — 2026-05-08 (fixes post-testing V2.0)
+Mejoras de UX
+Reordenado del formulario según pedido. Nuevo orden: Información del Turno → Equipo del Turno → Mantenimiento Correctivo → Resumen Preventivos del Turno → Servicios → Comentarios → Mantenimiento Preventivo (al final).
+Dashboard con nuevo layout: correctivos ocupa ahora el 50% izquierdo y se subdivide en dos columnas internas: Realizadas (izquierda) y Pendientes (derecha, agrupa "Sin Iniciar" + "En Curso"). El 50% derecho se reparte entre Preventivos del Turno (arriba) y Servicios (abajo). Las "Pendientes" mantienen su pill de estado para distinguir Sin Iniciar de En Curso.
+Texto del Último Día corregido: en vez de "Suma de los últimos 3 turnos" ahora dice "Turnos del día (N): Mañana, Tarde, ..." adaptando la cantidad y los turnos efectivamente cargados.
+Bug fixes
+Mensaje de error persistente al hacer Limpiar: cuando el guardado fallaba por validación, el mensaje de error rojo quedaba visible incluso después de hacer Limpiar. Ahora Limpiar también limpia ese mensaje.
+Sin cambios en
+Esquema de Supabase
+Catálogos (técnicos, foguistas, responsables, equipos auxiliares)
+Lógica de validaciones (técnicos obligatorios en correctivos "Realizada", suma cruzada de preventivos)
+Lógica de carry-over de OTs pendientes
+Estructura de las hojas Excel
+---
 v2.0 — 2026-05-08
 Nuevas funcionalidades
 Logo Biomas en el header: reemplaza el icono del casco. Fondo blanco según diseño corporativo.
 Estadísticas — Apartado "Fin de Semana": muestra el último FDS cerrado (viernes Noche + sábado completo + domingo completo) con 4 métricas: correctivos generados, correctivos realizados, preventivos asignados, preventivos realizados.
-Estadísticas — Apartado "Último Día": muestra los últimos 3 turnos del día más reciente con datos cargados (típicamente Mañana + Tarde + Noche del día previo cuando se carga el reporte por la mañana). Mismas 4 métricas que el apartado de Fin de Semana.
+Estadísticas — Apartado "Último Día": muestra los turnos del día más reciente con datos cargados.
 Resumen Preventivos del Turno: nueva sección al final del formulario con campos numéricos "Asignados" y "Realizados", más detalle por técnico (técnico del turno + cantidad). Validación cruzada: la suma del detalle debe coincidir con "Realizados".
 Exportación a Excel — Solo Comentarios: botón nuevo en Histórico & Excel, exporta solo la hoja de comentarios con fecha y turno.
 Exportación a Excel — Solo Proveedores: botón nuevo en Histórico & Excel, exporta solo la hoja de proveedores con fecha y turno.
