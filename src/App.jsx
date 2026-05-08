@@ -29,7 +29,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.0';
+const APP_VERSION = 'v2.1';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -856,7 +856,7 @@ export default function App() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5">
         {loading && <div className="text-center text-slate-500 py-20">Cargando…</div>}
-        {!loading && tab === 'form' && <FormView report={report} setReport={setReport} onSave={saveReport} saveMsg={saveMsg} saving={saving} history={history} />}
+        {!loading && tab === 'form' && <FormView report={report} setReport={setReport} onSave={saveReport} saveMsg={saveMsg} setSaveMsg={setSaveMsg} saving={saving} history={history} />}
         {!loading && tab === 'dashboard' && <DashboardView report={report} />}
         {!loading && tab === 'stats' && <StatsView history={history} />}
         {!loading && tab === 'history' && <HistoryView history={history}
@@ -877,7 +877,7 @@ export default function App() {
 //   - Planta de Efluentes y Caldera con schema nuevo (PTEL + Caldera + Ablandadores)
 //   - Resumen Preventivos del Turno al final del formulario
 // ═══════════════════════════════════════════════════════════════════
-function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
+function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history }) {
   const update = (patch) => setReport(r => ({ ...r, ...patch }));
   const updateList = (key, fn) => setReport(r => ({ ...r, [key]: fn(r[key]) }));
   const updateServicios = (patch) => setReport(r => ({ ...r, servicios: { ...r.servicios, ...patch } }));
@@ -923,6 +923,7 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
 
   // V2.0 — "Limpiar": NO borra correctivos en "Sin Iniciar" / "En Curso".
   // Solo borra los "Realizada" y resetea el resto del formulario.
+  // V2.1 — además limpia cualquier mensaje de error/guardado anterior.
   const cleanForm = () => {
     setReport(r => ({
       ...emptyReport(),
@@ -942,6 +943,8 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
     } else {
       setLoadInfo('✓ Formulario limpio');
     }
+    // V2.1 FIX: limpiar mensaje de error/guardado anterior
+    if (typeof setSaveMsg === 'function') setSaveMsg('');
     setTimeout(() => setLoadInfo(''), 4500);
   };
 
@@ -1100,67 +1103,92 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
         </div>
       </Card>
 
-      {/* PREVENTIVOS — detalle individual (sin cambios funcionales en V2.0, pero con botón eliminar conservado) */}
+      {/* RESUMEN PREVENTIVOS DEL TURNO — V2.1: subido a la 4ta posición (antes de Servicios) */}
       <Card className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <SectionTitle icon={ListChecks} accent="emerald">Mantenimiento Preventivo</SectionTitle>
-          <button onClick={() => updateList('preventive', l => [...l, { codigoTarea: '', equipoCodigo: '', equipoDescripcion: '', task: '', comments: '', otCorrectivaAsociada: '', technicians: [], frequency: 'Diaria' }])}
-            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100`}>
-            <Plus className="w-4 h-4" />Agregar tarea
+        <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
+        <p className="text-xs text-slate-500 mb-4">
+          Estos son los totales globales del turno (los carga el responsable). Si hay realizados &gt; 0,
+          la suma del detalle por técnico debe coincidir con "Preventivos realizados".
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4 max-w-2xl">
+          <Field label="Preventivos asignados en el turno">
+            <input type="number" min="0" step="1" className={`${inputCls} num`}
+              value={report.preventivosResumen?.asignados ?? ''}
+              onChange={e => updateResumen({ asignados: e.target.value })} />
+          </Field>
+          <Field label="Preventivos realizados en el turno">
+            <input type="number" min="0" step="1"
+              className={`${inputCls} num ${!validacionCruzadaOK ? 'border-red-400 focus:ring-red-300' : ''}`}
+              value={report.preventivosResumen?.realizados ?? ''}
+              onChange={e => updateResumen({ realizados: e.target.value })} />
+          </Field>
+        </div>
+
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-700 inline-flex items-center gap-2">
+            <Users className="w-4 h-4 text-emerald-500" />Detalle por técnico
+          </h3>
+          <button
+            onClick={() => updateResumen({ porTecnico: [...(report.preventivosResumen?.porTecnico || []), { tecnico: '', cantidad: '' }] })}
+            disabled={report.team.length === 0}
+            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed`}
+            title={report.team.length === 0 ? 'Cargá primero el equipo del turno' : ''}>
+            <Plus className="w-4 h-4" />Agregar técnico
           </button>
         </div>
-        {report.preventive.length === 0 && <EmptyHint>Sin tareas preventivas.</EmptyHint>}
-        <div className="space-y-3">
-          {report.preventive.map((p, i) => (
-            <div key={i} className="border border-slate-200 rounded-lg p-3 bg-slate-50/40">
-              <div className="grid grid-cols-12 gap-2 mb-2">
-                <Field label="Código de tarea" className="col-span-2">
-                  <input className={`${inputCls} num`} value={p.codigoTarea}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, codigoTarea: e.target.value } : x))} />
-                </Field>
-                <Field label="Equipo" className="col-span-2">
-                  <input className={inputCls} value={p.equipoCodigo}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
-                </Field>
-                <Field label="Descripción de equipo" className="col-span-3">
-                  <input className={inputCls} value={p.equipoDescripcion}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoDescripcion: e.target.value } : x))} />
-                </Field>
-                <Field label="Frecuencia" className="col-span-2">
-                  <select className={inputCls} value={p.frequency}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, frequency: e.target.value } : x))}>
-                    {FRECUENCIAS.map(f => <option key={f}>{f}</option>)}
-                  </select>
-                </Field>
-                <Field label="Técnico/s asignado/s" className="col-span-2">
-                  <MultiSelect options={teamOptions} value={p.technicians}
-                    onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
-                    placeholder={report.team.length === 0 ? 'Cargá el equipo' : 'Seleccionar…'} />
-                </Field>
-                <div className="col-span-1 flex items-end justify-end">
-                  <button onClick={() => updateList('preventive', l => l.filter((_, j) => j !== i))}
-                    className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+
+        {report.team.length === 0 ? (
+          <EmptyHint>Cargá primero el equipo del turno para asignar preventivos por técnico.</EmptyHint>
+        ) : (report.preventivosResumen?.porTecnico || []).length === 0 ? (
+          <EmptyHint>Sin detalle por técnico.</EmptyHint>
+        ) : (
+          <div className="space-y-2">
+            {(report.preventivosResumen?.porTecnico || []).map((t, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2">
+                <select
+                  className={`${inputCls} col-span-7`}
+                  value={t.tecnico}
+                  onChange={e => updateResumen({
+                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, tecnico: e.target.value } : x)
+                  })}>
+                  <option value="">— Seleccionar técnico —</option>
+                  {report.team.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <input
+                  type="number" min="1" step="1" placeholder="Cantidad"
+                  className={`${inputCls} col-span-4 num`}
+                  value={t.cantidad}
+                  onChange={e => updateResumen({
+                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, cantidad: e.target.value } : x)
+                  })} />
+                <button
+                  onClick={() => updateResumen({
+                    porTecnico: report.preventivosResumen.porTecnico.filter((_, j) => j !== i)
+                  })}
+                  className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Field label="Tarea">
-                  <textarea rows={2} className={inputCls} value={p.task}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
-                </Field>
-                <Field label="Comentarios">
-                  <textarea rows={2} className={inputCls} value={p.comments}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, comments: e.target.value } : x))} />
-                </Field>
-                <Field label="OT correctiva asociada">
-                  <input className={`${inputCls} num`} placeholder="OT-XXXX" value={p.otCorrectivaAsociada}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, otCorrectivaAsociada: e.target.value } : x))} />
-                </Field>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {/* Feedback de validación cruzada */}
+        {realizadosNum > 0 && (
+          <div className={`mt-3 text-xs p-2 rounded-lg flex items-center gap-2 ${validacionCruzadaOK
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              : 'bg-red-50 text-red-700 border border-red-200'
+            }`}>
+            {validacionCruzadaOK
+              ? <CheckCircle2 className="w-4 h-4" />
+              : <AlertTriangle className="w-4 h-4" />
+            }
+            Suma del detalle: <span className="num font-bold">{sumaPorTecnico}</span> ·
+            Realizados: <span className="num font-bold">{realizadosNum}</span>
+            {!validacionCruzadaOK && ' — debe coincidir antes de guardar'}
+          </div>
+        )}
       </Card>
 
       {/* SERVICIOS */}
@@ -1382,92 +1410,67 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
         </div>
       </Card>
 
-      {/* RESUMEN PREVENTIVOS DEL TURNO — NUEVO V2.0 */}
+      {/* MANTENIMIENTO PREVENTIVO — V2.1: bajado al final del formulario */}
       <Card className="p-5">
-        <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
-        <p className="text-xs text-slate-500 mb-4">
-          Estos son los totales globales del turno (los carga el responsable). Si hay realizados &gt; 0,
-          la suma del detalle por técnico debe coincidir con "Preventivos realizados".
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4 max-w-2xl">
-          <Field label="Preventivos asignados en el turno">
-            <input type="number" min="0" step="1" className={`${inputCls} num`}
-              value={report.preventivosResumen?.asignados ?? ''}
-              onChange={e => updateResumen({ asignados: e.target.value })} />
-          </Field>
-          <Field label="Preventivos realizados en el turno">
-            <input type="number" min="0" step="1"
-              className={`${inputCls} num ${!validacionCruzadaOK ? 'border-red-400 focus:ring-red-300' : ''}`}
-              value={report.preventivosResumen?.realizados ?? ''}
-              onChange={e => updateResumen({ realizados: e.target.value })} />
-          </Field>
-        </div>
-
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-slate-700 inline-flex items-center gap-2">
-            <Users className="w-4 h-4 text-emerald-500" />Detalle por técnico
-          </h3>
-          <button
-            onClick={() => updateResumen({ porTecnico: [...(report.preventivosResumen?.porTecnico || []), { tecnico: '', cantidad: '' }] })}
-            disabled={report.team.length === 0}
-            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed`}
-            title={report.team.length === 0 ? 'Cargá primero el equipo del turno' : ''}>
-            <Plus className="w-4 h-4" />Agregar técnico
+        <div className="flex items-center justify-between mb-4">
+          <SectionTitle icon={ListChecks} accent="emerald">Mantenimiento Preventivo</SectionTitle>
+          <button onClick={() => updateList('preventive', l => [...l, { codigoTarea: '', equipoCodigo: '', equipoDescripcion: '', task: '', comments: '', otCorrectivaAsociada: '', technicians: [], frequency: 'Diaria' }])}
+            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100`}>
+            <Plus className="w-4 h-4" />Agregar tarea
           </button>
         </div>
-
-        {report.team.length === 0 ? (
-          <EmptyHint>Cargá primero el equipo del turno para asignar preventivos por técnico.</EmptyHint>
-        ) : (report.preventivosResumen?.porTecnico || []).length === 0 ? (
-          <EmptyHint>Sin detalle por técnico.</EmptyHint>
-        ) : (
-          <div className="space-y-2">
-            {(report.preventivosResumen?.porTecnico || []).map((t, i) => (
-              <div key={i} className="grid grid-cols-12 gap-2">
-                <select
-                  className={`${inputCls} col-span-7`}
-                  value={t.tecnico}
-                  onChange={e => updateResumen({
-                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, tecnico: e.target.value } : x)
-                  })}>
-                  <option value="">— Seleccionar técnico —</option>
-                  {report.team.map(name => <option key={name} value={name}>{name}</option>)}
-                </select>
-                <input
-                  type="number" min="1" step="1" placeholder="Cantidad"
-                  className={`${inputCls} col-span-4 num`}
-                  value={t.cantidad}
-                  onChange={e => updateResumen({
-                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, cantidad: e.target.value } : x)
-                  })} />
-                <button
-                  onClick={() => updateResumen({
-                    porTecnico: report.preventivosResumen.porTecnico.filter((_, j) => j !== i)
-                  })}
-                  className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+        {report.preventive.length === 0 && <EmptyHint>Sin tareas preventivas.</EmptyHint>}
+        <div className="space-y-3">
+          {report.preventive.map((p, i) => (
+            <div key={i} className="border border-slate-200 rounded-lg p-3 bg-slate-50/40">
+              <div className="grid grid-cols-12 gap-2 mb-2">
+                <Field label="Código de tarea" className="col-span-2">
+                  <input className={`${inputCls} num`} value={p.codigoTarea}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, codigoTarea: e.target.value } : x))} />
+                </Field>
+                <Field label="Equipo" className="col-span-2">
+                  <input className={inputCls} value={p.equipoCodigo}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
+                </Field>
+                <Field label="Descripción de equipo" className="col-span-3">
+                  <input className={inputCls} value={p.equipoDescripcion}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoDescripcion: e.target.value } : x))} />
+                </Field>
+                <Field label="Frecuencia" className="col-span-2">
+                  <select className={inputCls} value={p.frequency}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, frequency: e.target.value } : x))}>
+                    {FRECUENCIAS.map(f => <option key={f}>{f}</option>)}
+                  </select>
+                </Field>
+                <Field label="Técnico/s asignado/s" className="col-span-2">
+                  <MultiSelect options={teamOptions} value={p.technicians}
+                    onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
+                    placeholder={report.team.length === 0 ? 'Cargá el equipo' : 'Seleccionar…'} />
+                </Field>
+                <div className="col-span-1 flex items-end justify-end">
+                  <button onClick={() => updateList('preventive', l => l.filter((_, j) => j !== i))}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-            ))}
-          </div>
-        )}
-
-        {/* Feedback de validación cruzada */}
-        {realizadosNum > 0 && (
-          <div className={`mt-3 text-xs p-2 rounded-lg flex items-center gap-2 ${validacionCruzadaOK
-              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-              : 'bg-red-50 text-red-700 border border-red-200'
-            }`}>
-            {validacionCruzadaOK
-              ? <CheckCircle2 className="w-4 h-4" />
-              : <AlertTriangle className="w-4 h-4" />
-            }
-            Suma del detalle: <span className="num font-bold">{sumaPorTecnico}</span> ·
-            Realizados: <span className="num font-bold">{realizadosNum}</span>
-            {!validacionCruzadaOK && ' — debe coincidir antes de guardar'}
-          </div>
-        )}
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="Tarea">
+                  <textarea rows={2} className={inputCls} value={p.task}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
+                </Field>
+                <Field label="Comentarios">
+                  <textarea rows={2} className={inputCls} value={p.comments}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, comments: e.target.value } : x))} />
+                </Field>
+                <Field label="OT correctiva asociada">
+                  <input className={`${inputCls} num`} placeholder="OT-XXXX" value={p.otCorrectivaAsociada}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, otCorrectivaAsociada: e.target.value } : x))} />
+                </Field>
+              </div>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );
@@ -1529,254 +1532,302 @@ function DashboardView({ report }) {
         </div>
       </Card>
 
-      {/* 3-COLUMN BODY */}
+      {/* V2.1 LAYOUT OPCIÓN A:
+          - Correctivos a 50% izq (a 2 sub-columnas: Realizadas | Pendientes)
+          - Preventivos del Turno arriba derecha
+          - Servicios abajo derecha
+      */}
       <div className="grid grid-cols-12 gap-3" style={{ minHeight: '500px' }}>
 
-        {/* COL 1: CORRECTIVOS */}
-        <Card className="col-span-4 p-3 flex flex-col overflow-hidden">
+        {/* COL IZQ: CORRECTIVOS (50% del ancho, sub-divididos en Realizadas | Pendientes) */}
+        <Card className="col-span-6 p-3 flex flex-col overflow-hidden">
           <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
             <Wrench className="w-4 h-4" />Correctivos ({report.corrective.length})
           </h3>
-          <div className="overflow-auto flex-1" style={{ maxHeight: 'calc(100vh - 280px)' }}>
-            {report.corrective.length === 0
-              ? <EmptyHint>Sin correctivos</EmptyHint>
-              : (
-                <div className="divide-y-2 divide-slate-200">
-                  {report.corrective.map((c, i) => (
-                    <div key={i} className="py-2.5 first:pt-0 last:pb-0">
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
-                          {c.equipoCodigo && (
-                            <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
-                          )}
+          <div className="overflow-auto flex-1 grid grid-cols-2 gap-3" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+            {/* SUB-COL: REALIZADAS */}
+            <div className="border-r border-slate-200 pr-3">
+              <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
+                <CheckCircle2 className="w-3 h-3" />
+                Realizadas ({report.corrective.filter(c => c.state === 'Realizada').length})
+              </div>
+              {report.corrective.filter(c => c.state === 'Realizada').length === 0
+                ? <div className="text-[10px] text-slate-400 italic py-2">Sin realizadas</div>
+                : (
+                  <div className="divide-y-2 divide-slate-200">
+                    {report.corrective.filter(c => c.state === 'Realizada').map((c, i) => (
+                      <div key={i} className="py-2 first:pt-0 last:pb-0">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
+                            {c.equipoCodigo && (
+                              <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
+                            )}
+                          </div>
                         </div>
+                        <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
+                        {(c.technicians || []).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {c.technicians.map(t => (
+                              <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+            </div>
+
+            {/* SUB-COL: PENDIENTES (Sin Iniciar + En Curso) */}
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-amber-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
+                <AlertTriangle className="w-3 h-3" />
+                Pendientes ({report.corrective.filter(c => c.state !== 'Realizada').length})
+              </div>
+              {report.corrective.filter(c => c.state !== 'Realizada').length === 0
+                ? <div className="text-[10px] text-slate-400 italic py-2">Sin pendientes</div>
+                : (
+                  <div className="divide-y-2 divide-slate-200">
+                    {report.corrective.filter(c => c.state !== 'Realizada').map((c, i) => (
+                      <div key={i} className="py-2 first:pt-0 last:pb-0">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
+                            {c.equipoCodigo && (
+                              <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
+                            )}
+                          </div>
+                          <StatePill state={c.state} />
+                        </div>
+                        <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
+                        {(c.technicians || []).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {c.technicians.map(t => (
+                              <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+            </div>
+          </div>
+        </Card>
+
+        {/* COL DER: STACK con PREVENTIVOS arriba y SERVICIOS abajo */}
+        <div className="col-span-6 flex flex-col gap-3" style={{ maxHeight: 'calc(100vh - 220px)' }}>
+          {/* PREVENTIVOS DEL TURNO */}
+          <Card className="p-3 flex flex-col overflow-hidden flex-shrink-0">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
+              <ListChecks className="w-4 h-4" />Preventivos del Turno
+            </h3>
+            <div className="overflow-auto" style={{ maxHeight: '250px' }}>
+              {/* Asignados / Realizados */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="bg-slate-50 rounded p-2 text-center">
+                  <div className="text-[10px] text-slate-500 uppercase tracking-wide">Asignados</div>
+                  <div className="text-2xl font-bold num text-slate-800">
+                    {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'}
+                  </div>
+                </div>
+                <div className="bg-emerald-50 rounded p-2 text-center">
+                  <div className="text-[10px] text-emerald-600 uppercase tracking-wide">Realizados</div>
+                  <div className="text-2xl font-bold num text-emerald-700">
+                    {pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Detalle por técnico */}
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                <Users className="w-3 h-3" />Por técnico
+              </div>
+              {(pr.porTecnico || []).filter(t => t.tecnico).length === 0
+                ? <div className="text-[10px] text-slate-400 italic py-1">Sin detalle por técnico</div>
+                : (
+                  <div className="space-y-1">
+                    {(pr.porTecnico || []).filter(t => t.tecnico).map((t, i) => (
+                      <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-2 py-1.5">
+                        <span className="text-xs text-slate-700">{t.tecnico}</span>
+                        <span className="num text-sm font-bold text-slate-800 bg-white px-2 py-0.5 rounded ring-1 ring-slate-200">
+                          {t.cantidad || 0}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+          </Card>
+
+          {/* SERVICIOS */}
+          <Card className="p-3 flex flex-col overflow-hidden flex-1 min-h-0">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
+              <Activity className="w-4 h-4" />Servicios
+            </h3>
+            <div className="overflow-auto flex-1 space-y-3">
+              {/* Planta de Efluentes y Caldera */}
+              <div className="pb-3 border-b border-slate-100">
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold inline-flex items-center gap-1">
+                    <Flame className="w-3 h-3 text-orange-500" />Planta de Efluentes y Caldera
+                  </div>
+                  <StatePill state={p.estado} />
+                </div>
+                <div className="text-xs text-slate-700 mb-2">
+                  {(p.tecnicos && p.tecnicos.length > 0) ? p.tecnicos.join(' · ') : '—'}
+                </div>
+
+                {/* PTEL */}
+                <div className="text-[9px] font-bold text-orange-700 uppercase tracking-wider mb-1">PTEL</div>
+                <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
+                  {[
+                    ['Caudal m³/h', p.caudal],
+                    ['Vacío', p.vacio],
+                    ['ΔT °C', p.deltaT],
+                    ['% TK1', p.tk1],
+                    ['% TK2', p.tk2],
+                    ['% TK7', p.tk7]
+                  ].map(([l, v]) => (
+                    <div key={l} className="bg-orange-50/50 rounded p-1 text-center">
+                      <div className="text-slate-500 uppercase">{l}</div>
+                      <div className="font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* CALDERA + ABLANDADORES */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-red-50/50 rounded p-1.5">
+                    <div className="text-[9px] font-bold text-red-700 uppercase tracking-wider mb-1">Caldera</div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">Cond. mS</div>
+                        <div className="font-bold num">{p.conductividadCaldera !== '' && p.conductividadCaldera != null ? p.conductividadCaldera : '—'}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">pH</div>
+                        <div className="font-bold num">{p.pHCaldera !== '' && p.pHCaldera != null ? p.pHCaldera : '—'}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-blue-50/50 rounded p-1.5">
+                    <div className="text-[9px] font-bold text-blue-700 uppercase tracking-wider mb-1">Ablandadores</div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">Cond. mS</div>
+                        <div className="font-bold num">{p.conductividadAblandador !== '' && p.conductividadAblandador != null ? p.conductividadAblandador : '—'}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">pH</div>
+                        <div className="font-bold num">{p.pHAblandador !== '' && p.pHAblandador != null ? p.pHAblandador : '—'}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Compresores y Grupos */}
+              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                    <Cog className="w-3 h-3" />Compresores
+                  </div>
+                  <div className="space-y-0.5">
+                    {report.servicios.compresores.map(c => (
+                      <div key={c.code} className="flex justify-between items-center text-[10px]">
+                        <span className="num text-slate-700">{c.code}</span>
                         <StatePill state={c.state} />
                       </div>
-                      <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
-                      {(c.technicians || []).length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {c.technicians.map(t => (
-                            <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-          </div>
-        </Card>
-
-        {/* COL 2: RESUMEN PREVENTIVOS — V2.0: NO muestra el detalle individual, solo el resumen */}
-        <Card className="col-span-4 p-3 flex flex-col overflow-hidden">
-          <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <ListChecks className="w-4 h-4" />Preventivos del Turno
-          </h3>
-          <div className="overflow-auto flex-1" style={{ maxHeight: 'calc(100vh - 280px)' }}>
-            {/* Asignados / Realizados */}
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <div className="bg-slate-50 rounded p-2 text-center">
-                <div className="text-[10px] text-slate-500 uppercase tracking-wide">Asignados</div>
-                <div className="text-2xl font-bold num text-slate-800">
-                  {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'}
-                </div>
-              </div>
-              <div className="bg-emerald-50 rounded p-2 text-center">
-                <div className="text-[10px] text-emerald-600 uppercase tracking-wide">Realizados</div>
-                <div className="text-2xl font-bold num text-emerald-700">
-                  {pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}
-                </div>
-              </div>
-            </div>
-
-            {/* Detalle por técnico */}
-            <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-              <Users className="w-3 h-3" />Por técnico
-            </div>
-            {(pr.porTecnico || []).filter(t => t.tecnico).length === 0
-              ? <EmptyHint>Sin detalle por técnico</EmptyHint>
-              : (
-                <div className="space-y-1">
-                  {(pr.porTecnico || []).filter(t => t.tecnico).map((t, i) => (
-                    <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-2 py-1.5">
-                      <span className="text-xs text-slate-700">{t.tecnico}</span>
-                      <span className="num text-sm font-bold text-slate-800 bg-white px-2 py-0.5 rounded ring-1 ring-slate-200">
-                        {t.cantidad || 0}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )
-            }
-          </div>
-        </Card>
-
-        {/* COL 3: SERVICIOS — V2.0: nuevos parámetros de Planta */}
-        <Card className="col-span-4 p-3 flex flex-col overflow-hidden">
-          <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <Activity className="w-4 h-4" />Servicios
-          </h3>
-          <div className="overflow-auto flex-1 space-y-3" style={{ maxHeight: 'calc(100vh - 280px)' }}>
-            {/* Planta de Efluentes y Caldera */}
-            <div className="pb-3 border-b border-slate-100">
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold inline-flex items-center gap-1">
-                  <Flame className="w-3 h-3 text-orange-500" />Planta de Efluentes y Caldera
-                </div>
-                <StatePill state={p.estado} />
-              </div>
-              <div className="text-xs text-slate-700 mb-2">
-                {(p.tecnicos && p.tecnicos.length > 0) ? p.tecnicos.join(' · ') : '—'}
-              </div>
-
-              {/* PTEL */}
-              <div className="text-[9px] font-bold text-orange-700 uppercase tracking-wider mb-1">PTEL</div>
-              <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
-                {[
-                  ['Caudal m³/h', p.caudal],
-                  ['Vacío', p.vacio],
-                  ['ΔT °C', p.deltaT],
-                  ['% TK1', p.tk1],
-                  ['% TK2', p.tk2],
-                  ['% TK7', p.tk7]
-                ].map(([l, v]) => (
-                  <div key={l} className="bg-orange-50/50 rounded p-1 text-center">
-                    <div className="text-slate-500 uppercase">{l}</div>
-                    <div className="font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* CALDERA + ABLANDADORES */}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-red-50/50 rounded p-1.5">
-                  <div className="text-[9px] font-bold text-red-700 uppercase tracking-wider mb-1">Caldera</div>
-                  <div className="grid grid-cols-2 gap-1 text-[10px]">
-                    <div className="text-center">
-                      <div className="text-slate-500 uppercase">Cond. mS</div>
-                      <div className="font-bold num">{p.conductividadCaldera !== '' && p.conductividadCaldera != null ? p.conductividadCaldera : '—'}</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-slate-500 uppercase">pH</div>
-                      <div className="font-bold num">{p.pHCaldera !== '' && p.pHCaldera != null ? p.pHCaldera : '—'}</div>
-                    </div>
+                    ))}
                   </div>
                 </div>
-                <div className="bg-blue-50/50 rounded p-1.5">
-                  <div className="text-[9px] font-bold text-blue-700 uppercase tracking-wider mb-1">Ablandadores</div>
-                  <div className="grid grid-cols-2 gap-1 text-[10px]">
-                    <div className="text-center">
-                      <div className="text-slate-500 uppercase">Cond. mS</div>
-                      <div className="font-bold num">{p.conductividadAblandador !== '' && p.conductividadAblandador != null ? p.conductividadAblandador : '—'}</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-slate-500 uppercase">pH</div>
-                      <div className="font-bold num">{p.pHAblandador !== '' && p.pHAblandador != null ? p.pHAblandador : '—'}</div>
-                    </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                    <Zap className="w-3 h-3" />G. Electrógenos
+                  </div>
+                  <div className="space-y-0.5">
+                    {report.servicios.gruposElectrogenos.map(g => (
+                      <div key={g.code} className="flex justify-between items-center text-[10px]">
+                        <span className="num text-slate-700">{g.code}</span>
+                        <StatePill state={g.state} />
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* Compresores y Grupos */}
-            <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Cog className="w-3 h-3" />Compresores
-                </div>
-                <div className="space-y-0.5">
-                  {report.servicios.compresores.map(c => (
-                    <div key={c.code} className="flex justify-between items-center text-[10px]">
-                      <span className="num text-slate-700">{c.code}</span>
-                      <StatePill state={c.state} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Zap className="w-3 h-3" />G. Electrógenos
-                </div>
-                <div className="space-y-0.5">
-                  {report.servicios.gruposElectrogenos.map(g => (
-                    <div key={g.code} className="flex justify-between items-center text-[10px]">
-                      <span className="num text-slate-700">{g.code}</span>
-                      <StatePill state={g.state} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Cisternas */}
-            <div className="pb-3 border-b border-slate-100">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <Beaker className="w-3 h-3" />Cisternas
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500 text-[10px]">Nivel:</span>
-                  <span className="font-medium text-slate-800">{report.servicios.cisternas.nivel || '—'}</span>
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <StatePill state={report.servicios.cisternas.estado} />
-                </div>
-              </div>
-            </div>
-
-            {/* Agua de Pozo */}
-            <div className="pb-3 border-b border-slate-100">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <Beaker className="w-3 h-3 text-blue-500" />Agua de Pozo
-              </div>
-              <div className="grid grid-cols-2 gap-1 text-[10px]">
-                {[
-                  ['Cloro Pozo 3', report.servicios.aguaPozo?.cloroPozo3],
-                  ['Cloro Pozo 6', report.servicios.aguaPozo?.cloroPozo6]
-                ].map(([l, v]) => (
-                  <div key={l} className="bg-slate-50 rounded p-1.5 text-center">
-                    <div className="text-slate-500 uppercase">{l}</div>
-                    <div className="text-sm font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Proveedores */}
-            {report.servicios.proveedores.length > 0 && (
+              {/* Cisternas */}
               <div className="pb-3 border-b border-slate-100">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Building2 className="w-3 h-3" />Proveedores
+                  <Beaker className="w-3 h-3" />Cisternas
                 </div>
-                <div className="space-y-0.5">
-                  {report.servicios.proveedores.map((pv, i) => (
-                    <div key={i} className="grid grid-cols-3 gap-1 text-[11px]">
-                      <div className="font-medium text-slate-700">{pv.provider}</div>
-                      <div className="col-span-2 text-slate-600">{pv.task}</div>
-                    </div>
-                  ))}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 text-[10px]">Nivel:</span>
+                    <span className="font-medium text-slate-800">{report.servicios.cisternas.nivel || '—'}</span>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <StatePill state={report.servicios.cisternas.estado} />
+                  </div>
                 </div>
               </div>
-            )}
 
-            {/* Comentarios */}
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <FileText className="w-3 h-3" />Comentarios
-              </div>
-              {report.comments.length === 0 ? <div className="text-[10px] text-slate-400 italic">Sin comentarios</div> :
-                <div className="space-y-1">
-                  {report.comments.map((c, i) => (
-                    <div key={i} className={`text-[11px] p-1.5 rounded ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : 'bg-slate-50'}`}>
-                      <span className="text-slate-700">{c.text}</span>
-                      {c.priority === 'Urgente' && <span className="ml-1.5 text-[9px] font-bold text-red-700 uppercase">Urgente</span>}
+              {/* Agua de Pozo */}
+              <div className="pb-3 border-b border-slate-100">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                  <Beaker className="w-3 h-3 text-blue-500" />Agua de Pozo
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-[10px]">
+                  {[
+                    ['Cloro Pozo 3', report.servicios.aguaPozo?.cloroPozo3],
+                    ['Cloro Pozo 6', report.servicios.aguaPozo?.cloroPozo6]
+                  ].map(([l, v]) => (
+                    <div key={l} className="bg-slate-50 rounded p-1.5 text-center">
+                      <div className="text-slate-500 uppercase">{l}</div>
+                      <div className="text-sm font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
                     </div>
                   ))}
-                </div>}
+                </div>
+              </div>
+
+              {/* Proveedores */}
+              {report.servicios.proveedores.length > 0 && (
+                <div className="pb-3 border-b border-slate-100">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                    <Building2 className="w-3 h-3" />Proveedores
+                  </div>
+                  <div className="space-y-0.5">
+                    {report.servicios.proveedores.map((pv, i) => (
+                      <div key={i} className="grid grid-cols-3 gap-1 text-[11px]">
+                        <div className="font-medium text-slate-700">{pv.provider}</div>
+                        <div className="col-span-2 text-slate-600">{pv.task}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Comentarios */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                  <FileText className="w-3 h-3" />Comentarios
+                </div>
+                {report.comments.length === 0 ? <div className="text-[10px] text-slate-400 italic">Sin comentarios</div> :
+                  <div className="space-y-1">
+                    {report.comments.map((c, i) => (
+                      <div key={i} className={`text-[11px] p-1.5 rounded ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : 'bg-slate-50'}`}>
+                        <span className="text-slate-700">{c.text}</span>
+                        {c.priority === 'Urgente' && <span className="ml-1.5 text-[9px] font-bold text-red-700 uppercase">Urgente</span>}
+                      </div>
+                    ))}
+                  </div>}
+              </div>
             </div>
-          </div>
-        </Card>
+          </Card>
+        </div>
       </div>
     </div>
   );
@@ -1834,7 +1885,9 @@ function StatsView({ history }) {
           ) : (
             <>
               <div className="text-[11px] text-slate-500 mb-2">
-                Suma de los últimos 3 turnos: {ultimoDia.turnos.map(t => `${formatDateShort(t.date)} ${t.shift}`).join(' · ')}
+                {ultimoDia.turnos.length === 1
+                  ? `Turno del día: ${ultimoDia.turnos.map(t => t.shift).join(', ')}`
+                  : `Turnos del día (${ultimoDia.turnos.length}): ${ultimoDia.turnos.map(t => t.shift).join(', ')}`}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <MiniKPI label="Correctivos generados" value={ultimoDia.correctivosGenerados} color="orange" />
