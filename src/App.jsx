@@ -3,7 +3,8 @@ import {
   ClipboardList, BarChart3, Download, Plus, Trash2, Save, Calendar, Users,
   Wrench, Activity, FileSpreadsheet, CheckCircle2, AlertTriangle, Building2,
   HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
-  Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings
+  Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
+  CalendarDays, Clock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -24,6 +25,11 @@ const supabaseConfigured =
   !SUPABASE_URL.includes('YOUR-PROJECT') &&
   SUPABASE_ANON_KEY.length > 20 &&
   !SUPABASE_ANON_KEY.includes('YOUR-ANON');
+
+// ═══════════════════════════════════════════════════════════════════
+// VERSION
+// ═══════════════════════════════════════════════════════════════════
+const APP_VERSION = 'v2.1';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -77,7 +83,52 @@ const COMPRESORES = ['SACB 002', 'SACB-C-002', 'SACB-C-003', 'Compresor PTEL'];
 const GRUPOS_ELECTROGENOS = ['MANB 001', 'MANB 002', 'MANB 003', 'Grupo Depósito 10'];
 
 // ═══════════════════════════════════════════════════════════════════
-// EMPTY REPORT
+// DATE HELPERS (formato dd/mmm/aa para visualización)
+// ═══════════════════════════════════════════════════════════════════
+const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+// Formatea YYYY-MM-DD a dd/mmm/aa (ej: "2026-05-08" -> "08/may/26")
+const formatDateShort = (isoDate) => {
+  if (!isoDate) return '—';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return isoDate;
+  const dd = String(d).padStart(2, '0');
+  const mmm = MESES_CORTOS[m - 1] || '???';
+  const yy = String(y).slice(-2);
+  return `${dd}/${mmm}/${yy}`;
+};
+
+// Formatea YYYY-MM-DD a fecha larga (ej: "viernes, 8 de mayo de 2026")
+const formatDateLong = (isoDate) => {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return isoDate;
+  return new Date(y, m - 1, d).toLocaleDateString('es-AR', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+  });
+};
+
+// Day-of-week 0=Domingo, 1=Lunes, ..., 6=Sábado
+const dayOfWeek = (isoDate) => {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  return new Date(y, m - 1, d).getDay();
+};
+
+// Suma N días a una fecha YYYY-MM-DD y devuelve nueva fecha YYYY-MM-DD
+const addDays = (isoDate, days) => {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return dt.toISOString().slice(0, 10);
+};
+
+// Compara reportes para ordenar de más viejo a más nuevo: fecha+turno
+const reportSortKey = (r) => `${r.date}-${shiftOrder(r.shift)}`;
+
+// ═══════════════════════════════════════════════════════════════════
+// EMPTY REPORT — V2.0
+//   - plantaCaldera: schema NUEVO (PTEL + Caldera + Ablandadores)
+//   - preventivosResumen: NUEVO (asignados, realizados, porTecnico)
 // ═══════════════════════════════════════════════════════════════════
 const emptyReport = () => ({
   date: new Date().toISOString().slice(0, 10),
@@ -90,8 +141,19 @@ const emptyReport = () => ({
     plantaCaldera: {
       tecnicos: [],            // [string] foguistas del turno (multi-select)
       estado: 'Operativa',
-      caudal: '', pH: '', ablandador: '', deltaT: '',
-      vacio: '', tk1: '', tk2: '', tkEmergencia: '', tk4: ''
+      // PTEL
+      caudal: '',              // m³/h
+      vacio: '',               // Vacío del equipo
+      deltaT: '',              // ΔT entre torres (°C)
+      tk1: '',                 // % Nivel TK1
+      tk2: '',                 // % Nivel TK2
+      tk7: '',                 // % Nivel TK7  (NUEVO en V2.0)
+      // Caldera
+      conductividadCaldera: '', // mS  (NUEVO en V2.0)
+      pHCaldera: '',            //     (NUEVO en V2.0)
+      // Agua Ablandadores
+      conductividadAblandador: '', // mS (NUEVO en V2.0)
+      pHAblandador: ''             //     (NUEVO en V2.0)
     },
     compresores: COMPRESORES.map(c => ({ code: c, state: 'Operativo' })),
     gruposElectrogenos: GRUPOS_ELECTROGENOS.map(g => ({ code: g, state: 'Operativo' })),
@@ -99,8 +161,47 @@ const emptyReport = () => ({
     aguaPozo: { cloroPozo3: '', cloroPozo6: '' },
     proveedores: []            // [{provider, task}]
   },
-  comments: []                 // [{text, priority}]
+  comments: [],                // [{text, priority}]
+  preventivosResumen: {        // NUEVO en V2.0
+    asignados: '',
+    realizados: '',
+    porTecnico: []             // [{tecnico, cantidad}]
+  }
 });
+
+// Hidrata un reporte viejo o nuevo asegurando que tenga toda la estructura V2.0
+// (evita errores de undefined al leer reportes guardados con schema viejo).
+const hydrate = (raw) => {
+  const base = emptyReport();
+  if (!raw) return base;
+  return {
+    ...base,
+    ...raw,
+    servicios: {
+      ...base.servicios,
+      ...(raw.servicios || {}),
+      plantaCaldera: {
+        ...base.servicios.plantaCaldera,
+        ...(raw.servicios?.plantaCaldera || {})
+      },
+      cisternas: {
+        ...base.servicios.cisternas,
+        ...(raw.servicios?.cisternas || {})
+      },
+      aguaPozo: {
+        ...base.servicios.aguaPozo,
+        ...(raw.servicios?.aguaPozo || {})
+      },
+      compresores: raw.servicios?.compresores || base.servicios.compresores,
+      gruposElectrogenos: raw.servicios?.gruposElectrogenos || base.servicios.gruposElectrogenos,
+      proveedores: raw.servicios?.proveedores || []
+    },
+    preventivosResumen: {
+      ...base.preventivosResumen,
+      ...(raw.preventivosResumen || {})
+    }
+  };
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // STORAGE LAYER (Supabase REST API or local fallback)
@@ -288,7 +389,8 @@ export default function App() {
     try {
       setConnError('');
       const data = await storage.list();
-      setHistory(data);
+      // Hidratar todos los reportes para garantizar estructura V2.0
+      setHistory(data.map(hydrate));
     } catch (e) {
       setConnError(e.message || 'Error de conexión');
       console.error(e);
@@ -297,8 +399,44 @@ export default function App() {
 
   useEffect(() => { (async () => { await refresh(); setLoading(false); })(); }, [refresh]);
 
+  // Validaciones antes de guardar (V2.0)
+  // Devuelve string con error o '' si todo OK
+  const validateReport = (r) => {
+    // 1. OTs correctivas en "Realizada" deben tener al menos un técnico
+    const correctivasMalas = (r.corrective || []).filter(
+      c => c.state === 'Realizada' && (!c.technicians || c.technicians.length === 0)
+    );
+    if (correctivasMalas.length > 0) {
+      return `${correctivasMalas.length} OT correctiva en estado "Realizada" sin técnico asignado. Asigná técnicos antes de guardar.`;
+    }
+
+    // 2. Resumen de preventivos: si hay realizados > 0, la suma del detalle por técnico debe coincidir
+    const realizados = Number(r.preventivosResumen?.realizados);
+    if (realizados > 0) {
+      const sumaPorTecnico = (r.preventivosResumen?.porTecnico || [])
+        .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+      if (sumaPorTecnico !== realizados) {
+        return `Resumen de preventivos: la suma del detalle por técnico (${sumaPorTecnico}) no coincide con "Preventivos realizados" (${realizados}).`;
+      }
+      // Validar que no haya filas con técnico vacío o cantidad <= 0
+      const filasMalas = (r.preventivosResumen?.porTecnico || []).filter(
+        t => !t.tecnico || !t.cantidad || Number(t.cantidad) <= 0
+      );
+      if (filasMalas.length > 0) {
+        return `Resumen de preventivos: hay filas sin técnico o con cantidad inválida.`;
+      }
+    }
+
+    return '';
+  };
+
   const saveReport = async () => {
     if (!report.date || !report.shift) { setSaveMsg('Falta fecha o turno'); return; }
+    const validationError = validateReport(report);
+    if (validationError) {
+      setSaveMsg(`Error: ${validationError}`);
+      return;
+    }
     setSaving(true);
     setSaveMsg('Guardando…');
     try {
@@ -312,14 +450,13 @@ export default function App() {
     setSaving(false);
   };
 
-  // ── Excel exports (matching template format) ────────────────────
+  // ── Excel exports (matching template format + V2.0 additions) ────────────────────
   const exportFull = () => {
     if (!history.length) { alert('No hay reportes guardados.'); return; }
     const wb = XLSX.utils.book_new();
 
     // 1. Tecnicos presentes
     const tecPres = [];
-    let rowId = 1;
     history.forEach(r => (r.team || []).forEach(name => {
       tecPres.push({
         TecnicoID: findTecnicoId(name),
@@ -349,7 +486,7 @@ export default function App() {
     }));
     addSheet(wb, corr.length ? corr : [{ OrdenID: '', OrdenNumero: '', SectorID: '', EquipoID: '', EquipoCodigo: '', OrdenTecnicoAsignado: '', Turno: '', FechaRealizacion: '', Descripcion: '', Estado: '' }], 'Correctivos');
 
-    // 3. Preventivos
+    // 3. Preventivos (detalle individual — formato original mantenido)
     const prev = [];
     let pId = 1;
     history.forEach(r => (r.preventive || []).forEach(p => {
@@ -368,6 +505,42 @@ export default function App() {
       });
     }));
     addSheet(wb, prev.length ? prev : [{ OrdenID: '', OrdenEquipoID: '', OrdenEquipoCodigo: '', OrdenEquipoDescripcion: '', OrdenTecnicoAsignado: '', OrdenTurno: '', OrdenFechaRealizacion: '', OrdenFrecuencia: '', OrdenDescripcion: '', OrdenComentarios: '', OrdenCorrectivaAsociada: '' }], 'Preventivos');
+
+    // 3b. Resumen Preventivos por Turno (NUEVO V2.0)
+    const resumen = [];
+    let resId = 1;
+    history.forEach(r => {
+      const pr = r.preventivosResumen;
+      if (!pr) return;
+      const asig = pr.asignados, real = pr.realizados;
+      if ((asig === '' || asig == null) && (real === '' || real == null)) return;
+      resumen.push({
+        ResumenID: resId++,
+        Fecha: r.date,
+        Turno: r.shift,
+        Asignados: asig !== '' && asig != null ? Number(asig) : '',
+        Realizados: real !== '' && real != null ? Number(real) : ''
+      });
+    });
+    addSheet(wb, resumen.length ? resumen : [{ ResumenID: '', Fecha: '', Turno: '', Asignados: '', Realizados: '' }], 'Resumen Preventivos Turno');
+
+    // 3c. Preventivos por Técnico (NUEVO V2.0)
+    const porTec = [];
+    let ptId = 1;
+    history.forEach(r => {
+      (r.preventivosResumen?.porTecnico || []).forEach(t => {
+        if (!t.tecnico || !t.cantidad) return;
+        porTec.push({
+          RegistroID: ptId++,
+          Fecha: r.date,
+          Turno: r.shift,
+          Tecnico: t.tecnico,
+          TecnicoID: findTecnicoId(t.tecnico),
+          Cantidad: Number(t.cantidad) || 0
+        });
+      });
+    });
+    addSheet(wb, porTec.length ? porTec : [{ RegistroID: '', Fecha: '', Turno: '', Tecnico: '', TecnicoID: '', Cantidad: '' }], 'Preventivos por Tecnico');
 
     // 4. Estado de cisternas
     const cist = [];
@@ -432,17 +605,16 @@ export default function App() {
     }));
     addSheet(wb, gru.length ? gru : [{ GrupoRegistroId: '', GrupoCodigoEquipo: '', GrupoEstado: '', GrupoRegistroTurno: '', GrupoRegistroFecha: '' }], 'Grupos Electrogenos');
 
-    // 7. Planta de efluentes (one row per foguista per shift to keep the template structure)
+    // 7. Planta de efluentes — V2.0: NUEVAS columnas (PTEL + Caldera + Ablandadores)
+    // Las columnas viejas (Ablandador, TKEmergencia, TK4) se eliminan en este export.
     const planta = [];
     let plId = 1;
     history.forEach(r => {
       const p = r.servicios?.plantaCaldera;
       if (!p) return;
-      // Backward compatibility: some old reports may have `tecnico` (single)
       const foguistas = (p.tecnicos && p.tecnicos.length > 0)
         ? p.tecnicos
         : (p.tecnico ? [p.tecnico] : ['']);
-      // Only emit row if there's some content
       if (foguistas[0] === '' && !p.estado) return;
       foguistas.forEach(name => {
         planta.push({
@@ -452,19 +624,28 @@ export default function App() {
           TecnicoID: findTecnicoId(name),
           CalderaFechaControl: r.date,
           CalderaEstado: p.estado || '',
-          CalderaCaudal: p.caudal !== '' ? Number(p.caudal) : '',
-          CalderaPH: p.pH !== '' ? Number(p.pH) : '',
-          Ablandador: p.ablandador !== '' ? Number(p.ablandador) : '',
-          DeltaTemperatura: p.deltaT !== '' ? Number(p.deltaT) : '',
-          NivelVacio: p.vacio !== '' ? Number(p.vacio) : '',
-          TK1: p.tk1 !== '' ? Number(p.tk1) : '',
-          TK2: p.tk2 !== '' ? Number(p.tk2) : '',
-          TKEmergencia: p.tkEmergencia !== '' ? Number(p.tkEmergencia) : '',
-          TK4: p.tk4 !== '' ? Number(p.tk4) : ''
+          // PTEL
+          PTEL_Caudal_m3h: p.caudal !== '' && p.caudal != null ? Number(p.caudal) : '',
+          PTEL_Vacio: p.vacio !== '' && p.vacio != null ? Number(p.vacio) : '',
+          PTEL_DeltaT_C: p.deltaT !== '' && p.deltaT != null ? Number(p.deltaT) : '',
+          PTEL_TK1_pct: p.tk1 !== '' && p.tk1 != null ? Number(p.tk1) : '',
+          PTEL_TK2_pct: p.tk2 !== '' && p.tk2 != null ? Number(p.tk2) : '',
+          PTEL_TK7_pct: p.tk7 !== '' && p.tk7 != null ? Number(p.tk7) : '',
+          // Caldera
+          Caldera_Conductividad_mS: p.conductividadCaldera !== '' && p.conductividadCaldera != null ? Number(p.conductividadCaldera) : '',
+          Caldera_pH: p.pHCaldera !== '' && p.pHCaldera != null ? Number(p.pHCaldera) : '',
+          // Ablandadores
+          Ablandador_Conductividad_mS: p.conductividadAblandador !== '' && p.conductividadAblandador != null ? Number(p.conductividadAblandador) : '',
+          Ablandador_pH: p.pHAblandador !== '' && p.pHAblandador != null ? Number(p.pHAblandador) : ''
         });
       });
     });
-    addSheet(wb, planta.length ? planta : [{ CalderaRegistroID: '', CalderaRegistroTurno: '', CalderaTecnicoNombre: '', TecnicoID: '', CalderaFechaControl: '', CalderaEstado: '', CalderaCaudal: '', CalderaPH: '', Ablandador: '', DeltaTemperatura: '', NivelVacio: '', TK1: '', TK2: '', TKEmergencia: '', TK4: '' }], 'Planta de efluentes');
+    addSheet(wb, planta.length ? planta : [{
+      CalderaRegistroID: '', CalderaRegistroTurno: '', CalderaTecnicoNombre: '', TecnicoID: '', CalderaFechaControl: '', CalderaEstado: '',
+      PTEL_Caudal_m3h: '', PTEL_Vacio: '', PTEL_DeltaT_C: '', PTEL_TK1_pct: '', PTEL_TK2_pct: '', PTEL_TK7_pct: '',
+      Caldera_Conductividad_mS: '', Caldera_pH: '',
+      Ablandador_Conductividad_mS: '', Ablandador_pH: ''
+    }], 'Planta de efluentes');
 
     // 8. Servicios externo
     const ext = [];
@@ -549,6 +730,32 @@ export default function App() {
       })));
       if (!rows.length) { alert('Sin preventivos.'); return; }
       downloadSingle(rows, 'Preventivos', `Preventivos_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } else if (kind === 'comentarios') {
+      // NUEVO V2.0
+      const rows = [];
+      let i = 1;
+      history.forEach(r => (r.comments || []).forEach(c => rows.push({
+        ComentarioAdicionalID: i++,
+        Fecha: r.date,
+        Turno: r.shift,
+        ComentarioAdicionalTexto: c.text || '',
+        ComentarioAdicionalPrioridad: c.priority || ''
+      })));
+      if (!rows.length) { alert('Sin comentarios.'); return; }
+      downloadSingle(rows, 'Comentarios', `Comentarios_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } else if (kind === 'proveedores') {
+      // NUEVO V2.0
+      const rows = [];
+      let i = 1;
+      history.forEach(r => (r.servicios?.proveedores || []).forEach(p => rows.push({
+        ServicioExternoID: i++,
+        Fecha: r.date,
+        Turno: r.shift,
+        Proveedor: p.provider || '',
+        Tarea: p.task || ''
+      })));
+      if (!rows.length) { alert('Sin proveedores.'); return; }
+      downloadSingle(rows, 'Proveedores', `Proveedores_${new Date().toISOString().slice(0, 10)}.xlsx`);
     }
   };
 
@@ -564,12 +771,30 @@ export default function App() {
       <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-4">
-            <div className="w-11 h-11 rounded-xl bg-sky-500/20 ring-1 ring-sky-400/40 flex items-center justify-center">
-              <HardHat className="w-5 h-5 text-sky-300" />
+            {/* LOGO BIOMAS — V2.0: reemplaza el icono del casco. Fondo blanco según pedido. */}
+            <div className="w-14 h-14 rounded-xl bg-white ring-1 ring-slate-200 flex items-center justify-center p-1.5 shadow-sm">
+              <img
+                src="/logo-biomas.jpg"
+                alt="Biomas"
+                className="w-full h-full object-contain"
+                onError={(e) => {
+                  // Si el logo no carga (por ej. en preview antes del primer deploy con el archivo),
+                  // fallback al icono original sin romper el layout.
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.parentElement.classList.remove('bg-white', 'ring-slate-200');
+                  e.currentTarget.parentElement.classList.add('bg-sky-500/20', 'ring-sky-400/40');
+                  const icon = document.createElement('div');
+                  icon.className = 'w-5 h-5 text-sky-300';
+                  e.currentTarget.parentElement.appendChild(icon);
+                }}
+              />
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight">Reporte Diario de Mantenimiento</h1>
-              <p className="text-[11px] text-slate-300 mt-0.5">Sistema integral · carga, dashboard, estadísticas y exportación</p>
+              <p className="text-[11px] text-slate-300 mt-0.5">
+                Sistema integral · carga, dashboard, estadísticas y exportación
+                <span className="ml-2 px-1.5 py-0.5 bg-slate-700 text-slate-200 rounded text-[10px] font-semibold num">{APP_VERSION}</span>
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs">
@@ -631,12 +856,14 @@ export default function App() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5">
         {loading && <div className="text-center text-slate-500 py-20">Cargando…</div>}
-        {!loading && tab === 'form' && <FormView report={report} setReport={setReport} onSave={saveReport} saveMsg={saveMsg} saving={saving} history={history} />}
+        {!loading && tab === 'form' && <FormView report={report} setReport={setReport} onSave={saveReport} saveMsg={saveMsg} setSaveMsg={setSaveMsg} saving={saving} history={history} />}
         {!loading && tab === 'dashboard' && <DashboardView report={report} />}
         {!loading && tab === 'stats' && <StatsView history={history} />}
         {!loading && tab === 'history' && <HistoryView history={history}
           onExportCorrectives={() => exportSingleSheet('correctivos')}
           onExportPreventives={() => exportSingleSheet('preventivos')}
+          onExportComments={() => exportSingleSheet('comentarios')}
+          onExportProviders={() => exportSingleSheet('proveedores')}
           onExportFull={exportFull} />}
       </main>
     </div>
@@ -644,12 +871,17 @@ export default function App() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// FORM VIEW
+// FORM VIEW — V2.0
+//   - sin botón eliminar en correctivos
+//   - limpiar conserva pendientes (Sin Iniciar + En Curso) y borra Realizadas
+//   - Planta de Efluentes y Caldera con schema nuevo (PTEL + Caldera + Ablandadores)
+//   - Resumen Preventivos del Turno al final del formulario
 // ═══════════════════════════════════════════════════════════════════
-function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
+function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history }) {
   const update = (patch) => setReport(r => ({ ...r, ...patch }));
   const updateList = (key, fn) => setReport(r => ({ ...r, [key]: fn(r[key]) }));
   const updateServicios = (patch) => setReport(r => ({ ...r, servicios: { ...r.servicios, ...patch } }));
+  const updateResumen = (patch) => setReport(r => ({ ...r, preventivosResumen: { ...r.preventivosResumen, ...patch } }));
   const [loadInfo, setLoadInfo] = useState('');
   const initialPendingApplied = useRef(false);
 
@@ -676,8 +908,8 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
   const setDateShift = (newDate, newShift) => {
     const existing = history.find(r => r.date === newDate && r.shift === newShift);
     if (existing) {
-      setReport({ ...emptyReport(), ...existing, servicios: { ...emptyReport().servicios, ...(existing.servicios || {}) } });
-      setLoadInfo(`✓ Reporte cargado del histórico (${newDate} - ${newShift})`);
+      setReport(hydrate(existing));
+      setLoadInfo(`✓ Reporte cargado del histórico (${formatDateShort(newDate)} - ${newShift})`);
       setTimeout(() => setLoadInfo(''), 4000);
       return;
     }
@@ -689,32 +921,45 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
     }
   };
 
-  // "Limpiar": wipe the form for the current date+shift but preserve pending OTs
+  // V2.0 — "Limpiar": NO borra correctivos en "Sin Iniciar" / "En Curso".
+  // Solo borra los "Realizada" y resetea el resto del formulario.
+  // V2.1 — además limpia cualquier mensaje de error/guardado anterior.
   const cleanForm = () => {
-    const pending = computePending(report.date, report.shift);
-    setReport({ ...emptyReport(), date: report.date, shift: report.shift, corrective: pending });
-    if (pending.length > 0) {
-      setLoadInfo(`↻ Formulario limpio. Se mantienen ${pending.length} correctivo${pending.length === 1 ? '' : 's'} pendiente${pending.length === 1 ? '' : 's'}.`);
+    setReport(r => ({
+      ...emptyReport(),
+      date: r.date,
+      shift: r.shift,
+      // Conservar correctivos que NO estén en "Realizada"
+      corrective: (r.corrective || []).filter(c => c.state !== 'Realizada')
+    }));
+    const pendingCount = (report.corrective || []).filter(c => c.state !== 'Realizada').length;
+    const removedCount = (report.corrective || []).filter(c => c.state === 'Realizada').length;
+    if (pendingCount > 0 && removedCount > 0) {
+      setLoadInfo(`↻ Formulario limpio. Se mantienen ${pendingCount} correctivo${pendingCount === 1 ? '' : 's'} pendiente${pendingCount === 1 ? '' : 's'}. Se quitaron ${removedCount} realizado${removedCount === 1 ? '' : 's'}.`);
+    } else if (pendingCount > 0) {
+      setLoadInfo(`↻ Formulario limpio. Se mantienen ${pendingCount} correctivo${pendingCount === 1 ? '' : 's'} pendiente${pendingCount === 1 ? '' : 's'}.`);
+    } else if (removedCount > 0) {
+      setLoadInfo(`✓ Formulario limpio. Se quitaron ${removedCount} correctivo${removedCount === 1 ? '' : 's'} realizado${removedCount === 1 ? '' : 's'}.`);
     } else {
       setLoadInfo('✓ Formulario limpio');
     }
-    setTimeout(() => setLoadInfo(''), 4000);
+    // V2.1 FIX: limpiar mensaje de error/guardado anterior
+    if (typeof setSaveMsg === 'function') setSaveMsg('');
+    setTimeout(() => setLoadInfo(''), 4500);
   };
 
   // On first history-loaded mount, auto-apply pending correctivos if the form
-  // is still untouched. This ensures pending OTs are visible immediately.
+  // is still untouched.
   useEffect(() => {
     if (initialPendingApplied.current) return;
     if (history.length === 0) return;
-    // Only auto-apply if form is empty (no user edits yet)
     const isEmpty = !report.responsable && report.team.length === 0 &&
       report.corrective.length === 0 && report.preventive.length === 0 &&
       report.comments.length === 0;
     if (!isEmpty) { initialPendingApplied.current = true; return; }
     const existing = history.find(r => r.date === report.date && r.shift === report.shift);
     if (existing) {
-      // already saved — load it
-      setReport({ ...emptyReport(), ...existing, servicios: { ...emptyReport().servicios, ...(existing.servicios || {}) } });
+      setReport(hydrate(existing));
     } else {
       const pending = computePending(report.date, report.shift);
       if (pending.length > 0) {
@@ -727,8 +972,27 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history]);
 
-  // Only show technicians selected in Equipo del Turno for assignment to OTs
+  // Solo técnicos del turno para asignar a OTs y al detalle de preventivos
   const teamOptions = report.team.length > 0 ? report.team : TECNICO_NAMES;
+
+  // Cuando el equipo cambia, depurar técnicos del resumen que ya no están en el turno
+  // (UX: si un responsable saca a un técnico del equipo, se va su fila del detalle)
+  useEffect(() => {
+    const validTecs = new Set(report.team);
+    const cleaned = (report.preventivosResumen?.porTecnico || []).filter(
+      t => !t.tecnico || validTecs.has(t.tecnico)
+    );
+    if (cleaned.length !== (report.preventivosResumen?.porTecnico || []).length) {
+      updateResumen({ porTecnico: cleaned });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report.team]);
+
+  // Suma del detalle por técnico — para mostrar feedback visual de validación cruzada
+  const sumaPorTecnico = (report.preventivosResumen?.porTecnico || [])
+    .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const realizadosNum = Number(report.preventivosResumen?.realizados) || 0;
+  const validacionCruzadaOK = realizadosNum === 0 || sumaPorTecnico === realizadosNum;
 
   return (
     <div className="space-y-5">
@@ -783,7 +1047,7 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
         </Field>
       </Card>
 
-      {/* CORRECTIVOS */}
+      {/* CORRECTIVOS — V2.0: SIN botón eliminar */}
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <SectionTitle icon={Wrench} accent="orange">Mantenimiento Correctivo</SectionTitle>
@@ -794,140 +1058,216 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
         </div>
         {report.corrective.length === 0 && <EmptyHint>Sin órdenes de trabajo correctivas.</EmptyHint>}
         <div className="space-y-3">
-          {report.corrective.map((c, i) => (
-            <div key={i} className="border border-slate-200 rounded-lg p-3 bg-slate-50/40">
-              <div className="grid grid-cols-12 gap-2 mb-2">
-                <Field label="N° OT" className="col-span-2">
-                  <input className={`${inputCls} num`} placeholder="OT-XXXX" value={c.ot}
-                    onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, ot: e.target.value } : x))} />
-                </Field>
-                <Field label="Equipo / Sector" className="col-span-3">
-                  <input className={inputCls} value={c.equipoCodigo}
-                    onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
-                </Field>
-                <Field label="Estado" className="col-span-2">
-                  <select className={`${inputCls} font-semibold ${c.state === 'Sin Iniciar' ? 'text-red-600' : c.state === 'En Curso' ? 'text-amber-600' : 'text-emerald-600'}`}
-                    value={c.state}
-                    onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, state: e.target.value } : x))}>
-                    {ESTADOS_OT.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </Field>
-                <Field label="Técnico/s asignado/s" className="col-span-4">
-                  <MultiSelect options={teamOptions} value={c.technicians}
-                    onChange={vals => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
-                    placeholder={report.team.length === 0 ? 'Cargá primero el equipo del turno' : 'Seleccionar…'} />
-                </Field>
-                <div className="col-span-1 flex items-end justify-end">
-                  <button onClick={() => updateList('corrective', l => l.filter((_, j) => j !== i))}
-                    className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+          {report.corrective.map((c, i) => {
+            // V2.0: marcar visualmente las OTs realizadas sin técnico (para guiar al usuario)
+            const requiresTech = c.state === 'Realizada';
+            const missingTech = requiresTech && (!c.technicians || c.technicians.length === 0);
+            return (
+              <div key={i} className={`border rounded-lg p-3 ${missingTech ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+                <div className="grid grid-cols-12 gap-2 mb-2">
+                  <Field label="N° OT" className="col-span-2">
+                    <input className={`${inputCls} num`} placeholder="OT-XXXX" value={c.ot}
+                      onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, ot: e.target.value } : x))} />
+                  </Field>
+                  <Field label="Equipo / Sector" className="col-span-3">
+                    <input className={inputCls} value={c.equipoCodigo}
+                      onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
+                  </Field>
+                  <Field label="Estado" className="col-span-2">
+                    <select className={`${inputCls} font-semibold ${c.state === 'Sin Iniciar' ? 'text-red-600' : c.state === 'En Curso' ? 'text-amber-600' : 'text-emerald-600'}`}
+                      value={c.state}
+                      onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, state: e.target.value } : x))}>
+                      {ESTADOS_OT.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </Field>
+                  <Field label={`Técnico/s asignado/s${requiresTech ? ' *' : ''}`} className="col-span-5">
+                    <MultiSelect options={teamOptions} value={c.technicians}
+                      onChange={vals => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
+                      placeholder={report.team.length === 0 ? 'Cargá primero el equipo del turno' : 'Seleccionar…'} />
+                  </Field>
+                  {/* V2.0: BOTÓN ELIMINAR REMOVIDO */}
                 </div>
+                {missingTech && (
+                  <div className="text-[11px] text-red-700 mb-1 inline-flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    Las OTs en estado "Realizada" deben tener al menos un técnico asignado
+                  </div>
+                )}
+                <Field label="Tarea / descripción">
+                  <textarea rows={2} className={inputCls} value={c.task}
+                    onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
+                </Field>
               </div>
-              <Field label="Tarea / descripción">
-                <textarea rows={2} className={inputCls} value={c.task}
-                  onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
-              </Field>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
 
-      {/* PREVENTIVOS */}
+      {/* RESUMEN PREVENTIVOS DEL TURNO — V2.1: subido a la 4ta posición (antes de Servicios) */}
       <Card className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <SectionTitle icon={ListChecks} accent="emerald">Mantenimiento Preventivo</SectionTitle>
-          <button onClick={() => updateList('preventive', l => [...l, { codigoTarea: '', equipoCodigo: '', equipoDescripcion: '', task: '', comments: '', otCorrectivaAsociada: '', technicians: [], frequency: 'Diaria' }])}
-            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100`}>
-            <Plus className="w-4 h-4" />Agregar tarea
+        <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
+        <p className="text-xs text-slate-500 mb-4">
+          Estos son los totales globales del turno (los carga el responsable). Si hay realizados &gt; 0,
+          la suma del detalle por técnico debe coincidir con "Preventivos realizados".
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4 max-w-2xl">
+          <Field label="Preventivos asignados en el turno">
+            <input type="number" min="0" step="1" className={`${inputCls} num`}
+              value={report.preventivosResumen?.asignados ?? ''}
+              onChange={e => updateResumen({ asignados: e.target.value })} />
+          </Field>
+          <Field label="Preventivos realizados en el turno">
+            <input type="number" min="0" step="1"
+              className={`${inputCls} num ${!validacionCruzadaOK ? 'border-red-400 focus:ring-red-300' : ''}`}
+              value={report.preventivosResumen?.realizados ?? ''}
+              onChange={e => updateResumen({ realizados: e.target.value })} />
+          </Field>
+        </div>
+
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-700 inline-flex items-center gap-2">
+            <Users className="w-4 h-4 text-emerald-500" />Detalle por técnico
+          </h3>
+          <button
+            onClick={() => updateResumen({ porTecnico: [...(report.preventivosResumen?.porTecnico || []), { tecnico: '', cantidad: '' }] })}
+            disabled={report.team.length === 0}
+            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed`}
+            title={report.team.length === 0 ? 'Cargá primero el equipo del turno' : ''}>
+            <Plus className="w-4 h-4" />Agregar técnico
           </button>
         </div>
-        {report.preventive.length === 0 && <EmptyHint>Sin tareas preventivas.</EmptyHint>}
-        <div className="space-y-3">
-          {report.preventive.map((p, i) => (
-            <div key={i} className="border border-slate-200 rounded-lg p-3 bg-slate-50/40">
-              <div className="grid grid-cols-12 gap-2 mb-2">
-                <Field label="Código de tarea" className="col-span-2">
-                  <input className={`${inputCls} num`} value={p.codigoTarea}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, codigoTarea: e.target.value } : x))} />
-                </Field>
-                <Field label="Equipo" className="col-span-2">
-                  <input className={inputCls} value={p.equipoCodigo}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
-                </Field>
-                <Field label="Descripción de equipo" className="col-span-3">
-                  <input className={inputCls} value={p.equipoDescripcion}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoDescripcion: e.target.value } : x))} />
-                </Field>
-                <Field label="Frecuencia" className="col-span-2">
-                  <select className={inputCls} value={p.frequency}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, frequency: e.target.value } : x))}>
-                    {FRECUENCIAS.map(f => <option key={f}>{f}</option>)}
-                  </select>
-                </Field>
-                <Field label="Técnico/s asignado/s" className="col-span-2">
-                  <MultiSelect options={teamOptions} value={p.technicians}
-                    onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
-                    placeholder={report.team.length === 0 ? 'Cargá el equipo' : 'Seleccionar…'} />
-                </Field>
-                <div className="col-span-1 flex items-end justify-end">
-                  <button onClick={() => updateList('preventive', l => l.filter((_, j) => j !== i))}
-                    className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+
+        {report.team.length === 0 ? (
+          <EmptyHint>Cargá primero el equipo del turno para asignar preventivos por técnico.</EmptyHint>
+        ) : (report.preventivosResumen?.porTecnico || []).length === 0 ? (
+          <EmptyHint>Sin detalle por técnico.</EmptyHint>
+        ) : (
+          <div className="space-y-2">
+            {(report.preventivosResumen?.porTecnico || []).map((t, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2">
+                <select
+                  className={`${inputCls} col-span-7`}
+                  value={t.tecnico}
+                  onChange={e => updateResumen({
+                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, tecnico: e.target.value } : x)
+                  })}>
+                  <option value="">— Seleccionar técnico —</option>
+                  {report.team.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <input
+                  type="number" min="1" step="1" placeholder="Cantidad"
+                  className={`${inputCls} col-span-4 num`}
+                  value={t.cantidad}
+                  onChange={e => updateResumen({
+                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, cantidad: e.target.value } : x)
+                  })} />
+                <button
+                  onClick={() => updateResumen({
+                    porTecnico: report.preventivosResumen.porTecnico.filter((_, j) => j !== i)
+                  })}
+                  className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Field label="Tarea">
-                  <textarea rows={2} className={inputCls} value={p.task}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
-                </Field>
-                <Field label="Comentarios">
-                  <textarea rows={2} className={inputCls} value={p.comments}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, comments: e.target.value } : x))} />
-                </Field>
-                <Field label="OT correctiva asociada">
-                  <input className={`${inputCls} num`} placeholder="OT-XXXX" value={p.otCorrectivaAsociada}
-                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, otCorrectivaAsociada: e.target.value } : x))} />
-                </Field>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {/* Feedback de validación cruzada */}
+        {realizadosNum > 0 && (
+          <div className={`mt-3 text-xs p-2 rounded-lg flex items-center gap-2 ${validacionCruzadaOK
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              : 'bg-red-50 text-red-700 border border-red-200'
+            }`}>
+            {validacionCruzadaOK
+              ? <CheckCircle2 className="w-4 h-4" />
+              : <AlertTriangle className="w-4 h-4" />
+            }
+            Suma del detalle: <span className="num font-bold">{sumaPorTecnico}</span> ·
+            Realizados: <span className="num font-bold">{realizadosNum}</span>
+            {!validacionCruzadaOK && ' — debe coincidir antes de guardar'}
+          </div>
+        )}
       </Card>
 
       {/* SERVICIOS */}
       <Card className="p-5">
         <SectionTitle icon={Activity} accent="violet">Servicios</SectionTitle>
 
-        {/* PLANTA DE EFLUENTES Y CALDERA */}
+        {/* PLANTA DE EFLUENTES Y CALDERA — V2.0: schema NUEVO (PTEL + Caldera + Ablandadores) */}
         <div className="mb-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
             <Flame className="w-4 h-4 text-orange-500" />Planta de Efluentes y Caldera
           </h3>
-          <div className="grid grid-cols-12 gap-3">
-            <Field label="Técnicos (foguistas)" className="col-span-4">
+          <div className="grid grid-cols-12 gap-3 mb-4">
+            <Field label="Técnicos (foguistas)" className="col-span-7">
               <MultiSelect options={FOGUISTAS} value={report.servicios.plantaCaldera.tecnicos || []}
                 onChange={vals => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, tecnicos: vals } })}
                 placeholder="Seleccionar foguistas…" />
             </Field>
-            <Field label="Estado" className="col-span-2">
+            <Field label="Estado" className="col-span-5">
               <select className={`${inputCls} font-semibold ${report.servicios.plantaCaldera.estado === 'Operativa' ? 'text-emerald-600' : 'text-red-600'}`}
                 value={report.servicios.plantaCaldera.estado}
                 onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, estado: e.target.value } })}>
                 {ESTADOS_PLANTA.map(s => <option key={s}>{s}</option>)}
               </select>
             </Field>
-            {[
-              ['caudal', 'Caudal'], ['pH', 'pH'], ['ablandador', 'Ablandador'],
-              ['deltaT', 'ΔT'], ['vacio', 'Vacío'], ['tk1', 'TK1'],
-              ['tk2', 'TK2'], ['tkEmergencia', 'TK Emerg.'], ['tk4', 'TK4']
-            ].map(([k, label]) => (
-              <Field key={k} label={label} className="col-span-2">
-                <input type="number" step="any" className={`${inputCls} num`} value={report.servicios.plantaCaldera[k]}
-                  onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, [k]: e.target.value } })} />
-              </Field>
-            ))}
+          </div>
+
+          {/* PTEL */}
+          <div className="border border-slate-200 rounded-lg p-3 bg-orange-50/30 mb-3">
+            <div className="text-[11px] font-bold text-orange-700 uppercase tracking-wider mb-2">PTEL</div>
+            <div className="grid grid-cols-12 gap-3">
+              {[
+                ['caudal', 'Caudal (m³/h)'],
+                ['vacio', 'Vacío del equipo'],
+                ['deltaT', 'ΔT entre torres (°C)'],
+                ['tk1', '% Nivel TK1'],
+                ['tk2', '% Nivel TK2'],
+                ['tk7', '% Nivel TK7']
+              ].map(([k, label]) => (
+                <Field key={k} label={label} className="col-span-2">
+                  <input type="number" step="any" className={`${inputCls} num`}
+                    value={report.servicios.plantaCaldera[k] ?? ''}
+                    onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, [k]: e.target.value } })} />
+                </Field>
+              ))}
+            </div>
+          </div>
+
+          {/* CALDERA y AGUA ABLANDADORES */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="border border-slate-200 rounded-lg p-3 bg-red-50/30">
+              <div className="text-[11px] font-bold text-red-700 uppercase tracking-wider mb-2">Caldera</div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Conductividad (mS)">
+                  <input type="number" step="any" className={`${inputCls} num`}
+                    value={report.servicios.plantaCaldera.conductividadCaldera ?? ''}
+                    onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, conductividadCaldera: e.target.value } })} />
+                </Field>
+                <Field label="pH">
+                  <input type="number" step="any" className={`${inputCls} num`}
+                    value={report.servicios.plantaCaldera.pHCaldera ?? ''}
+                    onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, pHCaldera: e.target.value } })} />
+                </Field>
+              </div>
+            </div>
+            <div className="border border-slate-200 rounded-lg p-3 bg-blue-50/30">
+              <div className="text-[11px] font-bold text-blue-700 uppercase tracking-wider mb-2">Agua Ablandadores</div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Conductividad (mS)">
+                  <input type="number" step="any" className={`${inputCls} num`}
+                    value={report.servicios.plantaCaldera.conductividadAblandador ?? ''}
+                    onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, conductividadAblandador: e.target.value } })} />
+                </Field>
+                <Field label="pH">
+                  <input type="number" step="any" className={`${inputCls} num`}
+                    value={report.servicios.plantaCaldera.pHAblandador ?? ''}
+                    onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, pHAblandador: e.target.value } })} />
+                </Field>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1069,27 +1409,91 @@ function FormView({ report, setReport, onSave, saveMsg, saving, history }) {
           ))}
         </div>
       </Card>
+
+      {/* MANTENIMIENTO PREVENTIVO — V2.1: bajado al final del formulario */}
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <SectionTitle icon={ListChecks} accent="emerald">Mantenimiento Preventivo</SectionTitle>
+          <button onClick={() => updateList('preventive', l => [...l, { codigoTarea: '', equipoCodigo: '', equipoDescripcion: '', task: '', comments: '', otCorrectivaAsociada: '', technicians: [], frequency: 'Diaria' }])}
+            className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100`}>
+            <Plus className="w-4 h-4" />Agregar tarea
+          </button>
+        </div>
+        {report.preventive.length === 0 && <EmptyHint>Sin tareas preventivas.</EmptyHint>}
+        <div className="space-y-3">
+          {report.preventive.map((p, i) => (
+            <div key={i} className="border border-slate-200 rounded-lg p-3 bg-slate-50/40">
+              <div className="grid grid-cols-12 gap-2 mb-2">
+                <Field label="Código de tarea" className="col-span-2">
+                  <input className={`${inputCls} num`} value={p.codigoTarea}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, codigoTarea: e.target.value } : x))} />
+                </Field>
+                <Field label="Equipo" className="col-span-2">
+                  <input className={inputCls} value={p.equipoCodigo}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
+                </Field>
+                <Field label="Descripción de equipo" className="col-span-3">
+                  <input className={inputCls} value={p.equipoDescripcion}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, equipoDescripcion: e.target.value } : x))} />
+                </Field>
+                <Field label="Frecuencia" className="col-span-2">
+                  <select className={inputCls} value={p.frequency}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, frequency: e.target.value } : x))}>
+                    {FRECUENCIAS.map(f => <option key={f}>{f}</option>)}
+                  </select>
+                </Field>
+                <Field label="Técnico/s asignado/s" className="col-span-2">
+                  <MultiSelect options={teamOptions} value={p.technicians}
+                    onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
+                    placeholder={report.team.length === 0 ? 'Cargá el equipo' : 'Seleccionar…'} />
+                </Field>
+                <div className="col-span-1 flex items-end justify-end">
+                  <button onClick={() => updateList('preventive', l => l.filter((_, j) => j !== i))}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="Tarea">
+                  <textarea rows={2} className={inputCls} value={p.task}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
+                </Field>
+                <Field label="Comentarios">
+                  <textarea rows={2} className={inputCls} value={p.comments}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, comments: e.target.value } : x))} />
+                </Field>
+                <Field label="OT correctiva asociada">
+                  <input className={`${inputCls} num`} placeholder="OT-XXXX" value={p.otCorrectivaAsociada}
+                    onChange={e => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, otCorrectivaAsociada: e.target.value } : x))} />
+                </Field>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// DASHBOARD VIEW (single screen, no scroll)
+// DASHBOARD VIEW — V2.0
+//   - Equipo con wrap multi-línea (todos los técnicos visibles)
+//   - Fechas en formato dd/mmm/aa
+//   - Preventivos: solo se muestra el resumen (asignados, realizados, por técnico)
+//   - Planta: nuevos parámetros (PTEL, Caldera, Ablandadores)
 // ═══════════════════════════════════════════════════════════════════
 function DashboardView({ report }) {
-  const dateLabel = useMemo(() => {
-    if (!report.date) return '';
-    const [y, m, d] = report.date.split('-').map(Number);
-    return new Date(y, m - 1, d).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  }, [report.date]);
-
+  const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
+  const dateShort = useMemo(() => formatDateShort(report.date), [report.date]);
   const p = report.servicios.plantaCaldera;
+  const pr = report.preventivosResumen || { asignados: '', realizados: '', porTecnico: [] };
 
   return (
     <div className="space-y-3">
-      {/* COMPACT HEADER */}
+      {/* HEADER — V2.0: equipo con wrap multi-línea */}
       <Card className="p-3">
-        <div className="grid grid-cols-12 gap-3 items-center">
+        <div className="grid grid-cols-12 gap-3 items-start">
           <div className="col-span-3 flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-sky-100 ring-1 ring-sky-200 flex items-center justify-center flex-shrink-0">
               <Wrench className="w-5 h-5 text-sky-600" />
@@ -1097,243 +1501,342 @@ function DashboardView({ report }) {
             <div>
               <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Reporte Diario</div>
               <div className="text-sm font-bold text-slate-900 capitalize num">{dateLabel || '—'}</div>
+              <div className="text-[10px] text-slate-400 num">{dateShort}</div>
             </div>
           </div>
-          <div className="col-span-2">
+          <div className="col-span-2 pt-1">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Turno</div>
             <div className="text-sm font-medium">{report.shift}</div>
           </div>
-          <div className="col-span-3">
+          <div className="col-span-3 pt-1">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Responsable</div>
             <div className="text-sm font-medium text-slate-800">{report.responsable || '—'}</div>
           </div>
-          <div className="col-span-4">
-            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold flex items-center gap-1">
+          <div className="col-span-4 pt-1">
+            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold flex items-center gap-1 mb-1">
               <Users className="w-3 h-3" />Equipo ({report.team.length})
             </div>
-            <div className="text-xs text-slate-700 truncate" title={report.team.join(', ')}>
-              {report.team.length === 0 ? '—' : report.team.join(' · ')}
-            </div>
+            {/* V2.0: cambio de truncate a wrap con badges para que se vean TODOS los técnicos */}
+            {report.team.length === 0 ? (
+              <div className="text-xs text-slate-400 italic">—</div>
+            ) : (
+              <div className="flex flex-wrap gap-1">
+                {report.team.map(t => (
+                  <span key={t} className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded font-medium">
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </Card>
 
-      {/* 4-COLUMN BODY */}
-      <div className="grid grid-cols-12 gap-3" style={{ height: 'calc(100vh - 240px)', minHeight: '500px' }}>
+      {/* V2.1 LAYOUT OPCIÓN A:
+          - Correctivos a 50% izq (a 2 sub-columnas: Realizadas | Pendientes)
+          - Preventivos del Turno arriba derecha
+          - Servicios abajo derecha
+      */}
+      <div className="grid grid-cols-12 gap-3" style={{ minHeight: '500px' }}>
 
-        {/* COL 1: CORRECTIVOS */}
-        <Card className="col-span-4 p-3 flex flex-col overflow-hidden">
+        {/* COL IZQ: CORRECTIVOS (50% del ancho, sub-divididos en Realizadas | Pendientes) */}
+        <Card className="col-span-6 p-3 flex flex-col overflow-hidden">
           <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
             <Wrench className="w-4 h-4" />Correctivos ({report.corrective.length})
           </h3>
-          <div className="overflow-auto flex-1">
-            {report.corrective.length === 0
-              ? <EmptyHint>Sin correctivos</EmptyHint>
-              : (
-                <div className="divide-y-2 divide-slate-200">
-                  {report.corrective.map((c, i) => (
-                    <div key={i} className="py-2.5 first:pt-0 last:pb-0">
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
-                          {c.equipoCodigo && (
-                            <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
-                          )}
+          <div className="overflow-auto flex-1 grid grid-cols-2 gap-3" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+            {/* SUB-COL: REALIZADAS */}
+            <div className="border-r border-slate-200 pr-3">
+              <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
+                <CheckCircle2 className="w-3 h-3" />
+                Realizadas ({report.corrective.filter(c => c.state === 'Realizada').length})
+              </div>
+              {report.corrective.filter(c => c.state === 'Realizada').length === 0
+                ? <div className="text-[10px] text-slate-400 italic py-2">Sin realizadas</div>
+                : (
+                  <div className="divide-y-2 divide-slate-200">
+                    {report.corrective.filter(c => c.state === 'Realizada').map((c, i) => (
+                      <div key={i} className="py-2 first:pt-0 last:pb-0">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
+                            {c.equipoCodigo && (
+                              <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
+                            )}
+                          </div>
                         </div>
-                        <StatePill state={c.state} />
-                      </div>
-                      <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
-                      {(c.technicians || []).length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {c.technicians.map(t => (
-                            <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-          </div>
-        </Card>
-
-        {/* COL 2: PREVENTIVOS */}
-        <Card className="col-span-4 p-3 flex flex-col overflow-hidden">
-          <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <ListChecks className="w-4 h-4" />Preventivos ({report.preventive.length})
-          </h3>
-          <div className="overflow-auto flex-1">
-            {report.preventive.length === 0
-              ? <EmptyHint>Sin preventivos</EmptyHint>
-              : (
-                <div className="divide-y-2 divide-slate-200">
-                  {report.preventive.map((p, i) => (
-                    <div key={i} className="py-2.5 first:pt-0 last:pb-0">
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <div className="flex items-center gap-2 min-w-0">
-                          {p.codigoTarea && <span className="num text-[10px] font-semibold text-slate-700">{p.codigoTarea}</span>}
-                          <span className="font-semibold text-slate-800 text-[11px] truncate">{p.equipoCodigo || '—'}</span>
-                          {p.equipoDescripcion && <span className="text-[10px] text-slate-500 truncate">· {p.equipoDescripcion}</span>}
-                        </div>
-                        <span className="text-[9px] px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded font-medium whitespace-nowrap">{p.frequency}</span>
-                      </div>
-                      <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{p.task || '—'}</div>
-                      {p.comments && (
-                        <div className="text-[10px] text-slate-500 italic mt-0.5 leading-snug whitespace-pre-wrap break-words">{p.comments}</div>
-                      )}
-                      <div className="mt-1 flex flex-wrap items-center gap-1">
-                        {(p.technicians || []).map(t => (
-                          <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
-                        ))}
-                        {p.otCorrectivaAsociada && (
-                          <span className="text-[9px] px-1.5 py-0.5 bg-orange-50 text-orange-700 rounded font-medium num">↗ {p.otCorrectivaAsociada}</span>
+                        <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
+                        {(c.technicians || []).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {c.technicians.map(t => (
+                              <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
+                            ))}
+                          </div>
                         )}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
+            </div>
+
+            {/* SUB-COL: PENDIENTES (Sin Iniciar + En Curso) */}
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-amber-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
+                <AlertTriangle className="w-3 h-3" />
+                Pendientes ({report.corrective.filter(c => c.state !== 'Realizada').length})
+              </div>
+              {report.corrective.filter(c => c.state !== 'Realizada').length === 0
+                ? <div className="text-[10px] text-slate-400 italic py-2">Sin pendientes</div>
+                : (
+                  <div className="divide-y-2 divide-slate-200">
+                    {report.corrective.filter(c => c.state !== 'Realizada').map((c, i) => (
+                      <div key={i} className="py-2 first:pt-0 last:pb-0">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
+                            {c.equipoCodigo && (
+                              <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
+                            )}
+                          </div>
+                          <StatePill state={c.state} />
+                        </div>
+                        <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
+                        {(c.technicians || []).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {c.technicians.map(t => (
+                              <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+            </div>
           </div>
         </Card>
 
-        {/* COL 3: SERVICIOS */}
-        <Card className="col-span-4 p-3 flex flex-col overflow-hidden">
-          <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <Activity className="w-4 h-4" />Servicios
-          </h3>
-          <div className="overflow-auto flex-1 space-y-3">
-            {/* Planta de Efluentes y Caldera */}
-            <div className="pb-3 border-b border-slate-100">
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold inline-flex items-center gap-1">
-                  <Flame className="w-3 h-3 text-orange-500" />Planta de Efluentes y Caldera
+        {/* COL DER: STACK con PREVENTIVOS arriba y SERVICIOS abajo */}
+        <div className="col-span-6 flex flex-col gap-3" style={{ maxHeight: 'calc(100vh - 220px)' }}>
+          {/* PREVENTIVOS DEL TURNO */}
+          <Card className="p-3 flex flex-col overflow-hidden flex-shrink-0">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
+              <ListChecks className="w-4 h-4" />Preventivos del Turno
+            </h3>
+            <div className="overflow-auto" style={{ maxHeight: '250px' }}>
+              {/* Asignados / Realizados */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="bg-slate-50 rounded p-2 text-center">
+                  <div className="text-[10px] text-slate-500 uppercase tracking-wide">Asignados</div>
+                  <div className="text-2xl font-bold num text-slate-800">
+                    {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'}
+                  </div>
                 </div>
-                <StatePill state={p.estado} />
-              </div>
-              <div className="text-xs text-slate-700 mb-2">
-                {(p.tecnicos && p.tecnicos.length > 0) ? p.tecnicos.join(' · ') : '—'}
-              </div>
-              <div className="grid grid-cols-5 gap-1 text-[10px]">
-                {[['Caudal', p.caudal], ['pH', p.pH], ['Abl.', p.ablandador], ['ΔT', p.deltaT], ['Vacío', p.vacio]].map(([l, v]) => (
-                  <div key={l} className="bg-slate-50 rounded p-1 text-center">
-                    <div className="text-slate-500 uppercase">{l}</div>
-                    <div className="font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
+                <div className="bg-emerald-50 rounded p-2 text-center">
+                  <div className="text-[10px] text-emerald-600 uppercase tracking-wide">Realizados</div>
+                  <div className="text-2xl font-bold num text-emerald-700">
+                    {pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}
                   </div>
-                ))}
-                {[['TK1', p.tk1], ['TK2', p.tk2], ['TK Em.', p.tkEmergencia], ['TK4', p.tk4]].map(([l, v]) => (
-                  <div key={l} className="bg-slate-50 rounded p-1 text-center">
-                    <div className="text-slate-500 uppercase">{l}</div>
-                    <div className="font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
-                  </div>
-                ))}
+                </div>
               </div>
-            </div>
 
-            {/* Compresores y Grupos */}
-            <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Cog className="w-3 h-3" />Compresores
+              {/* Detalle por técnico */}
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                <Users className="w-3 h-3" />Por técnico
+              </div>
+              {(pr.porTecnico || []).filter(t => t.tecnico).length === 0
+                ? <div className="text-[10px] text-slate-400 italic py-1">Sin detalle por técnico</div>
+                : (
+                  <div className="space-y-1">
+                    {(pr.porTecnico || []).filter(t => t.tecnico).map((t, i) => (
+                      <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-2 py-1.5">
+                        <span className="text-xs text-slate-700">{t.tecnico}</span>
+                        <span className="num text-sm font-bold text-slate-800 bg-white px-2 py-0.5 rounded ring-1 ring-slate-200">
+                          {t.cantidad || 0}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+          </Card>
+
+          {/* SERVICIOS */}
+          <Card className="p-3 flex flex-col overflow-hidden flex-1 min-h-0">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
+              <Activity className="w-4 h-4" />Servicios
+            </h3>
+            <div className="overflow-auto flex-1 space-y-3">
+              {/* Planta de Efluentes y Caldera */}
+              <div className="pb-3 border-b border-slate-100">
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold inline-flex items-center gap-1">
+                    <Flame className="w-3 h-3 text-orange-500" />Planta de Efluentes y Caldera
+                  </div>
+                  <StatePill state={p.estado} />
                 </div>
-                <div className="space-y-0.5">
-                  {report.servicios.compresores.map(c => (
-                    <div key={c.code} className="flex justify-between items-center text-[10px]">
-                      <span className="num text-slate-700">{c.code}</span>
-                      <StatePill state={c.state} />
+                <div className="text-xs text-slate-700 mb-2">
+                  {(p.tecnicos && p.tecnicos.length > 0) ? p.tecnicos.join(' · ') : '—'}
+                </div>
+
+                {/* PTEL */}
+                <div className="text-[9px] font-bold text-orange-700 uppercase tracking-wider mb-1">PTEL</div>
+                <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
+                  {[
+                    ['Caudal m³/h', p.caudal],
+                    ['Vacío', p.vacio],
+                    ['ΔT °C', p.deltaT],
+                    ['% TK1', p.tk1],
+                    ['% TK2', p.tk2],
+                    ['% TK7', p.tk7]
+                  ].map(([l, v]) => (
+                    <div key={l} className="bg-orange-50/50 rounded p-1 text-center">
+                      <div className="text-slate-500 uppercase">{l}</div>
+                      <div className="font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
                     </div>
                   ))}
                 </div>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Zap className="w-3 h-3" />G. Electrógenos
-                </div>
-                <div className="space-y-0.5">
-                  {report.servicios.gruposElectrogenos.map(g => (
-                    <div key={g.code} className="flex justify-between items-center text-[10px]">
-                      <span className="num text-slate-700">{g.code}</span>
-                      <StatePill state={g.state} />
+
+                {/* CALDERA + ABLANDADORES */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-red-50/50 rounded p-1.5">
+                    <div className="text-[9px] font-bold text-red-700 uppercase tracking-wider mb-1">Caldera</div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">Cond. mS</div>
+                        <div className="font-bold num">{p.conductividadCaldera !== '' && p.conductividadCaldera != null ? p.conductividadCaldera : '—'}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">pH</div>
+                        <div className="font-bold num">{p.pHCaldera !== '' && p.pHCaldera != null ? p.pHCaldera : '—'}</div>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Cisternas */}
-            <div className="pb-3 border-b border-slate-100">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <Beaker className="w-3 h-3" />Cisternas
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500 text-[10px]">Nivel:</span>
-                  <span className="font-medium text-slate-800">{report.servicios.cisternas.nivel || '—'}</span>
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <StatePill state={report.servicios.cisternas.estado} />
-                </div>
-              </div>
-            </div>
-
-            {/* Agua de Pozo */}
-            <div className="pb-3 border-b border-slate-100">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <Beaker className="w-3 h-3 text-blue-500" />Agua de Pozo
-              </div>
-              <div className="grid grid-cols-2 gap-1 text-[10px]">
-                {[
-                  ['Cloro Pozo 3', report.servicios.aguaPozo?.cloroPozo3],
-                  ['Cloro Pozo 6', report.servicios.aguaPozo?.cloroPozo6]
-                ].map(([l, v]) => (
-                  <div key={l} className="bg-slate-50 rounded p-1.5 text-center">
-                    <div className="text-slate-500 uppercase">{l}</div>
-                    <div className="text-sm font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
                   </div>
-                ))}
+                  <div className="bg-blue-50/50 rounded p-1.5">
+                    <div className="text-[9px] font-bold text-blue-700 uppercase tracking-wider mb-1">Ablandadores</div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">Cond. mS</div>
+                        <div className="font-bold num">{p.conductividadAblandador !== '' && p.conductividadAblandador != null ? p.conductividadAblandador : '—'}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-slate-500 uppercase">pH</div>
+                        <div className="font-bold num">{p.pHAblandador !== '' && p.pHAblandador != null ? p.pHAblandador : '—'}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
 
-            {/* Proveedores */}
-            {report.servicios.proveedores.length > 0 && (
+              {/* Compresores y Grupos */}
+              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                    <Cog className="w-3 h-3" />Compresores
+                  </div>
+                  <div className="space-y-0.5">
+                    {report.servicios.compresores.map(c => (
+                      <div key={c.code} className="flex justify-between items-center text-[10px]">
+                        <span className="num text-slate-700">{c.code}</span>
+                        <StatePill state={c.state} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                    <Zap className="w-3 h-3" />G. Electrógenos
+                  </div>
+                  <div className="space-y-0.5">
+                    {report.servicios.gruposElectrogenos.map(g => (
+                      <div key={g.code} className="flex justify-between items-center text-[10px]">
+                        <span className="num text-slate-700">{g.code}</span>
+                        <StatePill state={g.state} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Cisternas */}
               <div className="pb-3 border-b border-slate-100">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Building2 className="w-3 h-3" />Proveedores
+                  <Beaker className="w-3 h-3" />Cisternas
                 </div>
-                <div className="space-y-0.5">
-                  {report.servicios.proveedores.map((pv, i) => (
-                    <div key={i} className="grid grid-cols-3 gap-1 text-[11px]">
-                      <div className="font-medium text-slate-700">{pv.provider}</div>
-                      <div className="col-span-2 text-slate-600">{pv.task}</div>
-                    </div>
-                  ))}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 text-[10px]">Nivel:</span>
+                    <span className="font-medium text-slate-800">{report.servicios.cisternas.nivel || '—'}</span>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <StatePill state={report.servicios.cisternas.estado} />
+                  </div>
                 </div>
               </div>
-            )}
 
-            {/* Comentarios */}
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <FileText className="w-3 h-3" />Comentarios
-              </div>
-              {report.comments.length === 0 ? <div className="text-[10px] text-slate-400 italic">Sin comentarios</div> :
-                <div className="space-y-1">
-                  {report.comments.map((c, i) => (
-                    <div key={i} className={`text-[11px] p-1.5 rounded ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : 'bg-slate-50'}`}>
-                      <span className="text-slate-700">{c.text}</span>
-                      {c.priority === 'Urgente' && <span className="ml-1.5 text-[9px] font-bold text-red-700 uppercase">Urgente</span>}
+              {/* Agua de Pozo */}
+              <div className="pb-3 border-b border-slate-100">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                  <Beaker className="w-3 h-3 text-blue-500" />Agua de Pozo
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-[10px]">
+                  {[
+                    ['Cloro Pozo 3', report.servicios.aguaPozo?.cloroPozo3],
+                    ['Cloro Pozo 6', report.servicios.aguaPozo?.cloroPozo6]
+                  ].map(([l, v]) => (
+                    <div key={l} className="bg-slate-50 rounded p-1.5 text-center">
+                      <div className="text-slate-500 uppercase">{l}</div>
+                      <div className="text-sm font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
                     </div>
                   ))}
-                </div>}
+                </div>
+              </div>
+
+              {/* Proveedores */}
+              {report.servicios.proveedores.length > 0 && (
+                <div className="pb-3 border-b border-slate-100">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                    <Building2 className="w-3 h-3" />Proveedores
+                  </div>
+                  <div className="space-y-0.5">
+                    {report.servicios.proveedores.map((pv, i) => (
+                      <div key={i} className="grid grid-cols-3 gap-1 text-[11px]">
+                        <div className="font-medium text-slate-700">{pv.provider}</div>
+                        <div className="col-span-2 text-slate-600">{pv.task}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Comentarios */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                  <FileText className="w-3 h-3" />Comentarios
+                </div>
+                {report.comments.length === 0 ? <div className="text-[10px] text-slate-400 italic">Sin comentarios</div> :
+                  <div className="space-y-1">
+                    {report.comments.map((c, i) => (
+                      <div key={i} className={`text-[11px] p-1.5 rounded ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : 'bg-slate-50'}`}>
+                        <span className="text-slate-700">{c.text}</span>
+                        {c.priority === 'Urgente' && <span className="ml-1.5 text-[9px] font-bold text-red-700 uppercase">Urgente</span>}
+                      </div>
+                    ))}
+                  </div>}
+              </div>
             </div>
-          </div>
-        </Card>
+          </Card>
+        </div>
       </div>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// STATS VIEW
+// STATS VIEW — V2.0
+//   - Apartado "Fin de Semana" cerrado (viernes Noche + sábado + domingo)
+//   - Apartado "Último Día" (últimos 3 turnos del día más reciente con datos)
 // ═══════════════════════════════════════════════════════════════════
 function StatsView({ history }) {
   const [range, setRange] = useState('week');
@@ -1341,6 +1844,8 @@ function StatsView({ history }) {
   const [customEnd, setCustomEnd] = useState('');
 
   const stats = useMemo(() => computeStats(history, range, customStart, customEnd), [history, range, customStart, customEnd]);
+  const finde = useMemo(() => computeWeekendStats(history), [history]);
+  const ultimoDia = useMemo(() => computeLastDayStats(history), [history]);
 
   if (history.length === 0) {
     return (
@@ -1362,6 +1867,67 @@ function StatsView({ history }) {
 
   return (
     <div className="space-y-4">
+      {/* APARTADOS RÁPIDOS — V2.0 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ÚLTIMO DÍA */}
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-slate-800 inline-flex items-center gap-2">
+              <Clock className="w-4 h-4 text-indigo-500" />Último Día
+            </h3>
+            <span className="text-[10px] text-slate-500">
+              {ultimoDia.turnos.length === 0 ? 'sin datos' :
+                `${ultimoDia.turnos.length} turno${ultimoDia.turnos.length === 1 ? '' : 's'} · ${formatDateShort(ultimoDia.fechaBase)}`}
+            </span>
+          </div>
+          {ultimoDia.turnos.length === 0 ? (
+            <EmptyHint>Sin reportes recientes</EmptyHint>
+          ) : (
+            <>
+              <div className="text-[11px] text-slate-500 mb-2">
+                {ultimoDia.turnos.length === 1
+                  ? `Turno del día: ${ultimoDia.turnos.map(t => t.shift).join(', ')}`
+                  : `Turnos del día (${ultimoDia.turnos.length}): ${ultimoDia.turnos.map(t => t.shift).join(', ')}`}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <MiniKPI label="Correctivos generados" value={ultimoDia.correctivosGenerados} color="orange" />
+                <MiniKPI label="Correctivos realizados" value={ultimoDia.correctivosRealizados} color="emerald" />
+                <MiniKPI label="Preventivos asignados" value={ultimoDia.preventivosAsignados} color="sky" />
+                <MiniKPI label="Preventivos realizados" value={ultimoDia.preventivosRealizados} color="emerald" />
+              </div>
+            </>
+          )}
+        </Card>
+
+        {/* FIN DE SEMANA */}
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-slate-800 inline-flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-violet-500" />Fin de Semana
+            </h3>
+            <span className="text-[10px] text-slate-500">
+              {finde.turnos.length === 0 ? 'sin datos' :
+                `${formatDateShort(finde.viernes)} (Noche) → ${formatDateShort(finde.domingo)}`}
+            </span>
+          </div>
+          {finde.turnos.length === 0 ? (
+            <EmptyHint>Sin reportes del último FDS cerrado</EmptyHint>
+          ) : (
+            <>
+              <div className="text-[11px] text-slate-500 mb-2">
+                Viernes Noche + Sábado completo + Domingo completo · {finde.turnos.length} turno{finde.turnos.length === 1 ? '' : 's'} cargado{finde.turnos.length === 1 ? '' : 's'}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <MiniKPI label="Correctivos generados" value={finde.correctivosGenerados} color="orange" />
+                <MiniKPI label="Correctivos realizados" value={finde.correctivosRealizados} color="emerald" />
+                <MiniKPI label="Preventivos asignados" value={finde.preventivosAsignados} color="sky" />
+                <MiniKPI label="Preventivos realizados" value={finde.preventivosRealizados} color="emerald" />
+              </div>
+            </>
+          )}
+        </Card>
+      </div>
+
       {/* RANGE SELECTOR */}
       <Card className="p-3">
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -1381,12 +1947,12 @@ function StatsView({ history }) {
             </div>
           )}
           <div className="text-xs text-slate-500">
-            Período: <span className="font-medium num">{stats.startStr}</span> → <span className="font-medium num">{stats.endStr}</span>
+            Período: <span className="font-medium num">{formatDateShort(stats.startStr)}</span> → <span className="font-medium num">{formatDateShort(stats.endStr)}</span>
           </div>
         </div>
       </Card>
 
-      {/* COMPACT KPI ROW */}
+      {/* KPI ROW */}
       <div className="grid grid-cols-3 md:grid-cols-7 gap-2">
         <KPI label="Reportes" value={stats.totalReports} icon={ClipboardList} color="sky" />
         <KPI label="Correctivos" value={stats.totalCorrectives} icon={Wrench} color="orange" />
@@ -1521,6 +2087,20 @@ function StatsView({ history }) {
   );
 }
 
+const MiniKPI = ({ label, value, color }) => {
+  const colors = {
+    orange: 'bg-orange-50 text-orange-700 border-orange-200',
+    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    sky: 'bg-sky-50 text-sky-700 border-sky-200'
+  };
+  return (
+    <div className={`rounded-lg p-3 border ${colors[color]}`}>
+      <div className="text-[10px] uppercase tracking-wide font-semibold opacity-80">{label}</div>
+      <div className="text-2xl font-bold num mt-0.5">{value}</div>
+    </div>
+  );
+};
+
 const KPI = ({ label, value, icon: Icon, color }) => {
   const colors = {
     sky: 'bg-sky-100 text-sky-600', orange: 'bg-orange-100 text-orange-600',
@@ -1541,6 +2121,110 @@ const KPI = ({ label, value, icon: Icon, color }) => {
   );
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// STATS COMPUTATION HELPERS
+// ═══════════════════════════════════════════════════════════════════
+
+// Calcula el último FDS cerrado: viernes Noche + sábado completo + domingo completo,
+// donde el domingo ya pasó en el día actual.
+function computeWeekendStats(history) {
+  if (history.length === 0) {
+    return { viernes: '', sabado: '', domingo: '', turnos: [], correctivosGenerados: 0, correctivosRealizados: 0, preventivosAsignados: 0, preventivosRealizados: 0 };
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dow = today.getDay(); // 0=Dom, 1=Lun, ..., 6=Sáb
+
+  // Encontrar el último domingo que ya pasó completo (ayer o antes)
+  // Si hoy es domingo, el FDS cerrado fue el domingo anterior (hace 7 días)
+  // Si hoy es lunes, el FDS cerrado fue ayer (domingo)
+  // Si hoy es martes, el FDS cerrado fue hace 2 días (domingo)
+  // ...
+  // Si hoy es sábado, el FDS cerrado fue hace 6 días (domingo)
+  let daysToLastSunday;
+  if (dow === 0) daysToLastSunday = 7;          // domingo: hace 7 días
+  else daysToLastSunday = dow;                   // L=1, Mar=2, ... S=6
+  const domingo = new Date(today);
+  domingo.setDate(today.getDate() - daysToLastSunday);
+  const sabado = new Date(domingo);
+  sabado.setDate(domingo.getDate() - 1);
+  const viernes = new Date(domingo);
+  viernes.setDate(domingo.getDate() - 2);
+
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const viernesStr = fmt(viernes), sabadoStr = fmt(sabado), domingoStr = fmt(domingo);
+
+  // Filtrar reportes que correspondan:
+  //  - viernes Noche
+  //  - sábado Mañana, Tarde, Noche
+  //  - domingo Mañana, Tarde, Noche
+  const turnos = history.filter(r => {
+    if (r.date === viernesStr && r.shift === 'Noche') return true;
+    if (r.date === sabadoStr) return true;
+    if (r.date === domingoStr) return true;
+    return false;
+  });
+
+  let correctivosGenerados = 0, correctivosRealizados = 0;
+  let preventivosAsignados = 0, preventivosRealizados = 0;
+
+  turnos.forEach(r => {
+    correctivosGenerados += (r.corrective || []).length;
+    correctivosRealizados += (r.corrective || []).filter(c => c.state === 'Realizada').length;
+    preventivosAsignados += Number(r.preventivosResumen?.asignados) || 0;
+    preventivosRealizados += Number(r.preventivosResumen?.realizados) || 0;
+  });
+
+  return {
+    viernes: viernesStr,
+    sabado: sabadoStr,
+    domingo: domingoStr,
+    turnos: turnos.sort((a, b) => reportSortKey(a).localeCompare(reportSortKey(b))),
+    correctivosGenerados, correctivosRealizados,
+    preventivosAsignados, preventivosRealizados
+  };
+}
+
+// Calcula los últimos 3 turnos del último día con datos (Mañana + Tarde + Noche del día previo).
+// Caso típico: el responsable carga el reporte por la mañana, y quiere ver los últimos 3 turnos:
+// Noche(día previo) + Tarde(día previo) + Mañana(día previo).
+function computeLastDayStats(history) {
+  if (history.length === 0) {
+    return { fechaBase: '', turnos: [], correctivosGenerados: 0, correctivosRealizados: 0, preventivosAsignados: 0, preventivosRealizados: 0 };
+  }
+
+  // Encontrar la fecha más reciente con al menos un reporte
+  const fechasOrdenadas = [...new Set(history.map(r => r.date))].sort((a, b) => b.localeCompare(a));
+  if (fechasOrdenadas.length === 0) {
+    return { fechaBase: '', turnos: [], correctivosGenerados: 0, correctivosRealizados: 0, preventivosAsignados: 0, preventivosRealizados: 0 };
+  }
+
+  // Tomar el último día con datos como "fecha base"
+  const fechaBase = fechasOrdenadas[0];
+
+  // Tomar todos los turnos de ese día (Mañana + Tarde + Noche)
+  const turnos = history
+    .filter(r => r.date === fechaBase)
+    .sort((a, b) => shiftOrder(a.shift).localeCompare(shiftOrder(b.shift)));
+
+  let correctivosGenerados = 0, correctivosRealizados = 0;
+  let preventivosAsignados = 0, preventivosRealizados = 0;
+
+  turnos.forEach(r => {
+    correctivosGenerados += (r.corrective || []).length;
+    correctivosRealizados += (r.corrective || []).filter(c => c.state === 'Realizada').length;
+    preventivosAsignados += Number(r.preventivosResumen?.asignados) || 0;
+    preventivosRealizados += Number(r.preventivosResumen?.realizados) || 0;
+  });
+
+  return {
+    fechaBase,
+    turnos,
+    correctivosGenerados, correctivosRealizados,
+    preventivosAsignados, preventivosRealizados
+  };
+}
+
 function computeStats(history, range, customStart, customEnd) {
   const now = new Date(); now.setHours(0, 0, 0, 0);
   let start, end = now;
@@ -1557,11 +2241,10 @@ function computeStats(history, range, customStart, customEnd) {
 
   const filtered = history.filter(r => r.date >= startStr && r.date <= endStr);
 
-  // bucketing by date
   const buckets = {};
   const dayMs = 86400000;
   const totalDays = Math.max(1, Math.round((end - start) / dayMs) + 1);
-  const bucketByMonth = totalDays > 90;  // group by month if >3 months
+  const bucketByMonth = totalDays > 90;
   const bucketByWeek = totalDays > 31 && !bucketByMonth;
 
   filtered.forEach(r => {
@@ -1643,9 +2326,11 @@ function computeStats(history, range, customStart, customEnd) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// HISTORY VIEW
+// HISTORY VIEW — V2.0
+//   - botones nuevos: Solo Comentarios, Solo Proveedores
+//   - fechas en formato dd/mmm/aa
 // ═══════════════════════════════════════════════════════════════════
-function HistoryView({ history, onExportCorrectives, onExportPreventives, onExportFull }) {
+function HistoryView({ history, onExportCorrectives, onExportPreventives, onExportComments, onExportProviders, onExportFull }) {
   const [filter, setFilter] = useState('');
   const filtered = history.filter(r =>
     !filter || r.date.includes(filter) || r.shift.toLowerCase().includes(filter.toLowerCase()) ||
@@ -1674,26 +2359,40 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
           Los archivos respetan la estructura del template original (mismas hojas y columnas).
           Los datos se acumulan automáticamente con cada turno cargado.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <button onClick={onExportCorrectives} className="bg-orange-600 text-white hover:bg-orange-700 rounded-lg p-4 transition flex items-start gap-3">
-            <Wrench className="w-6 h-6 flex-shrink-0 mt-0.5" />
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          <button onClick={onExportCorrectives} className="bg-orange-600 text-white hover:bg-orange-700 rounded-lg p-3 transition flex items-start gap-2">
+            <Wrench className="w-5 h-5 flex-shrink-0 mt-0.5" />
             <div className="text-left">
-              <div className="font-semibold">Solo Correctivos</div>
-              <div className="text-xs text-orange-100 mt-1">Hoja "Correctivos" con columnas del template</div>
+              <div className="font-semibold text-sm">Solo Correctivos</div>
+              <div className="text-[11px] text-orange-100 mt-0.5">Hoja del template</div>
             </div>
           </button>
-          <button onClick={onExportPreventives} className="bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg p-4 transition flex items-start gap-3">
-            <ListChecks className="w-6 h-6 flex-shrink-0 mt-0.5" />
+          <button onClick={onExportPreventives} className="bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg p-3 transition flex items-start gap-2">
+            <ListChecks className="w-5 h-5 flex-shrink-0 mt-0.5" />
             <div className="text-left">
-              <div className="font-semibold">Solo Preventivos</div>
-              <div className="text-xs text-emerald-100 mt-1">Hoja "Preventivos" con columnas del template</div>
+              <div className="font-semibold text-sm">Solo Preventivos</div>
+              <div className="text-[11px] text-emerald-100 mt-0.5">Hoja del template</div>
             </div>
           </button>
-          <button onClick={onExportFull} className="bg-slate-800 text-white hover:bg-slate-700 rounded-lg p-4 transition flex items-start gap-3">
-            <FileSpreadsheet className="w-6 h-6 flex-shrink-0 mt-0.5" />
+          <button onClick={onExportComments} className="bg-amber-600 text-white hover:bg-amber-700 rounded-lg p-3 transition flex items-start gap-2">
+            <MessageSquare className="w-5 h-5 flex-shrink-0 mt-0.5" />
             <div className="text-left">
-              <div className="font-semibold">Reporte completo</div>
-              <div className="text-xs text-slate-300 mt-1">11 hojas: Téc. presentes, Correctivos, Preventivos, Cisternas, Agua de Pozo, Compresores, Grupos Electrógenos, Planta de Efluentes, Servicios externos, Comentarios, Responsables</div>
+              <div className="font-semibold text-sm">Solo Comentarios</div>
+              <div className="text-[11px] text-amber-100 mt-0.5">Con fecha y turno</div>
+            </div>
+          </button>
+          <button onClick={onExportProviders} className="bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg p-3 transition flex items-start gap-2">
+            <Building2 className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <div className="text-left">
+              <div className="font-semibold text-sm">Solo Proveedores</div>
+              <div className="text-[11px] text-indigo-100 mt-0.5">Con fecha y turno</div>
+            </div>
+          </button>
+          <button onClick={onExportFull} className="bg-slate-800 text-white hover:bg-slate-700 rounded-lg p-3 transition flex items-start gap-2">
+            <FileSpreadsheet className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <div className="text-left">
+              <div className="font-semibold text-sm">Reporte completo</div>
+              <div className="text-[11px] text-slate-300 mt-0.5">Todas las hojas</div>
             </div>
           </button>
         </div>
@@ -1727,7 +2426,7 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
               <tbody>
                 {filtered.map((r, i) => (
                   <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="py-2 num font-medium">{r.date}</td>
+                    <td className="py-2 num font-medium">{formatDateShort(r.date)}</td>
                     <td className="py-2">{r.shift}</td>
                     <td className="py-2 text-slate-600">{r.responsable || '—'}</td>
                     <td className="py-2 text-right num">{r.team?.length || 0}</td>
