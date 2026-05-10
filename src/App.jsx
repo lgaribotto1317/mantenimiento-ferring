@@ -536,6 +536,18 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [connError, setConnError] = useState('');
 
+  // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
+  // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
+  // modifica el reporte activo (Pregunta 1 opción B).
+  const [dashboardOverride, setDashboardOverride] = useState(null);
+
+  // Wrapper de setReport que también resetea el override (porque el usuario
+  // está editando "Cargar Reporte" y queremos que vuelva al turno actual).
+  const setReportAndResetOverride = useCallback((nextReportOrFn) => {
+    setReport(nextReportOrFn);
+    setDashboardOverride(null);
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       setConnError('');
@@ -1052,8 +1064,14 @@ export default function App() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5">
         {loading && <div className="text-center text-slate-500 py-20">Cargando…</div>}
-        {!loading && tab === 'form' && <FormView report={report} setReport={setReport} onSave={saveReport} saveMsg={saveMsg} setSaveMsg={setSaveMsg} saving={saving} history={history} />}
-        {!loading && tab === 'dashboard' && <DashboardView report={report} />}
+        {!loading && tab === 'form' && <FormView report={report} setReport={setReportAndResetOverride} onSave={saveReport} saveMsg={saveMsg} setSaveMsg={setSaveMsg} saving={saving} history={history} />}
+        {!loading && tab === 'dashboard' && <DashboardView
+          report={dashboardOverride || report}
+          history={history}
+          activeReport={report}
+          dashboardOverride={dashboardOverride}
+          setDashboardOverride={setDashboardOverride}
+        />}
         {!loading && tab === 'stats' && <StatsView history={history} />}
         {!loading && tab === 'history' && <HistoryView history={history}
           onExportCorrectives={() => exportSingleSheet('correctivos')}
@@ -1849,29 +1867,83 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 //   - Las del carry-over que nadie tocó NO aparecen acá (sí en Cargar Reporte)
 //   - Detalle por técnico de preventivos en grid 2-col compacto
 // ═══════════════════════════════════════════════════════════════════
-function DashboardView({ report }) {
+function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride }) {
   const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
   const dateShort = useMemo(() => formatDateShort(report.date), [report.date]);
   const p = report.servicios.plantaCaldera;
   const pr = report.preventivosResumen || { asignados: '', realizados: '', porTecnico: [] };
 
-  // V2.3 — Filtro de OTs del turno actual:
-  //   - Las que se crearon en este turno (createdInShift coincide)
-  //   - O las que se modificaron en este turno (lastModifiedInShift coincide)
-  //   - Las del carry-over que nadie tocó este turno NO aparecen acá
-  // Para reportes viejos (V2.2 o antes) que no tienen estos flags, los mostramos
-  // todos como antes (compatibilidad hacia atrás).
+  // V2.4 — Listado de turnos guardados disponibles para el selector.
+  // Orden cronológico descendente (más nuevos primero).
+  const savedShifts = useMemo(() => {
+    return [...history]
+      .filter(r => r.date && r.shift)
+      .sort((a, b) => {
+        const ka = `${a.date}-${shiftOrder(a.shift)}`;
+        const kb = `${b.date}-${shiftOrder(b.shift)}`;
+        return kb.localeCompare(ka); // desc
+      })
+      .map(r => ({
+        key: `${r.date}|${r.shift}`,
+        date: r.date,
+        shift: r.shift,
+        report: r,
+        label: `${formatDateShort(r.date)} · ${r.shift}`,
+        responsable: r.responsable || ''
+      }));
+  }, [history]);
+
+  // V2.4 — Modo visor (cuando hay override). Sirve para no permitir edición y
+  // mostrar banner informativo.
+  const isViewerMode = !!dashboardOverride;
+  const currentKey = `${report.date}|${report.shift}`;
+  const currentIdx = savedShifts.findIndex(s => s.key === currentKey);
+
+  // V2.4 — Navegación con flechas (cronológica). savedShifts está orden desc,
+  // entonces "anterior" cronológico = índice +1, "siguiente" = índice -1.
+  const goToPrev = () => {
+    if (currentIdx < 0) return;
+    const next = savedShifts[currentIdx + 1];
+    if (next) setDashboardOverride(next.report);
+  };
+  const goToNext = () => {
+    if (currentIdx < 0) return;
+    const prev = savedShifts[currentIdx - 1];
+    if (prev) setDashboardOverride(prev.report);
+  };
+  const goToCurrent = () => setDashboardOverride(null);
+  const goToShift = (key) => {
+    if (!key) return;
+    const found = savedShifts.find(s => s.key === key);
+    if (found) setDashboardOverride(found.report);
+  };
+
+  // V2.4 — Filtro de OTs (opción B):
+  // - Si el reporte está GUARDADO (existe en history con misma fecha+turno),
+  //   mostramos TODAS las OTs (representan lo que pasó realmente ese turno).
+  // - Si el reporte es NUEVO (no guardado todavía), filtramos:
+  //     · OTs creadas en este turno (createdInShift coincide) → SÍ
+  //     · OTs modificadas en este turno (lastModifiedInShift coincide) → SÍ
+  //     · OTs heredadas del carry-over sin tocar → NO
+  // Esto evita que en un turno nuevo aparezcan en el Dashboard todas las
+  // OTs heredadas del carry-over sin que el responsable haya hecho nada.
   const currentShiftKey = `${report.date}-${report.shift}`;
+  const isExistingReport = useMemo(
+    () => history.some(r => r.date === report.date && r.shift === report.shift),
+    [history, report.date, report.shift]
+  );
   const correctiveActual = useMemo(() => {
+    if (isExistingReport) {
+      // Reporte guardado → mostrar todo
+      return report.corrective || [];
+    }
+    // Reporte nuevo → solo OTs del turno actual
     return (report.corrective || []).filter(c => {
-      // Si la OT no tiene ningún flag (reporte viejo), la incluimos
-      if (!c.createdInShift && !c.lastModifiedInShift) return true;
-      // Si fue creada en este turno o modificada en este turno, sí
       if (c.createdInShift === currentShiftKey) return true;
       if (c.lastModifiedInShift === currentShiftKey) return true;
       return false;
     });
-  }, [report.corrective, currentShiftKey]);
+  }, [report.corrective, currentShiftKey, isExistingReport]);
 
   // V2.2 — Export del Dashboard a PNG/PDF
   const dashboardRef = useRef(null);
@@ -2023,26 +2095,85 @@ function DashboardView({ report }) {
 
   return (
     <div className="space-y-3">
-      {/* V2.2: Botones de export arriba del Dashboard */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-xs text-slate-500">
-          {exportMsg && (
-            <span className={`font-medium ${exportMsg.startsWith('Error') ? 'text-red-600' : exportMsg.startsWith('✓') ? 'text-emerald-600' : 'text-slate-500'}`}>
-              {exportMsg}
+      {/* V2.4 — Selector de turno guardado (modo visor de turnos pasados).
+          Si hay override, mostramos banner indicador y permitimos volver al turno actual.
+          Si no hay override, mostramos selector con dropdown + flechas anterior/siguiente. */}
+      <div className={`rounded-xl border p-3 ${isViewerMode ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs uppercase tracking-wide text-slate-500 font-semibold inline-flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5" />
+              {isViewerMode ? 'Viendo turno guardado · solo lectura' : 'Turno actual'}
             </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={exportPNG} disabled={!!exporting}
-            className={`${buttonCls} bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
-            <ImageIcon className="w-4 h-4" />
-            {exporting === 'png' ? 'Generando…' : 'Exportar PNG'}
-          </button>
-          <button onClick={exportPDF} disabled={!!exporting}
-            className={`${buttonCls} bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
-            <FileDown className="w-4 h-4" />
-            {exporting === 'pdf' ? 'Generando…' : 'Exportar PDF'}
-          </button>
+
+            {/* Botones flechas — habilitados solo si hay turnos guardados */}
+            <button
+              onClick={goToPrev}
+              disabled={currentIdx < 0 || currentIdx >= savedShifts.length - 1}
+              className="px-2 py-1 text-xs bg-white border border-slate-300 rounded hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Turno anterior (cronológico)"
+            >
+              ◄
+            </button>
+
+            {/* Dropdown de turnos guardados */}
+            <select
+              value={isViewerMode ? currentKey : ''}
+              onChange={e => {
+                if (e.target.value === '') {
+                  goToCurrent();
+                } else {
+                  goToShift(e.target.value);
+                }
+              }}
+              className="px-2 py-1 text-xs bg-white border border-slate-300 rounded num"
+              style={{ minWidth: '180px' }}
+            >
+              <option value="">— Turno actual —</option>
+              {savedShifts.map(s => (
+                <option key={s.key} value={s.key}>
+                  {s.label}{s.responsable ? ` · ${s.responsable}` : ''}
+                </option>
+              ))}
+            </select>
+
+            <button
+              onClick={goToNext}
+              disabled={currentIdx <= 0}
+              className="px-2 py-1 text-xs bg-white border border-slate-300 rounded hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Turno siguiente (cronológico)"
+            >
+              ►
+            </button>
+
+            {isViewerMode && (
+              <button
+                onClick={goToCurrent}
+                className={`${buttonCls} bg-slate-700 text-white hover:bg-slate-800 text-xs px-2 py-1`}
+              >
+                Ver turno actual
+              </button>
+            )}
+          </div>
+
+          {/* Botones de export (V2.2) */}
+          <div className="flex items-center gap-2">
+            {exportMsg && (
+              <span className={`text-xs font-medium ${exportMsg.startsWith('Error') ? 'text-red-600' : exportMsg.startsWith('✓') ? 'text-emerald-600' : 'text-slate-500'}`}>
+                {exportMsg}
+              </span>
+            )}
+            <button onClick={exportPNG} disabled={!!exporting}
+              className={`${buttonCls} bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
+              <ImageIcon className="w-4 h-4" />
+              {exporting === 'png' ? 'Generando…' : 'Exportar PNG'}
+            </button>
+            <button onClick={exportPDF} disabled={!!exporting}
+              className={`${buttonCls} bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
+              <FileDown className="w-4 h-4" />
+              {exporting === 'pdf' ? 'Generando…' : 'Exportar PDF'}
+            </button>
+          </div>
         </div>
       </div>
 
