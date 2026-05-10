@@ -1,80 +1,79 @@
 Changelog — Reporte Diario de Mantenimiento Ferring
-v2.3 — 2026-05-08
-Mejoras de Dashboard
-Solo OTs del turno actual: el Dashboard ahora muestra únicamente las OTs correctivas que fueron creadas o modificadas en el turno actual. Las OTs heredadas del turno anterior (carry-over) que nadie tocó en este turno NO aparecen en el Dashboard, pero siguen visibles en "Cargar Reporte" para que el responsable pueda actualizarlas. Esto evita que el Dashboard quede saturado de OTs viejas y refleja realmente el trabajo del turno.
-Detalle por técnico más compacto: la sección "Por técnico" del card Preventivos del Turno ahora muestra los técnicos en grid de 2 columnas en vez de uno debajo del otro. Reduce ~60% el espacio vertical ocupado.
-Título del card Correctivos: cambia de "Correctivos (N)" a "Correctivos del turno (N)" para reflejar que es solo del turno actual.
-Cambios críticos en Estadísticas (BUG FIX)
-⚠️ Aviso de impacto: los números en la pestaña Estadísticas van a cambiar (algunos bajar) respecto a las versiones anteriores. Esto NO es una pérdida de datos: es la corrección de un bug que estaba inflando los conteos.
-El bug
-En V1.0 a V2.2, una OT correctiva pendiente se contaba una vez por cada turno que aparecía en el reporte. Si una OT estaba "En Curso" durante 5 turnos, se contaba 5 veces en las estadísticas. Lo mismo con "Equipos con más correctivos" (un equipo con 1 OT pendiente 5 días sumaba 5 puntos).
-El fix (V2.3)
-Cada OT correctiva (identificada por su número) ahora cuenta una sola vez en todas las estadísticas. Su estado es el del reporte más reciente del rango analizado.
-Lugares afectados:
-KPI "Correctivos" (total)
-KPI "Realizados"
-KPI "Pendientes"
-KPI "% Cumpl."
-Pie chart "Estado de Correctivos"
-Bar chart "Equipos con más correctivos"
-Bar chart "Carga por técnico" (parte de correctivos)
-Bar chart "Distribución por turno" (parte de correctivos)
-Bar chart "Trabajos en el período" (parte de correctivos)
-Cards "Último Día" y "Fin de Semana" (correctivos generados/realizados)
-Sin cambios en los números de:
-Preventivos (cada turno hace su propio trabajo preventivo, no se duplican)
-Comentarios urgentes
-Reportes guardados (sigue siendo el conteo de turnos)
-Casos borde
-Las OTs sin número de OT (`OT-XXXX` vacío) NO se pueden deduplicar; cada aparición sigue contándose. En operación normal todas las OTs deberían tener número.
-Para el bar chart "Trabajos en el período", cada OT se muestra en la fecha de su primera aparición (cuando se "abrió" la OT en el sistema), no en la fecha en que se cerró.
-Detalles técnicos
-Se agrega un campo `createdInShift` (formato `YYYY-MM-DD-Turno`) al objeto OT cuando se crea con el botón "Agregar OT". Reportes viejos sin este campo siguen funcionando (compatibilidad hacia atrás: se asume que pertenecen al turno actual).
-Se agrega `lastModifiedInShift` que se setea automáticamente cada vez que se edita un campo de la OT.
-El Dashboard filtra usando estos dos campos.
-El filtro de Cargar Reporte (carry-over de OTs pendientes) funciona igual que antes — las OTs heredadas siguen apareciendo ahí para que se las pueda actualizar.
+v2.4 — 2026-05-10
+Cambios principales
+1. N° OT con formato estandarizado XXX-YYYYY (según SOP 10.3.2)
+El campo "N° OT" ahora es un input compuesto: dropdown de sector + input numérico de 5 dígitos.
+Sectores disponibles (lista cerrada según SOP):
+`FOA1`, `FB2`, `RO`, `BIO`, `DEP`, `PP`, `PAD`, `LIM`, `EHS`, `MAN`, `FAC`
+El correlativo se completa automáticamente con ceros a la izquierda al perder foco (ej: escribís `1395` → guarda `01395`).
+Al guardar reporte, las OTs nuevas (creadas en el turno actual) deben tener formato válido. Si no, no se puede guardar.
+Las OTs heredadas del carry-over con formato legacy se muestran con un input plano y badge "L" (Legacy). NO se valida el formato de las legacy. Si el responsable las cambia al formato nuevo, dejan de ser legacy.
+2. Estado de avance (timeline acumulable)
+Para OTs en "En Curso" se agrega una sección "Estado de avance" con un timeline acumulable.
+Cada vez que un responsable carga texto y hace click en "Guardar avance", se agrega una entrada con: fecha, turno, autor (responsable del turno), y el texto.
+Las entradas anteriores no son editables ni borrables (auditoría GMP).
+Al guardar reporte, si una OT está en "En Curso", es obligatorio que tenga al menos una entrada del turno actual en el timeline. Si no, no se puede guardar.
+Si la OT pasa a "Realizada" o "Sin Iniciar", el timeline queda visible (read-only) pero no exige entradas nuevas.
+El timeline se exporta a Excel en una columna nueva `EstadoAvance` con todas las entradas concatenadas.
+3. Multi-select de técnicos en Resumen Preventivos (opción C)
+El "Detalle por técnico" del Resumen de Preventivos ahora permite cargar grupos de técnicos.
+Si Juan + Pedro hicieron 4 preventivos juntos, se carga UNA fila con ambos seleccionados y cantidad 4.
+La cantidad cuenta una sola vez para validación cruzada con "Preventivos realizados". Es decir, el grupo de arriba suma 4, no 8.
+En Estadísticas (gráfico "Carga por técnico"), tanto Juan como Pedro reciben +4 cada uno por ese grupo.
+En el Excel exportado, el grupo se desglosa en filas individuales (Juan con cantidad 4, Pedro con cantidad 4) más una columna nueva `EnGrupoCon` que indica con quién más estuvo en el grupo.
+4. Orden de OTs correctivas
+Las OTs nuevas (creadas en el turno actual) ahora se insertan arriba del listado al hacer click en "Agregar OT". Antes iban al final.
+En el carry-over, las OTs se ordenan por última aparición descendente: las más recientemente vistas arriba, las que llevan días sin movimiento abajo.
+5. "Carga por técnico" muestra los 21 técnicos del catálogo
+El gráfico de Estadísticas ahora muestra siempre los 21 técnicos del catálogo, aunque no tengan OTs en el período.
+Orden descendente por carga total (los más cargados arriba, los que están en cero al final).
+Útil para detectar técnicos sub-utilizados o no asignados.
+El alto del gráfico se ajusta automáticamente para que entren todas las barras.
+6. Bug fix: KPI "Pendientes" ahora cuenta Sin Iniciar + En Curso
+Antes, el KPI "Pendientes" en Estadísticas solo contaba OTs en estado "Sin Iniciar".
+Ahora cuenta correctamente: Sin Iniciar + En Curso.
+Compatibilidad hacia atrás
+Todos los cambios son retro-compatibles con reportes guardados en V1.0 a V2.3:
+Reportes viejos sin `timeline` → al cargarlos, se inicializa como array vacío.
+Resumen preventivos viejo con schema `{tecnico, cantidad}` → se migra automáticamente a `{tecnicos: [tecnico], cantidad}` al cargar (la migración es solo en memoria, no se reescribe la base).
+OTs con formato legacy (sin `XXX-YYYYY`) → se muestran tal cual con badge "L". No se exige migrar.
+OTs sin `createdInShift` (V2.2 o anteriores) → se asume formato legacy y se permite editarlas sin validar.
 Sin cambios en
-Esquema de Supabase (los nuevos campos van en el JSONB existente)
-Catálogos
-Lógica del formulario, validaciones, exports a Excel
-Dashboard layout (sigue con opción A: correctivos 50% izq con sub-columnas)
-Botones de export a PNG/PDF (V2.2 sigue funcionando igual)
+Esquema de Supabase (todos los nuevos campos van en el JSONB existente)
+Catálogos de técnicos, foguistas, responsables, compresores, grupos electrógenos
+Lógica de Servicios (Planta, Cisternas, Agua de Pozo, Proveedores)
+Comentarios del turno
+Botones de export PNG/PDF del Dashboard (V2.2)
+Filtro Dashboard solo turno actual (V2.3)
+Deduplicación de stats (V2.3)
+Bug conocido (pendiente)
+El input nativo `<input type="date">` muestra el formato según el idioma del SO/navegador. En sistemas en inglés muestra `mm/dd/aaaa`. Solución temporal: configurar idioma del navegador a "Español (Argentina)".
 ---
-v2.2 — 2026-05-08
-Nuevas funcionalidades
-Exportar Dashboard a PNG: nuevo botón en la pestaña Dashboard que descarga una imagen PNG con todo el contenido del Dashboard expandido.
-Exportar Dashboard a PDF: nuevo botón que genera un PDF A4 horizontal con el Dashboard completo.
-Las librerías `html2canvas` y `jspdf` se cargan lazy desde CDN solo cuando el usuario hace click.
-Antes de capturar, la app expande automáticamente todos los contenedores con scroll interno.
-Resolución de la imagen: 2x (alta calidad para impresión).
-Nombre de archivo: `Dashboard_YYYY-MM-DD_Turno.png` o `.pdf`.
----
-v2.1 — 2026-05-08 (fixes post-testing V2.0)
-Mejoras de UX
-Reordenado del formulario.
-Dashboard con nuevo layout (correctivos 50% izq con sub-columnas Realizadas | Pendientes).
-Texto del Último Día corregido a "Turnos del día (N): ...".
-Bug fixes
-Mensaje de error persistente al hacer Limpiar.
----
+v2.3 — 2026-05-10
+Dashboard solo OTs creadas o modificadas en el turno actual
+Detalle por técnico en preventivos: grid 2-col compacto
+BUG FIX en Estadísticas: cada OT correctiva cuenta una sola vez
+Datos limpios en Supabase (8 OTs sin número eliminadas + 5 con espacios normalizadas)
+v2.2 — 2026-05-10
+Botones de export Dashboard a PNG y PDF (Dashboard)
+Carga lazy de html2canvas y jspdf desde CDN
+v2.1 — 2026-05-08
+Reordenado del formulario
+Dashboard layout opción A (correctivos 50% izq con sub-columnas Realizadas | Pendientes)
+Texto Último Día corregido a "Turnos del día (N): ..."
+Bug fix mensaje de error persistente al hacer Limpiar
 v2.0 — 2026-05-08
-Nuevas funcionalidades
-Logo Biomas en el header.
-Estadísticas: apartados "Fin de Semana" y "Último Día".
-Resumen Preventivos del Turno con validación cruzada.
-Exportación a Excel: Solo Comentarios, Solo Proveedores.
-Versión visible en el header.
-Cambios de comportamiento
-Eliminar OT correctiva removido.
-Limpiar conserva pendientes y borra realizadas.
-Validación de técnicos obligatorios en correctivos "Realizada".
-Validación cruzada de preventivos.
-Fechas en formato `dd/mmm/aa`.
-Equipo en Dashboard con wrap multi-línea.
-Cambios de schema (Planta de Efluentes y Caldera)
-Nuevos campos: PTEL (Caudal m³/h, Vacío, ΔT, %TK1, %TK2, %TK7), Caldera (Conductividad mS, pH), Ablandadores (Conductividad mS, pH).
-Eliminados: Ablandador (campo único), TK Emergencia, TK4.
----
+Logo Biomas en header
+Estadísticas: apartados "Fin de Semana" y "Último Día"
+Resumen Preventivos del Turno con validación cruzada
+Exportación a Excel: Solo Comentarios, Solo Proveedores
+Versión visible en header
+Eliminar OT correctiva removido
+Limpiar conserva pendientes y borra realizadas
+Validación de técnicos obligatorios en correctivos "Realizada"
+Fechas en formato dd/mmm/aa
+Equipo en Dashboard con wrap multi-línea
+Schema Planta de Efluentes y Caldera nuevo (PTEL + Caldera + Ablandadores)
 v1.0 — 2026-05-04 (versión inicial en producción)
 Dashboard con tanques/cisternas y gauges semicirculares
 Estadísticas extendidas con filtro personalizado
