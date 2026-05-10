@@ -2703,43 +2703,6 @@ function StatsView({ history }) {
 
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
-            <Wrench className="w-4 h-4" />Equipos con más correctivos
-          </h3>
-          {stats.topEquipment.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={stats.topEquipment} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} />
-                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={110} />
-                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
-                <Bar dataKey="count" fill="#0ea5e9" radius={[0, 3, 3, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
-            <Users className="w-4 h-4" />Carga por técnico
-            <span className="text-[10px] text-slate-500 font-normal ml-2">(todos los técnicos del catálogo)</span>
-          </h3>
-          {stats.topTechs.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={Math.max(240, stats.topTechs.length * 22)}>
-              <BarChart data={stats.topTechs} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} />
-                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={120} />
-                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
-                <Legend wrapperStyle={{ fontSize: '11px' }} />
-                <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" stackId="a" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" stackId="a" radius={[0, 3, 3, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
             <Calendar className="w-4 h-4" />Distribución por turno
           </h3>
           {stats.shiftDist.every(s => s.value === 0) ? <EmptyHint>Sin datos</EmptyHint> :
@@ -2752,6 +2715,43 @@ function StatsView({ history }) {
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" />
                 <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" />
+              </BarChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
+            <Users className="w-4 h-4" />Carga por técnico
+            <span className="text-[10px] text-slate-500 font-normal ml-2">(todos los técnicos del catálogo)</span>
+          </h3>
+          {stats.topTechs.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={Math.max(240, stats.topTechs.length * 22)}>
+              <BarChart data={stats.topTechs} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} allowDecimals={false} />
+                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={120} interval={0} />
+                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" stackId="a" radius={[0, 0, 0, 0]} />
+                <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" stackId="a" radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
+            <Wrench className="w-4 h-4" />Equipos con más correctivos
+          </h3>
+          {stats.topEquipment.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={stats.topEquipment} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} />
+                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={110} />
+                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
+                <Bar dataKey="count" fill="#0ea5e9" radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>
           }
