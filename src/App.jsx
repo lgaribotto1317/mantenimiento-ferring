@@ -29,7 +29,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.3';
+const APP_VERSION = 'v2.4';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -68,6 +68,49 @@ const findTecnicoId = (name) => TECNICOS.find(t => t.name === name)?.id || '';
 
 // Subset who can act as Foguista (Planta de Efluentes y Caldera)
 const FOGUISTAS = ['FIGUEIRA, Gastón', 'MORENO, Jorge', 'MEDINA, Emanuel', 'YEGROS, Lucas'];
+
+// V2.4 — Sectores válidos para N° OT (según SOP 10.3.2)
+// Formato: XXX-YYYYY (sector-correlativo de 5 dígitos)
+const SECTORES_OT = [
+  { code: 'FOA1', label: 'Fracciones O, A y 1' },
+  { code: 'FB2',  label: 'Fracciones B y 2' },
+  { code: 'RO',   label: 'Recepción de Orina' },
+  { code: 'BIO',  label: 'Bioterio' },
+  { code: 'DEP',  label: 'Depósito' },
+  { code: 'PP',   label: 'Planta Piloto' },
+  { code: 'PAD',  label: 'Planta de Agua Deionizada' },
+  { code: 'LIM',  label: 'Sector Limpieza' },
+  { code: 'EHS',  label: 'Sector EHS' },
+  { code: 'MAN',  label: 'Mantenimiento' },
+  { code: 'FAC',  label: 'Facilities' }
+];
+const SECTORES_CODES = SECTORES_OT.map(s => s.code);
+
+// Valida formato XXX-YYYYY donde XXX es uno de los sectores y YYYYY exactamente 5 dígitos
+const isValidOT = (ot) => {
+  if (!ot || typeof ot !== 'string') return false;
+  const trimmed = ot.trim();
+  const match = trimmed.match(/^([A-Z0-9]+)-(\d{5})$/);
+  if (!match) return false;
+  return SECTORES_CODES.includes(match[1]);
+};
+
+// Parsea "FOA1-01395" → { sector: 'FOA1', numero: '01395' }
+const parseOT = (ot) => {
+  if (!ot) return { sector: '', numero: '' };
+  const match = ot.trim().match(/^([A-Z0-9]+)-(\d{1,5})$/);
+  if (match && SECTORES_CODES.includes(match[1])) {
+    return { sector: match[1], numero: match[2].padStart(5, '0') };
+  }
+  return { sector: '', numero: '' };
+};
+
+// Compone "FOA1" + "1395" → "FOA1-01395"
+const buildOT = (sector, numero) => {
+  if (!sector || !numero) return '';
+  const num = String(numero).replace(/\D/g, '').padStart(5, '0').slice(-5);
+  return `${sector}-${num}`;
+};
 
 const TURNOS = ['Mañana', 'Tarde', 'Noche'];
 const shiftOrder = (s) => ({ 'Mañana': '1', 'Tarde': '2', 'Noche': '3' }[s] || '9');
@@ -135,7 +178,7 @@ const emptyReport = () => ({
   shift: 'Mañana',
   responsable: '',
   team: [],                    // [string] tech names
-  corrective: [],              // [{ot, equipoCodigo, task, technicians:[], state}]
+  corrective: [],              // V2.4: [{ot, equipoCodigo, task, technicians:[], state, createdInShift, lastModifiedInShift, timeline:[]}]
   preventive: [],              // [{codigoTarea, equipoCodigo, equipoDescripcion, task, comments, otCorrectivaAsociada, technicians:[], frequency}]
   servicios: {
     plantaCaldera: {
@@ -165,18 +208,26 @@ const emptyReport = () => ({
   preventivosResumen: {        // NUEVO en V2.0
     asignados: '',
     realizados: '',
-    porTecnico: []             // [{tecnico, cantidad}]
+    porTecnico: []             // V2.4: [{tecnicos:[], cantidad}] — multi-select por grupo
   }
 });
 
-// Hidrata un reporte viejo o nuevo asegurando que tenga toda la estructura V2.0
-// (evita errores de undefined al leer reportes guardados con schema viejo).
+// V2.4 — Hidrata un reporte asegurando estructura completa.
+// Esto cubre reportes guardados con schemas anteriores (V1.0 a V2.3):
+//   - Correctivos sin `timeline` → se inicializa como []
+//   - Grupos del resumen con `tecnico` (singular) → se migran a `tecnicos: [...]`
+//   - Servicios y subobjetos faltantes se completan con defaults
 const hydrate = (raw) => {
   const base = emptyReport();
   if (!raw) return base;
   return {
     ...base,
     ...raw,
+    // V2.4 — asegurar timeline en cada OT correctiva
+    corrective: (raw.corrective || []).map(c => ({
+      ...c,
+      timeline: c.timeline || []
+    })),
     servicios: {
       ...base.servicios,
       ...(raw.servicios || {}),
@@ -198,7 +249,13 @@ const hydrate = (raw) => {
     },
     preventivosResumen: {
       ...base.preventivosResumen,
-      ...(raw.preventivosResumen || {})
+      ...(raw.preventivosResumen || {}),
+      // V2.4 — migrar grupos viejos {tecnico, cantidad} → {tecnicos:[tecnico], cantidad}
+      porTecnico: ((raw.preventivosResumen?.porTecnico) || []).map(t => {
+        if (t.tecnicos && Array.isArray(t.tecnicos)) return t;
+        if (t.tecnico) return { tecnicos: [t.tecnico], cantidad: t.cantidad };
+        return { tecnicos: [], cantidad: t.cantidad || '' };
+      })
     }
   };
 };
@@ -374,6 +431,95 @@ const StatePill = ({ state }) => (
 );
 
 // ═══════════════════════════════════════════════════════════════════
+// OT NUMBER INPUT — V2.4
+// Input compuesto: dropdown sector + input numérico de 5 dígitos.
+// Auto-completa con ceros a la izquierda al perder foco.
+// Si la OT viene en formato legacy (sin guión, espacios, etc), muestra
+// el valor raw en modo "legacy" con un indicador visual y un tooltip.
+// ═══════════════════════════════════════════════════════════════════
+function OTNumberInput({ value, onChange, isLegacy, hasError, disabled }) {
+  const parsed = parseOT(value);
+  const [sector, setSector] = useState(parsed.sector);
+  const [numero, setNumero] = useState(parsed.numero);
+
+  // Re-parsear si cambia value desde afuera
+  useEffect(() => {
+    const p = parseOT(value);
+    setSector(p.sector);
+    setNumero(p.numero);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  // Si es legacy (formato viejo) mostramos input plano con badge "legacy"
+  if (isLegacy) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          className={`${inputCls} num flex-1 ${hasError ? 'border-red-400' : 'border-amber-300 bg-amber-50/30'}`}
+          value={value || ''}
+          onChange={e => onChange(e.target.value)}
+          placeholder="OT legacy"
+          disabled={disabled}
+          title="OT en formato legacy (anterior a V2.4). Para validar al guardar usá el formato XXX-YYYYY"
+        />
+        <span className="text-[9px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-bold" title="Formato legacy">L</span>
+      </div>
+    );
+  }
+
+  const handleSectorChange = (e) => {
+    const newSector = e.target.value;
+    setSector(newSector);
+    onChange(buildOT(newSector, numero));
+  };
+
+  const handleNumeroChange = (e) => {
+    // Solo dígitos, máx 5
+    const cleaned = e.target.value.replace(/\D/g, '').slice(0, 5);
+    setNumero(cleaned);
+    onChange(buildOT(sector, cleaned));
+  };
+
+  const handleNumeroBlur = () => {
+    if (numero && numero.length > 0 && numero.length < 5) {
+      const padded = numero.padStart(5, '0');
+      setNumero(padded);
+      onChange(buildOT(sector, padded));
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1">
+      <select
+        className={`px-1.5 py-2 text-xs bg-white border rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/40 transition num font-semibold ${hasError && !sector ? 'border-red-400' : 'border-slate-300'}`}
+        value={sector}
+        onChange={handleSectorChange}
+        disabled={disabled}
+        style={{ width: '70px' }}
+      >
+        <option value="">—</option>
+        {SECTORES_OT.map(s => (
+          <option key={s.code} value={s.code} title={s.label}>{s.code}</option>
+        ))}
+      </select>
+      <span className="text-slate-400 text-sm font-bold">-</span>
+      <input
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        maxLength={5}
+        className={`${inputCls} num flex-1 ${hasError && (numero.length < 5) ? 'border-red-400' : ''}`}
+        value={numero}
+        onChange={handleNumeroChange}
+        onBlur={handleNumeroBlur}
+        placeholder="00000"
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════
 export default function App() {
@@ -402,7 +548,28 @@ export default function App() {
   // Validaciones antes de guardar (V2.0)
   // Devuelve string con error o '' si todo OK
   const validateReport = (r) => {
-    // 1. OTs correctivas en "Realizada" deben tener al menos un técnico
+    const currentShiftKey = `${r.date}-${r.shift}`;
+
+    // V2.4 — 1. OTs nuevas (creadas en este turno) deben tener formato XXX-YYYYY válido
+    const otsNuevasInvalidas = (r.corrective || []).filter(
+      c => c.createdInShift === currentShiftKey && !isValidOT(c.ot)
+    );
+    if (otsNuevasInvalidas.length > 0) {
+      return `${otsNuevasInvalidas.length} OT nueva con formato inválido. Formato requerido: XXX-YYYYY (sector + 5 dígitos). Ej: FOA1-01395`;
+    }
+
+    // V2.4 — 2. OTs en "En Curso" deben tener entrada de timeline del turno actual
+    const enCursoSinAvance = (r.corrective || []).filter(c => {
+      if (c.state !== 'En Curso') return false;
+      const tl = c.timeline || [];
+      const hasFromCurrent = tl.some(e => e.shiftKey === currentShiftKey);
+      return !hasFromCurrent;
+    });
+    if (enCursoSinAvance.length > 0) {
+      return `${enCursoSinAvance.length} OT en "En Curso" sin entrada de Estado de avance del turno actual. Cargá el avance antes de guardar.`;
+    }
+
+    // 3. OTs correctivas en "Realizada" deben tener al menos un técnico (de V2.0)
     const correctivasMalas = (r.corrective || []).filter(
       c => c.state === 'Realizada' && (!c.technicians || c.technicians.length === 0)
     );
@@ -410,20 +577,23 @@ export default function App() {
       return `${correctivasMalas.length} OT correctiva en estado "Realizada" sin técnico asignado. Asigná técnicos antes de guardar.`;
     }
 
-    // 2. Resumen de preventivos: si hay realizados > 0, la suma del detalle por técnico debe coincidir
+    // 4. Resumen de preventivos: si hay realizados > 0, la suma del detalle por técnico debe coincidir
     const realizados = Number(r.preventivosResumen?.realizados);
     if (realizados > 0) {
-      const sumaPorTecnico = (r.preventivosResumen?.porTecnico || [])
+      // V2.4 — opción C: cada fila puede tener N técnicos en grupo. La cantidad cuenta UNA VEZ
+      // (no se multiplica por la cantidad de técnicos del grupo).
+      const sumaPorGrupo = (r.preventivosResumen?.porTecnico || [])
         .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
-      if (sumaPorTecnico !== realizados) {
-        return `Resumen de preventivos: la suma del detalle por técnico (${sumaPorTecnico}) no coincide con "Preventivos realizados" (${realizados}).`;
+      if (sumaPorGrupo !== realizados) {
+        return `Resumen de preventivos: la suma del detalle (${sumaPorGrupo}) no coincide con "Preventivos realizados" (${realizados}).`;
       }
-      // Validar que no haya filas con técnico vacío o cantidad <= 0
-      const filasMalas = (r.preventivosResumen?.porTecnico || []).filter(
-        t => !t.tecnico || !t.cantidad || Number(t.cantidad) <= 0
-      );
+      // Validar que no haya filas sin técnicos o con cantidad <= 0
+      const filasMalas = (r.preventivosResumen?.porTecnico || []).filter(t => {
+        const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);  // compat hacia atrás
+        return tecnicos.length === 0 || !t.cantidad || Number(t.cantidad) <= 0;
+      });
       if (filasMalas.length > 0) {
-        return `Resumen de preventivos: hay filas sin técnico o con cantidad inválida.`;
+        return `Resumen de preventivos: hay filas sin técnicos o con cantidad inválida.`;
       }
     }
 
@@ -471,6 +641,10 @@ export default function App() {
     const corr = [];
     let cId = 1;
     history.forEach(r => (r.corrective || []).forEach(c => {
+      // V2.4 — Serializar timeline en una columna (formato legible para auditoría)
+      const timelineStr = (c.timeline || [])
+        .map(e => `[${e.date} ${e.shift}${e.author ? ' / ' + e.author : ''}] ${e.text}`)
+        .join('\n');
       corr.push({
         OrdenID: cId++,
         OrdenNumero: c.ot || '',
@@ -481,10 +655,11 @@ export default function App() {
         Turno: r.shift,
         FechaRealizacion: r.date,
         Descripcion: c.task || '',
-        Estado: c.state || ''
+        Estado: c.state || '',
+        EstadoAvance: timelineStr
       });
     }));
-    addSheet(wb, corr.length ? corr : [{ OrdenID: '', OrdenNumero: '', SectorID: '', EquipoID: '', EquipoCodigo: '', OrdenTecnicoAsignado: '', Turno: '', FechaRealizacion: '', Descripcion: '', Estado: '' }], 'Correctivos');
+    addSheet(wb, corr.length ? corr : [{ OrdenID: '', OrdenNumero: '', SectorID: '', EquipoID: '', EquipoCodigo: '', OrdenTecnicoAsignado: '', Turno: '', FechaRealizacion: '', Descripcion: '', Estado: '', EstadoAvance: '' }], 'Correctivos');
 
     // 3. Preventivos (detalle individual — formato original mantenido)
     const prev = [];
@@ -529,18 +704,28 @@ export default function App() {
     let ptId = 1;
     history.forEach(r => {
       (r.preventivosResumen?.porTecnico || []).forEach(t => {
-        if (!t.tecnico || !t.cantidad) return;
-        porTec.push({
-          RegistroID: ptId++,
-          Fecha: r.date,
-          Turno: r.shift,
-          Tecnico: t.tecnico,
-          TecnicoID: findTecnicoId(t.tecnico),
-          Cantidad: Number(t.cantidad) || 0
+        // V2.4 — Schema multi-técnico: cada grupo tiene `tecnicos: []` y cantidad.
+        // Para el Excel, generamos UNA FILA POR TÉCNICO del grupo, con la cantidad
+        // del grupo. Así "Juan + Pedro hicieron 4" → 2 filas (una para Juan con 4,
+        // otra para Pedro con 4). Esto coincide con cómo se acreditan las stats
+        // individuales.
+        const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+        const cantidad = Number(t.cantidad) || 0;
+        if (tecnicos.length === 0 || cantidad === 0) return;
+        tecnicos.forEach(name => {
+          porTec.push({
+            RegistroID: ptId++,
+            Fecha: r.date,
+            Turno: r.shift,
+            Tecnico: name,
+            TecnicoID: findTecnicoId(name),
+            Cantidad: cantidad,
+            EnGrupoCon: tecnicos.filter(n => n !== name).join(', ') || '—'
+          });
         });
       });
     });
-    addSheet(wb, porTec.length ? porTec : [{ RegistroID: '', Fecha: '', Turno: '', Tecnico: '', TecnicoID: '', Cantidad: '' }], 'Preventivos por Tecnico');
+    addSheet(wb, porTec.length ? porTec : [{ RegistroID: '', Fecha: '', Turno: '', Tecnico: '', TecnicoID: '', Cantidad: '', EnGrupoCon: '' }], 'Preventivos por Tecnico');
 
     // 4. Estado de cisternas
     const cist = [];
@@ -698,18 +883,24 @@ export default function App() {
     if (kind === 'correctivos') {
       const rows = [];
       let i = 1;
-      history.forEach(r => (r.corrective || []).forEach(c => rows.push({
-        OrdenID: i++,
-        OrdenNumero: c.ot || '',
-        SectorID: '',
-        EquipoID: '',
-        EquipoCodigo: c.equipoCodigo || '',
-        OrdenTecnicoAsignado: (c.technicians || []).join(', '),
-        Turno: r.shift,
-        FechaRealizacion: r.date,
-        Descripcion: c.task || '',
-        Estado: c.state || ''
-      })));
+      history.forEach(r => (r.corrective || []).forEach(c => {
+        const timelineStr = (c.timeline || [])
+          .map(e => `[${e.date} ${e.shift}${e.author ? ' / ' + e.author : ''}] ${e.text}`)
+          .join('\n');
+        rows.push({
+          OrdenID: i++,
+          OrdenNumero: c.ot || '',
+          SectorID: '',
+          EquipoID: '',
+          EquipoCodigo: c.equipoCodigo || '',
+          OrdenTecnicoAsignado: (c.technicians || []).join(', '),
+          Turno: r.shift,
+          FechaRealizacion: r.date,
+          Descripcion: c.task || '',
+          Estado: c.state || '',
+          EstadoAvance: timelineStr
+        });
+      }));
       if (!rows.length) { alert('Sin correctivos.'); return; }
       downloadSingle(rows, 'Correctivos', `Correctivos_${new Date().toISOString().slice(0, 10)}.xlsx`);
     } else if (kind === 'preventivos') {
@@ -898,24 +1089,69 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     })
   }));
 
+  // V2.4 — Timeline de Estado de Avance
+  // Cada OT correctiva tiene un array timeline:
+  //   [{ shiftKey, date, shift, author, text, timestamp }]
+  // - Cargado solo cuando el estado es "En Curso" (y al guardar la app valida
+  //   que haya entrada del turno actual)
+  // - Las entradas anteriores son read-only (no se pueden editar ni borrar)
+  // - timelineDraft mantiene el texto en redacción por índice de OT
+  const [timelineDraft, setTimelineDraft] = useState({});
+
+  const addTimelineEntry = (i) => {
+    const text = (timelineDraft[i] || '').trim();
+    if (!text) return;
+    setReport(r => ({
+      ...r,
+      corrective: r.corrective.map((x, j) => {
+        if (j !== i) return x;
+        const newEntry = {
+          shiftKey: `${r.date}-${r.shift}`,
+          date: r.date,
+          shift: r.shift,
+          author: r.responsable || '',
+          text,
+          timestamp: new Date().toISOString()
+        };
+        return {
+          ...x,
+          timeline: [...(x.timeline || []), newEntry],
+          lastModifiedInShift: `${r.date}-${r.shift}`
+        };
+      })
+    }));
+    setTimelineDraft(d => { const nd = { ...d }; delete nd[i]; return nd; });
+  };
+
   const [loadInfo, setLoadInfo] = useState('');
   const initialPendingApplied = useRef(false);
 
-  // Compute correctivos still pending: walk all reports saved up to and including
-  // (date, shift), keep the latest version of each OT by number, and return only
-  // those whose latest state is "Sin Iniciar" or "En Curso". This is what should
-  // carry over to a clean / new turn — pending OTs persist until "Realizada".
+  // V2.4 — Compute correctivos pendientes:
+  //   - Recorre todos los reportes hasta (date, shift)
+  //   - Mantiene la versión MÁS RECIENTE de cada OT (por número)
+  //   - Filtra solo las que quedan en "Sin Iniciar" o "En Curso"
+  //   - ORDEN: más recientemente vistas primero (la última que apareció arriba).
+  //     Esto deja arriba lo "fresco" del turno anterior y abajo OTs que llevan
+  //     varios días sin movimiento.
+  //   - Las del carry-over NO tienen createdInShift = turno actual (se preservan
+  //     sus flags originales para que el Dashboard las distinga).
   const computePending = (date, shift) => {
     const upTo = history
       .filter(r => (r.date < date) || (r.date === date && shiftOrder(r.shift) <= shiftOrder(shift)))
       .sort((a, b) => (a.date + shiftOrder(a.shift)).localeCompare(b.date + shiftOrder(b.shift)));
-    const latestByOT = new Map();
+    const latestByOT = new Map();   // ot# -> { ot, lastSeenSortKey }
     upTo.forEach(r => (r.corrective || []).forEach(c => {
-      if (c.ot) latestByOT.set(c.ot, c);
+      if (c.ot) {
+        latestByOT.set(c.ot, {
+          ot: c,
+          lastSeenSortKey: r.date + shiftOrder(r.shift)
+        });
+      }
     }));
     return [...latestByOT.values()]
-      .filter(c => c.state === 'Sin Iniciar' || c.state === 'En Curso')
-      .map(c => ({ ...c }));
+      .filter(({ ot }) => ot.state === 'Sin Iniciar' || ot.state === 'En Curso')
+      .sort((a, b) => b.lastSeenSortKey.localeCompare(a.lastSeenSortKey))   // descendente
+      .map(({ ot }) => ({ ...ot, timeline: ot.timeline || [] }));
   };
 
   // When date or shift changes, look up history:
@@ -991,20 +1227,31 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // Solo técnicos del turno para asignar a OTs y al detalle de preventivos
   const teamOptions = report.team.length > 0 ? report.team : TECNICO_NAMES;
 
-  // Cuando el equipo cambia, depurar técnicos del resumen que ya no están en el turno
-  // (UX: si un responsable saca a un técnico del equipo, se va su fila del detalle)
+  // V2.4 — Cuando el equipo cambia, depurar técnicos del resumen que ya no están en el turno.
+  // Schema multi-técnico: filtrar dentro de cada grupo los técnicos que ya no están.
+  // No borra grupos recién agregados (sin cantidad). Solo limpia técnicos inválidos.
   useEffect(() => {
     const validTecs = new Set(report.team);
-    const cleaned = (report.preventivosResumen?.porTecnico || []).filter(
-      t => !t.tecnico || validTecs.has(t.tecnico)
-    );
-    if (cleaned.length !== (report.preventivosResumen?.porTecnico || []).length) {
+    const original = report.preventivosResumen?.porTecnico || [];
+    const cleaned = original.map(t => {
+      const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+      const filteredTecs = tecnicos.filter(name => validTecs.has(name));
+      return { tecnicos: filteredTecs, cantidad: t.cantidad };
+    });
+    // detectar si hubo cambios reales en los técnicos
+    const changed = cleaned.some((t, i) => {
+      const o = original[i];
+      const ot = o?.tecnicos || (o?.tecnico ? [o.tecnico] : []);
+      return JSON.stringify(t.tecnicos) !== JSON.stringify(ot);
+    });
+    if (changed) {
       updateResumen({ porTecnico: cleaned });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report.team]);
 
-  // Suma del detalle por técnico — para mostrar feedback visual de validación cruzada
+  // V2.4 — Suma del detalle (cada grupo cuenta su cantidad UNA SOLA VEZ, no se multiplica
+  // por la cantidad de técnicos del grupo). Es lo que se compara con "Preventivos realizados".
   const sumaPorTecnico = (report.preventivosResumen?.porTecnico || [])
     .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
   const realizadosNum = Number(report.preventivosResumen?.realizados) || 0;
@@ -1067,7 +1314,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <SectionTitle icon={Wrench} accent="orange">Mantenimiento Correctivo</SectionTitle>
-          <button onClick={() => updateList('corrective', l => [...l, { ot: '', equipoCodigo: '', task: '', technicians: [], state: 'Sin Iniciar', createdInShift: `${report.date}-${report.shift}` }])}
+          <button onClick={() => updateList('corrective', l => [{ ot: '', equipoCodigo: '', task: '', technicians: [], state: 'Sin Iniciar', createdInShift: `${report.date}-${report.shift}`, timeline: [] }, ...l])}
             className={`${buttonCls} bg-orange-50 text-orange-700 hover:bg-orange-100`}>
             <Plus className="w-4 h-4" />Agregar OT
           </button>
@@ -1078,12 +1325,22 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             // V2.0: marcar visualmente las OTs realizadas sin técnico (para guiar al usuario)
             const requiresTech = c.state === 'Realizada';
             const missingTech = requiresTech && (!c.technicians || c.technicians.length === 0);
+            // V2.4 — Determinar si la OT es nueva (creada en este turno) o legacy
+            // Las nuevas se editan con OTNumberInput estructurado, las legacy con input plano
+            const currentShiftKey = `${report.date}-${report.shift}`;
+            const isNewOT = c.createdInShift === currentShiftKey;
+            const isLegacyFormat = !isValidOT(c.ot) && !isNewOT;
+            const otHasError = isNewOT && !isValidOT(c.ot);
             return (
-              <div key={i} className={`border rounded-lg p-3 ${missingTech ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+              <div key={i} className={`border rounded-lg p-3 ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
                 <div className="grid grid-cols-12 gap-2 mb-2">
-                  <Field label="N° OT" className="col-span-2">
-                    <input className={`${inputCls} num`} placeholder="OT-XXXX" value={c.ot}
-                      onChange={e => updateCorrectiveItem(i, { ot: e.target.value })} />
+                  <Field label="N° OT *" className="col-span-3">
+                    <OTNumberInput
+                      value={c.ot}
+                      onChange={(newOt) => updateCorrectiveItem(i, { ot: newOt })}
+                      isLegacy={isLegacyFormat}
+                      hasError={otHasError}
+                    />
                   </Field>
                   <Field label="Equipo / Sector" className="col-span-3">
                     <input className={inputCls} value={c.equipoCodigo}
@@ -1096,7 +1353,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                       {ESTADOS_OT.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </Field>
-                  <Field label={`Técnico/s asignado/s${requiresTech ? ' *' : ''}`} className="col-span-5">
+                  <Field label={`Técnico/s asignado/s${requiresTech ? ' *' : ''}`} className="col-span-4">
                     <MultiSelect options={teamOptions} value={c.technicians}
                       onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
                       placeholder={report.team.length === 0 ? 'Cargá primero el equipo del turno' : 'Seleccionar…'} />
@@ -1109,10 +1366,85 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                     Las OTs en estado "Realizada" deben tener al menos un técnico asignado
                   </div>
                 )}
+                {otHasError && (
+                  <div className="text-[11px] text-red-700 mb-1 inline-flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    El N° OT debe tener formato XXX-YYYYY (sector + 5 dígitos). Ej: FOA1-01395
+                  </div>
+                )}
                 <Field label="Tarea / descripción">
                   <textarea rows={2} className={inputCls} value={c.task}
                     onChange={e => updateCorrectiveItem(i, { task: e.target.value })} />
                 </Field>
+                {/* V2.4 — Timeline de Estado de Avance.
+                    - Aparece SIEMPRE si la OT tiene entradas previas (las muestra read-only)
+                    - Aparece con campo de carga SI el estado actual es "En Curso"
+                    - Es OBLIGATORIO agregar entrada al guardar si está "En Curso" y la última
+                      entrada NO es del turno actual */}
+                {(c.state === 'En Curso' || (c.timeline && c.timeline.length > 0)) && (() => {
+                  const timeline = c.timeline || [];
+                  const currentShiftKey = `${report.date}-${report.shift}`;
+                  // Buscar si HAY alguna entrada del turno actual (no solo la última)
+                  const hasEntryFromCurrentShift = timeline.some(e => e.shiftKey === currentShiftKey);
+                  const requiresEntry = c.state === 'En Curso' && !hasEntryFromCurrentShift;
+                  return (
+                    <div className={`mt-2 border rounded-lg p-3 ${requiresEntry && timelineDraft[i] === undefined ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-slate-50/30'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-[11px] font-semibold text-slate-700 uppercase tracking-wide inline-flex items-center gap-1.5">
+                          <Activity className="w-3.5 h-3.5 text-amber-500" />
+                          Estado de avance {requiresEntry && <span className="text-red-600">*</span>}
+                        </div>
+                        {requiresEntry && (
+                          <span className="text-[10px] text-amber-700 font-medium inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" />
+                            Requiere entrada del turno actual
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Entradas previas (read-only) */}
+                      {timeline.length > 0 && (
+                        <div className="space-y-1.5 mb-2">
+                          {timeline.map((entry, ei) => (
+                            <div key={ei} className="flex items-start gap-2 text-[12px] bg-white border border-slate-200 rounded px-2 py-1.5">
+                              <div className="flex-shrink-0 w-32">
+                                <div className="text-[10px] text-slate-500 num font-medium">
+                                  {entry.date} · {entry.shift}
+                                </div>
+                                <div className="text-[9px] text-slate-400 truncate" title={entry.author}>
+                                  {entry.author || '—'}
+                                </div>
+                              </div>
+                              <div className="flex-1 text-slate-700 whitespace-pre-wrap break-words">
+                                {entry.text}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Campo de carga nueva entrada (solo si está En Curso) */}
+                      {c.state === 'En Curso' && (
+                        <div className="flex items-start gap-2">
+                          <textarea
+                            rows={2}
+                            className={`${inputCls} flex-1 text-[12px] ${requiresEntry && timelineDraft[i] === undefined ? 'border-amber-400' : ''}`}
+                            placeholder={hasEntryFromCurrentShift ? "Ya cargaste una entrada este turno. Podés agregar otra opcionalmente…" : "Describí el avance realizado este turno…"}
+                            value={timelineDraft[i] || ''}
+                            onChange={e => setTimelineDraft(d => ({ ...d, [i]: e.target.value }))}
+                          />
+                          <button
+                            onClick={() => addTimelineEntry(i)}
+                            disabled={!timelineDraft[i] || timelineDraft[i].trim().length === 0}
+                            className={`${buttonCls} bg-amber-100 text-amber-700 hover:bg-amber-200 disabled:opacity-40 disabled:cursor-not-allowed self-start`}
+                          >
+                            <Plus className="w-4 h-4" />Guardar avance
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
@@ -1146,47 +1478,61 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             <Users className="w-4 h-4 text-emerald-500" />Detalle por técnico
           </h3>
           <button
-            onClick={() => updateResumen({ porTecnico: [...(report.preventivosResumen?.porTecnico || []), { tecnico: '', cantidad: '' }] })}
+            onClick={() => updateResumen({ porTecnico: [...(report.preventivosResumen?.porTecnico || []), { tecnicos: [], cantidad: '' }] })}
             disabled={report.team.length === 0}
             className={`${buttonCls} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed`}
             title={report.team.length === 0 ? 'Cargá primero el equipo del turno' : ''}>
-            <Plus className="w-4 h-4" />Agregar técnico
+            <Plus className="w-4 h-4" />Agregar grupo
           </button>
         </div>
 
+        {/* V2.4 — Opción C: multi-select de técnicos por grupo.
+            Si Juan + Pedro hicieron 4 preventivos juntos, se carga UNA fila con
+            ambos seleccionados y cantidad 4. La cantidad cuenta UNA VEZ para
+            la validación cruzada (4, no 8). En estadísticas individuales,
+            tanto Juan como Pedro reciben 4 cada uno. */}
         {report.team.length === 0 ? (
           <EmptyHint>Cargá primero el equipo del turno para asignar preventivos por técnico.</EmptyHint>
         ) : (report.preventivosResumen?.porTecnico || []).length === 0 ? (
           <EmptyHint>Sin detalle por técnico.</EmptyHint>
         ) : (
           <div className="space-y-2">
-            {(report.preventivosResumen?.porTecnico || []).map((t, i) => (
-              <div key={i} className="grid grid-cols-12 gap-2">
-                <select
-                  className={`${inputCls} col-span-7`}
-                  value={t.tecnico}
-                  onChange={e => updateResumen({
-                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, tecnico: e.target.value } : x)
-                  })}>
-                  <option value="">— Seleccionar técnico —</option>
-                  {report.team.map(name => <option key={name} value={name}>{name}</option>)}
-                </select>
-                <input
-                  type="number" min="1" step="1" placeholder="Cantidad"
-                  className={`${inputCls} col-span-4 num`}
-                  value={t.cantidad}
-                  onChange={e => updateResumen({
-                    porTecnico: report.preventivosResumen.porTecnico.map((x, j) => j === i ? { ...x, cantidad: e.target.value } : x)
-                  })} />
-                <button
-                  onClick={() => updateResumen({
-                    porTecnico: report.preventivosResumen.porTecnico.filter((_, j) => j !== i)
-                  })}
-                  className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
+            {(report.preventivosResumen?.porTecnico || []).map((t, i) => {
+              // Compat hacia atrás: si vino del schema viejo con `tecnico` único, lo migramos a array
+              const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+              return (
+                <div key={i} className="grid grid-cols-12 gap-2">
+                  <div className="col-span-7">
+                    <MultiSelect
+                      options={report.team}
+                      value={tecnicos}
+                      onChange={vals => updateResumen({
+                        porTecnico: report.preventivosResumen.porTecnico.map((x, j) =>
+                          j === i ? { tecnicos: vals, cantidad: x.cantidad } : x
+                        )
+                      })}
+                      placeholder="Seleccionar técnico/s del grupo…"
+                    />
+                  </div>
+                  <input
+                    type="number" min="1" step="1" placeholder="Cant."
+                    className={`${inputCls} col-span-4 num`}
+                    value={t.cantidad}
+                    onChange={e => updateResumen({
+                      porTecnico: report.preventivosResumen.porTecnico.map((x, j) =>
+                        j === i ? { ...x, tecnicos, cantidad: e.target.value } : x
+                      )
+                    })} />
+                  <button
+                    onClick={() => updateResumen({
+                      porTecnico: report.preventivosResumen.porTecnico.filter((_, j) => j !== i)
+                    })}
+                    className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -1846,25 +2192,36 @@ function DashboardView({ report }) {
                 </div>
               </div>
 
-              {/* Detalle por técnico — V2.3: grid 2-col compacto para ocupar menos espacio */}
+              {/* Detalle por técnico — V2.4: muestra grupos multi-técnicos.
+                  Si el grupo tiene varios técnicos, muestra "A · B · C → 4". */}
               <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
                 <Users className="w-3 h-3" />Por técnico
               </div>
-              {(pr.porTecnico || []).filter(t => t.tecnico).length === 0
-                ? <div className="text-[10px] text-slate-400 italic py-1">Sin detalle por técnico</div>
-                : (
+              {(() => {
+                const grupos = (pr.porTecnico || []).filter(t => {
+                  const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+                  return tecnicos.length > 0;
+                });
+                if (grupos.length === 0) {
+                  return <div className="text-[10px] text-slate-400 italic py-1">Sin detalle por técnico</div>;
+                }
+                return (
                   <div className="grid grid-cols-2 gap-1">
-                    {(pr.porTecnico || []).filter(t => t.tecnico).map((t, i) => (
-                      <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-1.5 py-0.5 min-w-0">
-                        <span className="text-[10px] text-slate-700 truncate" title={t.tecnico}>{t.tecnico}</span>
-                        <span className="num text-[11px] font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded ring-1 ring-slate-200 flex-shrink-0 ml-1">
-                          {t.cantidad || 0}
-                        </span>
-                      </div>
-                    ))}
+                    {grupos.map((t, i) => {
+                      const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+                      const labelGrupo = tecnicos.join(' · ');
+                      return (
+                        <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-1.5 py-0.5 min-w-0">
+                          <span className="text-[10px] text-slate-700 truncate" title={labelGrupo}>{labelGrupo}</span>
+                          <span className="num text-[11px] font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded ring-1 ring-slate-200 flex-shrink-0 ml-1">
+                            {t.cantidad || 0}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                )
-              }
+                );
+              })()}
             </div>
           </Card>
 
@@ -2228,9 +2585,10 @@ function StatsView({ history }) {
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
             <Users className="w-4 h-4" />Carga por técnico
+            <span className="text-[10px] text-slate-500 font-normal ml-2">(todos los técnicos del catálogo)</span>
           </h3>
           {stats.topTechs.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={240}>
+            <ResponsiveContainer width="100%" height={Math.max(240, stats.topTechs.length * 22)}>
               <BarChart data={stats.topTechs} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} />
@@ -2591,7 +2949,7 @@ function computeStats(history, range, customStart, customEnd) {
 
   uniqueCorrEntries.forEach(c => {
     if (c.state === 'Realizada') completedCorr++;
-    else if (c.state === 'Sin Iniciar') pendingCorr++;
+    else if (c.state === 'Sin Iniciar' || c.state === 'En Curso') pendingCorr++;  // V2.4 fix
     if (c.state in stateDist) stateDist[c.state]++;
     const eq = (c.equipoCodigo || '').trim();
     if (eq && eq !== '-') equipmentCount[eq] = (equipmentCount[eq] || 0) + 1;
@@ -2615,6 +2973,22 @@ function computeStats(history, range, customStart, customEnd) {
       if (shiftCount[r.shift]) shiftCount[r.shift].preventivos++;
     });
     (r.comments || []).forEach(c => { if (c.priority === 'Urgente') urgent++; });
+
+    // V2.4 — "Carga por técnico" suma también el detalle del Resumen Preventivos.
+    // Opción C: cada grupo {tecnicos:[a,b,c], cantidad:N} suma N a cada técnico individual.
+    // Ej: {tecnicos:['Juan','Pedro'], cantidad: 4} → Juan +4 y Pedro +4.
+    // (La cantidad para validación cruzada con "Realizados" sigue siendo N una sola vez,
+    // eso ya está cubierto en validateReport.)
+    (r.preventivosResumen?.porTecnico || []).forEach(grupo => {
+      const tecnicos = grupo.tecnicos || (grupo.tecnico ? [grupo.tecnico] : []);
+      const cantidad = Number(grupo.cantidad) || 0;
+      if (cantidad > 0) {
+        tecnicos.forEach(t => {
+          techCount[t] = techCount[t] || { correctivos: 0, preventivos: 0 };
+          techCount[t].preventivos += cantidad;
+        });
+      }
+    });
   });
 
   const completionRate = totalCorrectives > 0 ? Math.round((completedCorr / totalCorrectives) * 100) : 0;
@@ -2623,13 +2997,18 @@ function computeStats(history, range, customStart, customEnd) {
     .sort((a, b) => b[1] - a[1]).slice(0, 8)
     .map(([name, count]) => ({ name, count }));
 
-  const topTechs = Object.entries(techCount)
-    .map(([name, v]) => ({
-      name: name.split(' ').slice(0, 2).join(' '),
-      correctivos: v.correctivos, preventivos: v.preventivos,
+  // V2.4 — "Carga por técnico" incluye TODOS los técnicos del catálogo (21),
+  // aunque no hayan tenido OTs en el período. Orden descendente por carga total.
+  // Los técnicos en cero quedan al fondo.
+  const topTechs = TECNICO_NAMES.map(fullName => {
+    const v = techCount[fullName] || { correctivos: 0, preventivos: 0 };
+    return {
+      name: fullName.split(' ').slice(0, 2).join(' '),
+      correctivos: v.correctivos,
+      preventivos: v.preventivos,
       total: v.correctivos + v.preventivos
-    }))
-    .sort((a, b) => b.total - a.total).slice(0, 8);
+    };
+  }).sort((a, b) => b.total - a.total);
 
   const shiftDist = Object.entries(shiftCount).map(([name, v]) => ({ name, ...v }));
 
