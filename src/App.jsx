@@ -4,7 +4,7 @@ import {
   Wrench, Activity, FileSpreadsheet, CheckCircle2, AlertTriangle, Building2,
   HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
-  CalendarDays, Clock
+  CalendarDays, Clock, Image as ImageIcon, FileDown
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -29,7 +29,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.1';
+const APP_VERSION = 'v2.3';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -882,6 +882,22 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   const updateList = (key, fn) => setReport(r => ({ ...r, [key]: fn(r[key]) }));
   const updateServicios = (patch) => setReport(r => ({ ...r, servicios: { ...r.servicios, ...patch } }));
   const updateResumen = (patch) => setReport(r => ({ ...r, preventivosResumen: { ...r.preventivosResumen, ...patch } }));
+
+  // V2.3 — helper que actualiza una OT correctiva por índice y, si efectivamente
+  // hubo cambios, setea lastModifiedInShift al turno actual. Esto permite que el
+  // Dashboard distinga OTs "tocadas" en el turno actual (visibles) de las del
+  // carry-over que nadie modificó (no visibles).
+  const updateCorrectiveItem = (i, patch) => setReport(r => ({
+    ...r,
+    corrective: r.corrective.map((x, j) => {
+      if (j !== i) return x;
+      // si la patch no cambia nada efectivo, no actualizamos lastModifiedInShift
+      const changed = Object.keys(patch).some(k => x[k] !== patch[k]);
+      if (!changed) return x;
+      return { ...x, ...patch, lastModifiedInShift: `${r.date}-${r.shift}` };
+    })
+  }));
+
   const [loadInfo, setLoadInfo] = useState('');
   const initialPendingApplied = useRef(false);
 
@@ -1051,7 +1067,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <SectionTitle icon={Wrench} accent="orange">Mantenimiento Correctivo</SectionTitle>
-          <button onClick={() => updateList('corrective', l => [...l, { ot: '', equipoCodigo: '', task: '', technicians: [], state: 'Sin Iniciar' }])}
+          <button onClick={() => updateList('corrective', l => [...l, { ot: '', equipoCodigo: '', task: '', technicians: [], state: 'Sin Iniciar', createdInShift: `${report.date}-${report.shift}` }])}
             className={`${buttonCls} bg-orange-50 text-orange-700 hover:bg-orange-100`}>
             <Plus className="w-4 h-4" />Agregar OT
           </button>
@@ -1067,22 +1083,22 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 <div className="grid grid-cols-12 gap-2 mb-2">
                   <Field label="N° OT" className="col-span-2">
                     <input className={`${inputCls} num`} placeholder="OT-XXXX" value={c.ot}
-                      onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, ot: e.target.value } : x))} />
+                      onChange={e => updateCorrectiveItem(i, { ot: e.target.value })} />
                   </Field>
                   <Field label="Equipo / Sector" className="col-span-3">
                     <input className={inputCls} value={c.equipoCodigo}
-                      onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, equipoCodigo: e.target.value } : x))} />
+                      onChange={e => updateCorrectiveItem(i, { equipoCodigo: e.target.value })} />
                   </Field>
                   <Field label="Estado" className="col-span-2">
                     <select className={`${inputCls} font-semibold ${c.state === 'Sin Iniciar' ? 'text-red-600' : c.state === 'En Curso' ? 'text-amber-600' : 'text-emerald-600'}`}
                       value={c.state}
-                      onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, state: e.target.value } : x))}>
+                      onChange={e => updateCorrectiveItem(i, { state: e.target.value })}>
                       {ESTADOS_OT.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </Field>
                   <Field label={`Técnico/s asignado/s${requiresTech ? ' *' : ''}`} className="col-span-5">
                     <MultiSelect options={teamOptions} value={c.technicians}
-                      onChange={vals => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
+                      onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
                       placeholder={report.team.length === 0 ? 'Cargá primero el equipo del turno' : 'Seleccionar…'} />
                   </Field>
                   {/* V2.0: BOTÓN ELIMINAR REMOVIDO */}
@@ -1095,7 +1111,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 )}
                 <Field label="Tarea / descripción">
                   <textarea rows={2} className={inputCls} value={c.task}
-                    onChange={e => updateList('corrective', l => l.map((x, j) => j === i ? { ...x, task: e.target.value } : x))} />
+                    onChange={e => updateCorrectiveItem(i, { task: e.target.value })} />
                 </Field>
               </div>
             );
@@ -1477,11 +1493,10 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// DASHBOARD VIEW — V2.0
-//   - Equipo con wrap multi-línea (todos los técnicos visibles)
-//   - Fechas en formato dd/mmm/aa
-//   - Preventivos: solo se muestra el resumen (asignados, realizados, por técnico)
-//   - Planta: nuevos parámetros (PTEL, Caldera, Ablandadores)
+// DASHBOARD VIEW — V2.3
+//   - Solo muestra OTs del turno actual (creadas o modificadas en este turno)
+//   - Las del carry-over que nadie tocó NO aparecen acá (sí en Cargar Reporte)
+//   - Detalle por técnico de preventivos en grid 2-col compacto
 // ═══════════════════════════════════════════════════════════════════
 function DashboardView({ report }) {
   const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
@@ -1489,8 +1504,199 @@ function DashboardView({ report }) {
   const p = report.servicios.plantaCaldera;
   const pr = report.preventivosResumen || { asignados: '', realizados: '', porTecnico: [] };
 
+  // V2.3 — Filtro de OTs del turno actual:
+  //   - Las que se crearon en este turno (createdInShift coincide)
+  //   - O las que se modificaron en este turno (lastModifiedInShift coincide)
+  //   - Las del carry-over que nadie tocó este turno NO aparecen acá
+  // Para reportes viejos (V2.2 o antes) que no tienen estos flags, los mostramos
+  // todos como antes (compatibilidad hacia atrás).
+  const currentShiftKey = `${report.date}-${report.shift}`;
+  const correctiveActual = useMemo(() => {
+    return (report.corrective || []).filter(c => {
+      // Si la OT no tiene ningún flag (reporte viejo), la incluimos
+      if (!c.createdInShift && !c.lastModifiedInShift) return true;
+      // Si fue creada en este turno o modificada en este turno, sí
+      if (c.createdInShift === currentShiftKey) return true;
+      if (c.lastModifiedInShift === currentShiftKey) return true;
+      return false;
+    });
+  }, [report.corrective, currentShiftKey]);
+
+  // V2.2 — Export del Dashboard a PNG/PDF
+  const dashboardRef = useRef(null);
+  const [exporting, setExporting] = useState('');
+  const [exportMsg, setExportMsg] = useState('');
+
+  // Carga dinámica de las librerías de export desde CDN.
+  // Se hace lazy (solo al hacer click) para no agrandar el bundle inicial.
+  const loadScript = (src) => new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`No se pudo cargar ${src}`));
+    document.head.appendChild(s);
+  });
+
+  // Captura el dashboard expandiendo todos los scrolls internos para que se vea completo.
+  // Devuelve el canvas resultado.
+  const captureDashboard = async () => {
+    if (!window.html2canvas) {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    }
+    const node = dashboardRef.current;
+    if (!node) throw new Error('Dashboard no encontrado');
+
+    // Antes de capturar: forzar a que TODOS los contenedores con overflow:auto/scroll
+    // muestren todo el contenido. Guardar los estilos originales para restaurarlos después.
+    const scrollables = node.querySelectorAll('*');
+    const originalStyles = [];
+    scrollables.forEach(el => {
+      const cs = window.getComputedStyle(el);
+      const needs = cs.overflowY === 'auto' || cs.overflowY === 'scroll' ||
+                    cs.overflow === 'auto' || cs.overflow === 'scroll' ||
+                    cs.maxHeight !== 'none';
+      if (needs) {
+        originalStyles.push({
+          el,
+          overflow: el.style.overflow,
+          overflowY: el.style.overflowY,
+          maxHeight: el.style.maxHeight,
+          height: el.style.height
+        });
+        el.style.overflow = 'visible';
+        el.style.overflowY = 'visible';
+        el.style.maxHeight = 'none';
+        el.style.height = 'auto';
+      }
+    });
+
+    // Esperar un frame para que se aplique
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(r => setTimeout(r, 50));
+
+    let canvas;
+    try {
+      canvas = await window.html2canvas(node, {
+        backgroundColor: '#f8fafc',  // bg-slate-50
+        scale: 2,                     // alta resolución
+        useCORS: true,
+        logging: false,
+        windowWidth: node.scrollWidth,
+        windowHeight: node.scrollHeight
+      });
+    } finally {
+      // Restaurar estilos originales pase lo que pase
+      originalStyles.forEach(({ el, overflow, overflowY, maxHeight, height }) => {
+        el.style.overflow = overflow;
+        el.style.overflowY = overflowY;
+        el.style.maxHeight = maxHeight;
+        el.style.height = height;
+      });
+    }
+    return canvas;
+  };
+
+  const fileBaseName = () => {
+    const d = report.date || 'sin-fecha';
+    const t = report.shift || 'sin-turno';
+    return `Dashboard_${d}_${t}`;
+  };
+
+  const exportPNG = async () => {
+    if (exporting) return;
+    setExporting('png');
+    setExportMsg('Generando imagen…');
+    try {
+      const canvas = await captureDashboard();
+      const link = document.createElement('a');
+      link.download = `${fileBaseName()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      setExportMsg('✓ Imagen descargada');
+      setTimeout(() => setExportMsg(''), 2500);
+    } catch (e) {
+      console.error(e);
+      setExportMsg(`Error: ${e.message}`);
+      setTimeout(() => setExportMsg(''), 4000);
+    }
+    setExporting('');
+  };
+
+  const exportPDF = async () => {
+    if (exporting) return;
+    setExporting('pdf');
+    setExportMsg('Generando PDF…');
+    try {
+      if (!window.jspdf) {
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+      }
+      const canvas = await captureDashboard();
+      const imgData = canvas.toDataURL('image/png');
+
+      // A4 horizontal: 297mm x 210mm
+      const pdf = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const margin = 8;
+      const availW = pageW - margin * 2;
+      const availH = pageH - margin * 2;
+
+      // Escalar la imagen para que entre en la página manteniendo proporción
+      const imgAspect = canvas.width / canvas.height;
+      const availAspect = availW / availH;
+      let drawW, drawH;
+      if (imgAspect > availAspect) {
+        // imagen más ancha que el área disponible: limitar por ancho
+        drawW = availW;
+        drawH = drawW / imgAspect;
+      } else {
+        // imagen más alta: limitar por alto
+        drawH = availH;
+        drawW = drawH * imgAspect;
+      }
+      const offsetX = margin + (availW - drawW) / 2;
+      const offsetY = margin + (availH - drawH) / 2;
+
+      pdf.addImage(imgData, 'PNG', offsetX, offsetY, drawW, drawH, undefined, 'FAST');
+      pdf.save(`${fileBaseName()}.pdf`);
+      setExportMsg('✓ PDF descargado');
+      setTimeout(() => setExportMsg(''), 2500);
+    } catch (e) {
+      console.error(e);
+      setExportMsg(`Error: ${e.message}`);
+      setTimeout(() => setExportMsg(''), 4000);
+    }
+    setExporting('');
+  };
+
   return (
     <div className="space-y-3">
+      {/* V2.2: Botones de export arriba del Dashboard */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs text-slate-500">
+          {exportMsg && (
+            <span className={`font-medium ${exportMsg.startsWith('Error') ? 'text-red-600' : exportMsg.startsWith('✓') ? 'text-emerald-600' : 'text-slate-500'}`}>
+              {exportMsg}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={exportPNG} disabled={!!exporting}
+            className={`${buttonCls} bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
+            <ImageIcon className="w-4 h-4" />
+            {exporting === 'png' ? 'Generando…' : 'Exportar PNG'}
+          </button>
+          <button onClick={exportPDF} disabled={!!exporting}
+            className={`${buttonCls} bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
+            <FileDown className="w-4 h-4" />
+            {exporting === 'pdf' ? 'Generando…' : 'Exportar PDF'}
+          </button>
+        </div>
+      </div>
+
+      {/* Wrapper que va a ser capturado por html2canvas */}
+      <div ref={dashboardRef} className="space-y-3">
       {/* HEADER — V2.0: equipo con wrap multi-línea */}
       <Card className="p-3">
         <div className="grid grid-cols-12 gap-3 items-start">
@@ -1542,20 +1748,20 @@ function DashboardView({ report }) {
         {/* COL IZQ: CORRECTIVOS (50% del ancho, sub-divididos en Realizadas | Pendientes) */}
         <Card className="col-span-6 p-3 flex flex-col overflow-hidden">
           <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <Wrench className="w-4 h-4" />Correctivos ({report.corrective.length})
+            <Wrench className="w-4 h-4" />Correctivos del turno ({correctiveActual.length})
           </h3>
           <div className="overflow-auto flex-1 grid grid-cols-2 gap-3" style={{ maxHeight: 'calc(100vh - 280px)' }}>
             {/* SUB-COL: REALIZADAS */}
             <div className="border-r border-slate-200 pr-3">
               <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <CheckCircle2 className="w-3 h-3" />
-                Realizadas ({report.corrective.filter(c => c.state === 'Realizada').length})
+                Realizadas ({correctiveActual.filter(c => c.state === 'Realizada').length})
               </div>
-              {report.corrective.filter(c => c.state === 'Realizada').length === 0
+              {correctiveActual.filter(c => c.state === 'Realizada').length === 0
                 ? <div className="text-[10px] text-slate-400 italic py-2">Sin realizadas</div>
                 : (
                   <div className="divide-y-2 divide-slate-200">
-                    {report.corrective.filter(c => c.state === 'Realizada').map((c, i) => (
+                    {correctiveActual.filter(c => c.state === 'Realizada').map((c, i) => (
                       <div key={i} className="py-2 first:pt-0 last:pb-0">
                         <div className="flex items-center justify-between gap-2 mb-1">
                           <div className="flex items-center gap-2 min-w-0">
@@ -1583,13 +1789,13 @@ function DashboardView({ report }) {
             <div>
               <div className="text-[10px] uppercase tracking-wide text-amber-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <AlertTriangle className="w-3 h-3" />
-                Pendientes ({report.corrective.filter(c => c.state !== 'Realizada').length})
+                Pendientes ({correctiveActual.filter(c => c.state !== 'Realizada').length})
               </div>
-              {report.corrective.filter(c => c.state !== 'Realizada').length === 0
+              {correctiveActual.filter(c => c.state !== 'Realizada').length === 0
                 ? <div className="text-[10px] text-slate-400 italic py-2">Sin pendientes</div>
                 : (
                   <div className="divide-y-2 divide-slate-200">
-                    {report.corrective.filter(c => c.state !== 'Realizada').map((c, i) => (
+                    {correctiveActual.filter(c => c.state !== 'Realizada').map((c, i) => (
                       <div key={i} className="py-2 first:pt-0 last:pb-0">
                         <div className="flex items-center justify-between gap-2 mb-1">
                           <div className="flex items-center gap-2 min-w-0">
@@ -1640,18 +1846,18 @@ function DashboardView({ report }) {
                 </div>
               </div>
 
-              {/* Detalle por técnico */}
+              {/* Detalle por técnico — V2.3: grid 2-col compacto para ocupar menos espacio */}
               <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
                 <Users className="w-3 h-3" />Por técnico
               </div>
               {(pr.porTecnico || []).filter(t => t.tecnico).length === 0
                 ? <div className="text-[10px] text-slate-400 italic py-1">Sin detalle por técnico</div>
                 : (
-                  <div className="space-y-1">
+                  <div className="grid grid-cols-2 gap-1">
                     {(pr.porTecnico || []).filter(t => t.tecnico).map((t, i) => (
-                      <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-2 py-1.5">
-                        <span className="text-xs text-slate-700">{t.tecnico}</span>
-                        <span className="num text-sm font-bold text-slate-800 bg-white px-2 py-0.5 rounded ring-1 ring-slate-200">
+                      <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-1.5 py-0.5 min-w-0">
+                        <span className="text-[10px] text-slate-700 truncate" title={t.tecnico}>{t.tecnico}</span>
+                        <span className="num text-[11px] font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded ring-1 ring-slate-200 flex-shrink-0 ml-1">
                           {t.cantidad || 0}
                         </span>
                       </div>
@@ -1828,6 +2034,7 @@ function DashboardView({ report }) {
             </div>
           </Card>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -2168,9 +2375,28 @@ function computeWeekendStats(history) {
   let correctivosGenerados = 0, correctivosRealizados = 0;
   let preventivosAsignados = 0, preventivosRealizados = 0;
 
+  // V2.3 — Deduplicación: cada OT (por número) cuenta una sola vez.
+  //   - "correctivosGenerados" = OTs únicas que aparecen en estos turnos
+  //   - "correctivosRealizados" = OTs únicas cuyo estado FINAL en estos turnos es 'Realizada'
+  // Para OTs sin número, contamos cada aparición (caso borde).
+  const sortedTurnos = [...turnos].sort((a, b) => reportSortKey(a).localeCompare(reportSortKey(b)));
+  const uniqueByOT = new Map();
+  let countWithoutOT = 0, realizedWithoutOT = 0;
+  sortedTurnos.forEach(r => {
+    (r.corrective || []).forEach(c => {
+      const key = (c.ot || '').trim();
+      if (!key) {
+        countWithoutOT++;
+        if (c.state === 'Realizada') realizedWithoutOT++;
+        return;
+      }
+      uniqueByOT.set(key, c); // sobrescribe con la versión más reciente
+    });
+  });
+  correctivosGenerados = uniqueByOT.size + countWithoutOT;
+  correctivosRealizados = [...uniqueByOT.values()].filter(c => c.state === 'Realizada').length + realizedWithoutOT;
+
   turnos.forEach(r => {
-    correctivosGenerados += (r.corrective || []).length;
-    correctivosRealizados += (r.corrective || []).filter(c => c.state === 'Realizada').length;
     preventivosAsignados += Number(r.preventivosResumen?.asignados) || 0;
     preventivosRealizados += Number(r.preventivosResumen?.realizados) || 0;
   });
@@ -2210,9 +2436,24 @@ function computeLastDayStats(history) {
   let correctivosGenerados = 0, correctivosRealizados = 0;
   let preventivosAsignados = 0, preventivosRealizados = 0;
 
+  // V2.3 — Deduplicación: misma lógica que computeWeekendStats
+  const uniqueByOT2 = new Map();
+  let countWithoutOT2 = 0, realizedWithoutOT2 = 0;
   turnos.forEach(r => {
-    correctivosGenerados += (r.corrective || []).length;
-    correctivosRealizados += (r.corrective || []).filter(c => c.state === 'Realizada').length;
+    (r.corrective || []).forEach(c => {
+      const key = (c.ot || '').trim();
+      if (!key) {
+        countWithoutOT2++;
+        if (c.state === 'Realizada') realizedWithoutOT2++;
+        return;
+      }
+      uniqueByOT2.set(key, c);
+    });
+  });
+  correctivosGenerados = uniqueByOT2.size + countWithoutOT2;
+  correctivosRealizados = [...uniqueByOT2.values()].filter(c => c.state === 'Realizada').length + realizedWithoutOT2;
+
+  turnos.forEach(r => {
     preventivosAsignados += Number(r.preventivosResumen?.asignados) || 0;
     preventivosRealizados += Number(r.preventivosResumen?.realizados) || 0;
   });
@@ -2241,54 +2482,130 @@ function computeStats(history, range, customStart, customEnd) {
 
   const filtered = history.filter(r => r.date >= startStr && r.date <= endStr);
 
+  // V2.3 — DEDUPLICACIÓN DE OTs CORRECTIVAS
+  // Una OT (por número) puede aparecer en N reportes consecutivos mientras está
+  // pendiente. Para no inflar las estadísticas, contamos cada OT UNA SOLA VEZ:
+  //   - Estado final = el del reporte más reciente en el rango
+  //   - Equipo / técnicos asignados / descripción = los del reporte más reciente
+  //   - Fecha de "aparición" = la del reporte más antiguo donde aparece la OT
+  // Las OTs sin número (vacío) NO se pueden deduplicar; las contamos igual pero
+  // cada aparición cuenta (caso borde, no debería pasar en operación normal).
+  const sortedReports = [...filtered].sort((a, b) =>
+    `${a.date}-${shiftOrder(a.shift)}`.localeCompare(`${b.date}-${shiftOrder(b.shift)}`)
+  );
+  const uniqueCorr = new Map();          // ot# -> { latest, firstAppearanceDate, firstAppearanceShift }
+  const corrWithoutOT = [];              // OTs sin número (no deduplicadas)
+  sortedReports.forEach(r => {
+    (r.corrective || []).forEach(c => {
+      const key = (c.ot || '').trim();
+      if (!key) {
+        // OT sin número — no se puede deduplicar, cuenta cada aparición
+        corrWithoutOT.push({ ...c, _date: r.date, _shift: r.shift });
+        return;
+      }
+      const existing = uniqueCorr.get(key);
+      if (!existing) {
+        uniqueCorr.set(key, {
+          latest: c,
+          firstAppearanceDate: r.date,
+          firstAppearanceShift: r.shift
+        });
+      } else {
+        // Sobrescribir 'latest' (estamos iterando ordenado, así que esta es más nueva)
+        existing.latest = c;
+      }
+    });
+  });
+
+  // Lista plana de "OTs únicas" para usar en stats
+  const uniqueCorrEntries = [
+    ...[...uniqueCorr.entries()].map(([key, v]) => ({
+      ot: key,
+      ...v.latest,
+      _firstDate: v.firstAppearanceDate,
+      _firstShift: v.firstAppearanceShift
+    })),
+    ...corrWithoutOT.map(c => ({
+      ot: '',
+      ...c,
+      _firstDate: c._date,
+      _firstShift: c._shift
+    }))
+  ];
+
+  // Bucketing diario/semanal/mensual
   const buckets = {};
   const dayMs = 86400000;
   const totalDays = Math.max(1, Math.round((end - start) / dayMs) + 1);
   const bucketByMonth = totalDays > 90;
   const bucketByWeek = totalDays > 31 && !bucketByMonth;
 
-  filtered.forEach(r => {
-    let key, label;
-    const d = new Date(r.date);
+  const bucketKeyAndLabel = (dateStr) => {
+    const d = new Date(dateStr);
     if (bucketByMonth) {
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      label = d.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+      return {
+        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+        label: d.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' })
+      };
     } else if (bucketByWeek) {
       const monday = new Date(d);
       const day = monday.getDay() || 7;
       monday.setDate(monday.getDate() - day + 1);
-      key = monday.toISOString().slice(0, 10);
-      label = `S ${monday.getDate()}/${monday.getMonth() + 1}`;
+      return {
+        key: monday.toISOString().slice(0, 10),
+        label: `S ${monday.getDate()}/${monday.getMonth() + 1}`
+      };
     } else {
-      key = r.date;
-      label = d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' });
+      return {
+        key: dateStr,
+        label: d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' })
+      };
     }
+  };
+
+  // Trabajos en el período: correctivos por fecha de PRIMERA APARICIÓN (deduplicados),
+  // preventivos por reporte (cada turno suma su detalle individual).
+  uniqueCorrEntries.forEach(c => {
+    const { key, label } = bucketKeyAndLabel(c._firstDate);
     if (!buckets[key]) buckets[key] = { key, label, correctivos: 0, preventivos: 0 };
-    buckets[key].correctivos += (r.corrective || []).length;
+    buckets[key].correctivos++;
+  });
+  filtered.forEach(r => {
+    const { key, label } = bucketKeyAndLabel(r.date);
+    if (!buckets[key]) buckets[key] = { key, label, correctivos: 0, preventivos: 0 };
     buckets[key].preventivos += (r.preventive || []).length;
   });
   const daily = Object.values(buckets).sort((a, b) => a.key.localeCompare(b.key));
 
-  let totalCorrectives = 0, totalPreventives = 0, completedCorr = 0, pendingCorr = 0, urgent = 0;
+  // KPIs principales: deduplicados
+  let totalCorrectives = uniqueCorrEntries.length;
+  let completedCorr = 0, pendingCorr = 0;
   const stateDist = { 'Sin Iniciar': 0, 'En Curso': 0, 'Realizada': 0 };
   const equipmentCount = {};
   const techCount = {};
-  const shiftCount = { Mañana: { correctivos: 0, preventivos: 0 }, Tarde: { correctivos: 0, preventivos: 0 }, Noche: { correctivos: 0, preventivos: 0 } };
+  const shiftCount = {
+    Mañana: { correctivos: 0, preventivos: 0 },
+    Tarde:  { correctivos: 0, preventivos: 0 },
+    Noche:  { correctivos: 0, preventivos: 0 }
+  };
 
-  filtered.forEach(r => {
-    (r.corrective || []).forEach(c => {
-      totalCorrectives++;
-      if (c.state === 'Realizada') completedCorr++;
-      else if (c.state === 'Sin Iniciar') pendingCorr++;
-      if (c.state in stateDist) stateDist[c.state]++;
-      const eq = (c.equipoCodigo || '').trim();
-      if (eq && eq !== '-') equipmentCount[eq] = (equipmentCount[eq] || 0) + 1;
-      (c.technicians || []).forEach(t => {
-        techCount[t] = techCount[t] || { correctivos: 0, preventivos: 0 };
-        techCount[t].correctivos++;
-      });
-      if (shiftCount[r.shift]) shiftCount[r.shift].correctivos++;
+  uniqueCorrEntries.forEach(c => {
+    if (c.state === 'Realizada') completedCorr++;
+    else if (c.state === 'Sin Iniciar') pendingCorr++;
+    if (c.state in stateDist) stateDist[c.state]++;
+    const eq = (c.equipoCodigo || '').trim();
+    if (eq && eq !== '-') equipmentCount[eq] = (equipmentCount[eq] || 0) + 1;
+    (c.technicians || []).forEach(t => {
+      techCount[t] = techCount[t] || { correctivos: 0, preventivos: 0 };
+      techCount[t].correctivos++;
     });
+    // Turno: tomamos el de la primera aparición (cuándo se "abrió" la OT)
+    if (shiftCount[c._firstShift]) shiftCount[c._firstShift].correctivos++;
+  });
+
+  // Preventivos: NO se deduplican (cada turno hace su propio trabajo preventivo)
+  let totalPreventives = 0, urgent = 0;
+  filtered.forEach(r => {
     (r.preventive || []).forEach(p => {
       totalPreventives++;
       (p.technicians || []).forEach(t => {
