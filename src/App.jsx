@@ -96,19 +96,24 @@ const isValidOT = (ot) => {
 };
 
 // Parsea "FOA1-01395" → { sector: 'FOA1', numero: '01395' }
+// IMPORTANTE: NO padea el número. Solo lo devuelve tal cual.
+// El padding se aplica únicamente al perder foco (handleNumeroBlur).
+// Esto permite escribir digito por digito sin que se autocompleten ceros.
 const parseOT = (ot) => {
   if (!ot) return { sector: '', numero: '' };
   const match = ot.trim().match(/^([A-Z0-9]+)-(\d{1,5})$/);
   if (match && SECTORES_CODES.includes(match[1])) {
-    return { sector: match[1], numero: match[2].padStart(5, '0') };
+    return { sector: match[1], numero: match[2] };
   }
   return { sector: '', numero: '' };
 };
 
-// Compone "FOA1" + "1395" → "FOA1-01395"
+// Compone "FOA1" + "1395" → "FOA1-1395" (sin padding mientras escribís).
+// El padding a 5 dígitos se hace solo al perder foco en handleNumeroBlur.
 const buildOT = (sector, numero) => {
   if (!sector || !numero) return '';
-  const num = String(numero).replace(/\D/g, '').padStart(5, '0').slice(-5);
+  const num = String(numero).replace(/\D/g, '').slice(0, 5);
+  if (!num) return '';
   return `${sector}-${num}`;
 };
 
