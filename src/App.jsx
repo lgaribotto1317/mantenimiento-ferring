@@ -823,10 +823,27 @@ export default function App() {
   // V2.6 — Redirección desde Dashboard a Cargar Reporte para editar una OT específica.
   // Cuando el admin clickea una OT en el Dashboard, se carga el reporte
   // correspondiente en el form y se cambia de pestaña.
-  const editFromDashboard = (reportData) => {
+  // scrollTarget opcional: 'preventivos' o 'ot:<numero>' para scrollear a esa sección.
+  const editFromDashboard = (reportData, scrollTarget = null) => {
     setReport(hydrate(reportData));
     setDashboardOverride(null);
     setTab('form');
+    if (scrollTarget) {
+      // Pequeño delay para que el form se monte primero.
+      // Reintenta una vez si el elemento aún no está en el DOM (form recién montado en dispositivos lentos).
+      const id = scrollTarget === 'preventivos'
+        ? 'form-preventivos'
+        : `form-ot-${scrollTarget.replace(/^ot:/, '')}`;
+      const tryScroll = (attempt = 0) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else if (attempt < 3) {
+          setTimeout(() => tryScroll(attempt + 1), 100);
+        }
+      };
+      setTimeout(() => tryScroll(0), 80);
+    }
   };
 
   // ── Excel exports (matching template format + V2.0 additions) ────────────────────
@@ -1881,7 +1898,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             const isLegacyFormat = !isValidOT(c.ot) && !isNewOT;
             const otHasError = isNewOT && !isValidOT(c.ot);
             return (
-              <div key={i} className={`border rounded-lg p-3 relative ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+              <div key={i} id={`form-ot-${c.ot || `idx-${i}`}`} className={`border rounded-lg p-3 relative ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
                 {/* V2.6 — Botón eliminar OT (solo modo admin) */}
                 {adminMode && (
                   <button
@@ -2081,7 +2098,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       </Card>
 
       {/* RESUMEN PREVENTIVOS DEL TURNO — V2.1: subido a la 4ta posición (antes de Servicios) */}
-      <Card className="p-5">
+      <Card className="p-5" id="form-preventivos">
         <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
         <p className="text-xs text-slate-500 mb-4">
           Estos son los totales globales del turno (los carga el responsable). Si hay realizados &gt; 0,
@@ -2512,7 +2529,7 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
             return (
               <div key={i}
                 className={`py-2 first:pt-0 last:pb-0 ${clickable ? 'cursor-pointer hover:bg-sky-50/60 -mx-1 px-1 rounded transition' : ''}`}
-                onClick={clickable ? () => onItemClick() : undefined}
+                onClick={clickable ? () => onItemClick(c) : undefined}
                 title={clickable ? 'Click para editar en Cargar Reporte' : undefined}>
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2 min-w-0 flex-wrap">
@@ -3005,7 +3022,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 showStateBadge={false}
                 showAvanceMark={false}
                 adminMode={adminMode}
-                onItemClick={adminMode ? () => onEditFromDashboard(report) : undefined}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
               <CorrectiveSubsection
                 title="Heredados realizados"
@@ -3014,7 +3031,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 showStateBadge={false}
                 showAvanceMark={false}
                 adminMode={adminMode}
-                onItemClick={adminMode ? () => onEditFromDashboard(report) : undefined}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
             </div>
 
@@ -3031,7 +3048,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 showStateBadge={true}
                 showAvanceMark={false}
                 adminMode={adminMode}
-                onItemClick={adminMode ? () => onEditFromDashboard(report) : undefined}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
               <CorrectiveSubsection
                 title="Heredados"
@@ -3040,7 +3057,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 showStateBadge={true}
                 showAvanceMark={true}
                 adminMode={adminMode}
-                onItemClick={adminMode ? () => onEditFromDashboard(report) : undefined}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
             </div>
           </div>
@@ -3053,7 +3070,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             className={`p-3 flex flex-col overflow-hidden flex-shrink-0 ${
               adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''
             }`}
-            onClick={adminMode ? () => onEditFromDashboard(report) : undefined}
+            onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
             title={adminMode ? 'Click para editar preventivos del turno' : undefined}
           >
             <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
