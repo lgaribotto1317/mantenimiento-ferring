@@ -1431,8 +1431,24 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history]);
 
-  // Solo técnicos del turno para asignar a OTs y al detalle de preventivos
-  const teamOptions = report.team.length > 0 ? report.team : TECNICO_NAMES;
+  // V2.5 — Opciones para asignar técnicos a OTs (correctivos y preventivos).
+  // Incluye SIEMPRE a los encargados (RESPONSABLES) además del equipo del turno,
+  // porque suelen hacer seguimiento de proveedores y presupuesto, y deben poder
+  // figurar como asignados aunque no estén en el equipo operativo.
+  // Si no hay equipo cargado, se permite seleccionar entre todos los técnicos.
+  // El detalle "por técnico" del Resumen de Preventivos NO usa esta lista
+  // (sigue usando `report.team` directo, sin encargados).
+  const encargadosNames = RESPONSABLES.map(r => r.name);
+  const teamOptions = useMemo(() => {
+    const tecnicosBase = report.team.length > 0 ? report.team : TECNICO_NAMES;
+    // Encargados al final, sin duplicar si alguno casualmente ya está en el equipo
+    const merged = [...tecnicosBase];
+    encargadosNames.forEach(name => {
+      if (!merged.includes(name)) merged.push(name);
+    });
+    return merged;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report.team]);
 
   // V2.5 — Mapa de "estado previo" de cada OT (por número), buscando en history
   // el reporte más reciente ANTERIOR al turno actual donde aparece la misma OT.
@@ -1619,7 +1635,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   <Field label="Técnico/s asignado/s *" className="col-span-4">
                     <MultiSelect options={teamOptions} value={c.technicians}
                       onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
-                      placeholder={report.team.length === 0 ? 'Cargá primero el equipo del turno' : 'Seleccionar…'} />
+                      placeholder="Seleccionar técnico/s o encargado/s…" />
                   </Field>
                   {/* V2.0: BOTÓN ELIMINAR REMOVIDO */}
                 </div>
@@ -2077,7 +2093,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 <Field label="Técnico/s asignado/s *" className="col-span-2">
                   <MultiSelect options={teamOptions} value={p.technicians}
                     onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
-                    placeholder={report.team.length === 0 ? 'Cargá el equipo' : 'Seleccionar…'} />
+                    placeholder="Seleccionar…" />
                 </Field>
                 <div className="col-span-1 flex items-end justify-end">
                   <button onClick={() => updateList('preventive', l => l.filter((_, j) => j !== i))}
