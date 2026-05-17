@@ -35,9 +35,9 @@ const APP_VERSION = 'v2.5';
 // CATÁLOGOS (matching the Excel template)
 // ═══════════════════════════════════════════════════════════════════
 const RESPONSABLES = [
-  { id: 1, name: 'Juan Martín Alasia' },
-  { id: 2, name: 'Luciano Fioretti' },
-  { id: 3, name: 'Gustavo Pare' }
+  { id: 1, name: 'ALASIA, Juan' },
+  { id: 2, name: 'FIORETTI, Luciano' },
+  { id: 3, name: 'PARE, Gustavo' }
 ];
 
 const TECNICOS = [
@@ -1432,18 +1432,20 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   }, [history]);
 
   // V2.5 — Opciones para asignar técnicos a OTs (correctivos y preventivos).
-  // Incluye SIEMPRE a los encargados (RESPONSABLES) además del equipo del turno,
-  // porque suelen hacer seguimiento de proveedores y presupuesto, y deben poder
-  // figurar como asignados aunque no estén en el equipo operativo.
-  // Si no hay equipo cargado, se permite seleccionar entre todos los técnicos.
+  // Incluye SIEMPRE a los encargados (RESPONSABLES) al PRINCIPIO de la lista,
+  // antes del equipo del turno, porque suelen hacer seguimiento de proveedores
+  // y presupuesto, y deben poder figurar como asignados aunque no estén en el
+  // equipo operativo.
+  // Si no hay equipo cargado, se permite seleccionar entre todos los técnicos
+  // (con los encargados igualmente al principio).
   // El detalle "por técnico" del Resumen de Preventivos NO usa esta lista
   // (sigue usando `report.team` directo, sin encargados).
   const encargadosNames = RESPONSABLES.map(r => r.name);
   const teamOptions = useMemo(() => {
     const tecnicosBase = report.team.length > 0 ? report.team : TECNICO_NAMES;
-    // Encargados al final, sin duplicar si alguno casualmente ya está en el equipo
-    const merged = [...tecnicosBase];
-    encargadosNames.forEach(name => {
+    // Encargados primero, después los técnicos. Sin duplicar si alguno coincide.
+    const merged = [...encargadosNames];
+    tecnicosBase.forEach(name => {
       if (!merged.includes(name)) merged.push(name);
     });
     return merged;
