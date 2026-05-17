@@ -580,15 +580,64 @@ export default function App() {
       return `${otsNuevasInvalidas.length} OT nueva con formato inválido. Formato requerido: XXX-YYYYY (sector + 5 dígitos). Ej: FOA1-01395`;
     }
 
-    // V2.4 — 2. OTs en "En Curso" deben tener entrada de timeline del turno actual
-    const enCursoSinAvance = (r.corrective || []).filter(c => {
-      if (c.state !== 'En Curso') return false;
+    // V2.5 — 2. Avance del turno obligatorio SOLO cuando hay cambio de estado en este turno.
+    // Reemplaza la regla V2.4 que exigía avance para CUALQUIER OT en "En Curso"
+    // (generaba ruido con heredadas en curso que el turno actual no trabajó).
+    //
+    // Reglas:
+    //  - OT nueva (no existe en history) creada como Sin Iniciar  → no requiere avance
+    //  - OT nueva creada como En Curso o Realizada                → requiere avance
+    //  - OT existente en history:
+    //      Sin Iniciar → Sin Iniciar : no requiere
+    //      Sin Iniciar → En Curso    : requiere
+    //      Sin Iniciar → Realizada   : requiere
+    //      En Curso    → En Curso    : no requiere (sigue igual)
+    //      En Curso    → Realizada   : requiere
+    //      Realizada   → cualquiera  : (no debería pasar; lo dejamos pasar)
+    //
+    // Para detectar el estado previo, buscamos la OT (por número) en el reporte
+    // más reciente del history que sea ANTERIOR al turno actual.
+    const previousStateOf = (otNumber) => {
+      if (!otNumber) return null;
+      // Reportes anteriores estrictamente al turno actual (no incluye el actual)
+      const previousReports = history
+        .filter(rep => {
+          if (rep.date < r.date) return true;
+          if (rep.date === r.date && shiftOrder(rep.shift) < shiftOrder(r.shift)) return true;
+          return false;
+        })
+        .sort((a, b) =>
+          `${b.date}-${shiftOrder(b.shift)}`.localeCompare(`${a.date}-${shiftOrder(a.shift)}`)
+        ); // descendente (más reciente primero)
+      for (const rep of previousReports) {
+        const found = (rep.corrective || []).find(c => c.ot === otNumber);
+        if (found) return found.state || null;
+      }
+      return null; // no aparece antes → es nueva
+    };
+
+    const requiresAdvance = (c) => {
+      const prev = previousStateOf(c.ot);
+      const curr = c.state;
+      // Si no existe en history previa: es nueva. Requiere avance si NO está en "Sin Iniciar".
+      if (prev === null) {
+        return curr === 'En Curso' || curr === 'Realizada';
+      }
+      // Cambios de estado que requieren avance:
+      if (prev === 'Sin Iniciar' && (curr === 'En Curso' || curr === 'Realizada')) return true;
+      if (prev === 'En Curso' && curr === 'Realizada') return true;
+      // Cualquier otro caso (mismo estado, o no aplica): no requiere
+      return false;
+    };
+
+    const otsSinAvance = (r.corrective || []).filter(c => {
+      if (!requiresAdvance(c)) return false;
       const tl = c.timeline || [];
       const hasFromCurrent = tl.some(e => e.shiftKey === currentShiftKey);
       return !hasFromCurrent;
     });
-    if (enCursoSinAvance.length > 0) {
-      return `${enCursoSinAvance.length} OT en "En Curso" sin entrada de Estado de avance del turno actual. Cargá el avance antes de guardar.`;
+    if (otsSinAvance.length > 0) {
+      return `${otsSinAvance.length} OT con cambio de estado en este turno sin entrada de Estado de avance. Cargá el avance antes de guardar.`;
     }
 
     // V2.5 — 3. TODAS las OTs correctivas deben tener al menos un técnico, sin importar estado.
@@ -1385,6 +1434,54 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // Solo técnicos del turno para asignar a OTs y al detalle de preventivos
   const teamOptions = report.team.length > 0 ? report.team : TECNICO_NAMES;
 
+  // V2.5 — Mapa de "estado previo" de cada OT (por número), buscando en history
+  // el reporte más reciente ANTERIOR al turno actual donde aparece la misma OT.
+  // Sirve para detectar cambios de estado y decidir si el avance es obligatorio.
+  // Si una OT no aparece en history previa, su entry es null (es nueva).
+  const previousStateMap = useMemo(() => {
+    const map = new Map();
+    const previousReports = history
+      .filter(rep => {
+        if (rep.date < report.date) return true;
+        if (rep.date === report.date && shiftOrder(rep.shift) < shiftOrder(report.shift)) return true;
+        return false;
+      })
+      .sort((a, b) =>
+        `${b.date}-${shiftOrder(b.shift)}`.localeCompare(`${a.date}-${shiftOrder(a.shift)}`)
+      );
+    (report.corrective || []).forEach(c => {
+      if (!c.ot) return;
+      if (map.has(c.ot)) return;
+      for (const rep of previousReports) {
+        const found = (rep.corrective || []).find(x => x.ot === c.ot);
+        if (found) {
+          map.set(c.ot, found.state || null);
+          break;
+        }
+      }
+      if (!map.has(c.ot)) map.set(c.ot, null); // marca como "nueva"
+    });
+    return map;
+  }, [history, report.date, report.shift, report.corrective]);
+
+  // V2.5 — Helper: decide si una OT requiere entrada de avance en este turno.
+  // Regla: solo si HAY cambio de estado en el turno actual respecto a su estado previo.
+  //   - Nueva (no existe antes) + Sin Iniciar → no requiere
+  //   - Nueva + En Curso o Realizada → requiere
+  //   - Sin Iniciar → En Curso o Realizada → requiere
+  //   - En Curso → Realizada → requiere
+  //   - Cualquier otro (sin cambio) → no requiere
+  const requiresAdvanceEntry = (c) => {
+    const prev = c.ot ? previousStateMap.get(c.ot) : null;
+    const curr = c.state;
+    if (prev === undefined || prev === null) {
+      return curr === 'En Curso' || curr === 'Realizada';
+    }
+    if (prev === 'Sin Iniciar' && (curr === 'En Curso' || curr === 'Realizada')) return true;
+    if (prev === 'En Curso' && curr === 'Realizada') return true;
+    return false;
+  };
+
   // V2.4 — Cuando el equipo cambia, depurar técnicos del resumen que ya no están en el turno.
   // Schema multi-técnico: filtrar dentro de cada grupo los técnicos que ya no están.
   // No borra grupos recién agregados (sin cantidad). Solo limpia técnicos inválidos.
@@ -1545,14 +1642,17 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 {/* V2.4 — Timeline de Estado de Avance.
                     - Aparece SIEMPRE si la OT tiene entradas previas (las muestra read-only)
                     - Aparece con campo de carga SI el estado actual es "En Curso"
-                    - Es OBLIGATORIO agregar entrada al guardar si está "En Curso" y la última
-                      entrada NO es del turno actual */}
-                {(c.state === 'En Curso' || (c.timeline && c.timeline.length > 0)) && (() => {
+                    - V2.5 — También aparece cuando se pasa a "Realizada" en este turno
+                      (para que el responsable cargue el avance final).
+                    - Es OBLIGATORIO agregar entrada al guardar SOLO cuando hay
+                      cambio de estado en este turno (ver requiresAdvanceEntry). */}
+                {(c.state === 'En Curso' || requiresAdvanceEntry(c) || (c.timeline && c.timeline.length > 0)) && (() => {
                   const timeline = c.timeline || [];
                   const currentShiftKey = `${report.date}-${report.shift}`;
                   // Buscar si HAY alguna entrada del turno actual (no solo la última)
                   const hasEntryFromCurrentShift = timeline.some(e => e.shiftKey === currentShiftKey);
-                  const requiresEntry = c.state === 'En Curso' && !hasEntryFromCurrentShift;
+                  // V2.5 — Solo requiere cuando hubo cambio de estado real en este turno
+                  const requiresEntry = requiresAdvanceEntry(c) && !hasEntryFromCurrentShift;
                   return (
                     <div className={`mt-2 border rounded-lg p-3 ${requiresEntry && timelineDraft[i] === undefined ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-slate-50/30'}`}>
                       <div className="flex items-center justify-between mb-2">
@@ -1589,8 +1689,9 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                         </div>
                       )}
 
-                      {/* Campo de carga nueva entrada (solo si está En Curso) */}
-                      {c.state === 'En Curso' && (
+                      {/* V2.5 — Campo de carga: visible si está En Curso (carga opcional)
+                          o si está Realizada y requiere avance (cierre obligatorio del trabajo). */}
+                      {(c.state === 'En Curso' || (c.state === 'Realizada' && requiresEntry)) && (
                         <div className="flex items-start gap-2">
                           <textarea
                             rows={2}
