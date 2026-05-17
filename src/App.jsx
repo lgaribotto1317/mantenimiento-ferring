@@ -29,7 +29,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.4';
+const APP_VERSION = 'v2.5';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -536,6 +536,11 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [connError, setConnError] = useState('');
 
+  // V2.5 — Estado para el modal de confirmación al guardar con OTs/preventivos vacíos.
+  // Cuando hay vacíos detectados, se abre el modal y se posterga el guardado real
+  // hasta que el usuario confirme.
+  const [emptyConfirm, setEmptyConfirm] = useState(null); // null | { emptyCorr, emptyPrev, cleanedReport }
+
   // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
   // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
   // modifica el reporte activo (Pregunta 1 opción B).
@@ -586,15 +591,24 @@ export default function App() {
       return `${enCursoSinAvance.length} OT en "En Curso" sin entrada de Estado de avance del turno actual. Cargá el avance antes de guardar.`;
     }
 
-    // 3. OTs correctivas en "Realizada" deben tener al menos un técnico (de V2.0)
-    const correctivasMalas = (r.corrective || []).filter(
-      c => c.state === 'Realizada' && (!c.technicians || c.technicians.length === 0)
+    // V2.5 — 3. TODAS las OTs correctivas deben tener al menos un técnico, sin importar estado.
+    // (Antes era sólo para "Realizada"; ahora aplica también a "Sin Iniciar" y "En Curso".)
+    const correctivasSinTecnico = (r.corrective || []).filter(
+      c => !c.technicians || c.technicians.length === 0
     );
-    if (correctivasMalas.length > 0) {
-      return `${correctivasMalas.length} OT correctiva en estado "Realizada" sin técnico asignado. Asigná técnicos antes de guardar.`;
+    if (correctivasSinTecnico.length > 0) {
+      return `${correctivasSinTecnico.length} OT correctiva sin técnico asignado. Asigná técnicos antes de guardar.`;
     }
 
-    // 4. Resumen de preventivos: si hay realizados > 0, la suma del detalle por técnico debe coincidir
+    // V2.5 — 4. TODOS los preventivos cargados deben tener al menos un técnico.
+    const preventivosSinTecnico = (r.preventive || []).filter(
+      p => !p.technicians || p.technicians.length === 0
+    );
+    if (preventivosSinTecnico.length > 0) {
+      return `${preventivosSinTecnico.length} preventivo sin técnico asignado. Asigná técnicos antes de guardar.`;
+    }
+
+    // 5. Resumen de preventivos: si hay realizados > 0, la suma del detalle por técnico debe coincidir
     const realizados = Number(r.preventivosResumen?.realizados);
     if (realizados > 0) {
       // V2.4 — opción C: cada fila puede tener N técnicos en grupo. La cantidad cuenta UNA VEZ
@@ -617,9 +631,39 @@ export default function App() {
     return '';
   };
 
-  const saveReport = async () => {
-    if (!report.date || !report.shift) { setSaveMsg('Falta fecha o turno'); return; }
-    const validationError = validateReport(report);
+  // V2.5 — Detecta correctivos y preventivos "vacíos" (3 campos clave en blanco).
+  //   Correctivo vacío: sin OT, sin task, sin técnicos.
+  //   Preventivo vacío: sin equipoCodigo, sin task, sin técnicos.
+  // Devuelve { emptyCorrIdx, emptyPrevIdx, cleanedReport } o null si no hay vacíos.
+  const detectEmptyEntries = (r) => {
+    const emptyCorrIdx = [];
+    (r.corrective || []).forEach((c, i) => {
+      const noOT = !c.ot || !String(c.ot).trim();
+      const noTask = !c.task || !String(c.task).trim();
+      const noTech = !c.technicians || c.technicians.length === 0;
+      if (noOT && noTask && noTech) emptyCorrIdx.push(i);
+    });
+    const emptyPrevIdx = [];
+    (r.preventive || []).forEach((p, i) => {
+      const noEq = !p.equipoCodigo || !String(p.equipoCodigo).trim();
+      const noTask = !p.task || !String(p.task).trim();
+      const noTech = !p.technicians || p.technicians.length === 0;
+      if (noEq && noTask && noTech) emptyPrevIdx.push(i);
+    });
+    if (emptyCorrIdx.length === 0 && emptyPrevIdx.length === 0) return null;
+    const cleanedReport = {
+      ...r,
+      corrective: (r.corrective || []).filter((_, i) => !emptyCorrIdx.includes(i)),
+      preventive: (r.preventive || []).filter((_, i) => !emptyPrevIdx.includes(i))
+    };
+    return { emptyCorr: emptyCorrIdx.length, emptyPrev: emptyPrevIdx.length, cleanedReport };
+  };
+
+  // Ejecuta el guardado real (sin modal). Se llama directo si no hay vacíos,
+  // o desde el modal después de confirmar.
+  const doSaveReport = async (reportToSave) => {
+    if (!reportToSave.date || !reportToSave.shift) { setSaveMsg('Falta fecha o turno'); return; }
+    const validationError = validateReport(reportToSave);
     if (validationError) {
       setSaveMsg(`Error: ${validationError}`);
       return;
@@ -627,8 +671,11 @@ export default function App() {
     setSaving(true);
     setSaveMsg('Guardando…');
     try {
-      await storage.save(report);
+      await storage.save(reportToSave);
       await refresh();
+      // V2.5 — Si se limpiaron entradas vacías, persistir el cambio en el state local
+      // así el usuario ve el form sin las filas vacías
+      if (reportToSave !== report) setReport(reportToSave);
       setSaveMsg('✓ Reporte guardado');
       setTimeout(() => setSaveMsg(''), 2500);
     } catch (e) {
@@ -636,6 +683,26 @@ export default function App() {
     }
     setSaving(false);
   };
+
+  const saveReport = async () => {
+    if (!report.date || !report.shift) { setSaveMsg('Falta fecha o turno'); return; }
+    // V2.5 — Antes de validar, detectar entradas vacías y abrir modal si las hay
+    const detection = detectEmptyEntries(report);
+    if (detection) {
+      setEmptyConfirm(detection);
+      return;
+    }
+    await doSaveReport(report);
+  };
+
+  // V2.5 — Handlers del modal
+  const handleConfirmEmpty = async () => {
+    if (!emptyConfirm) return;
+    const cleaned = emptyConfirm.cleanedReport;
+    setEmptyConfirm(null);
+    await doSaveReport(cleaned);
+  };
+  const handleCancelEmpty = () => setEmptyConfirm(null);
 
   // ── Excel exports (matching template format + V2.0 additions) ────────────────────
   const exportFull = () => {
@@ -1080,6 +1147,74 @@ export default function App() {
           onExportProviders={() => exportSingleSheet('proveedores')}
           onExportFull={exportFull} />}
       </main>
+
+      {/* V2.5 — Modal de confirmación cuando se quiere guardar con entradas vacías */}
+      {emptyConfirm && (
+        <EmptyEntriesConfirmDialog
+          emptyCorr={emptyConfirm.emptyCorr}
+          emptyPrev={emptyConfirm.emptyPrev}
+          onConfirm={handleConfirmEmpty}
+          onCancel={handleCancelEmpty}
+        />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V2.5 — MODAL DE CONFIRMACIÓN DE ENTRADAS VACÍAS
+// Se muestra antes de guardar si hay correctivos o preventivos completamente
+// vacíos (sin OT/equipo, sin task, sin técnicos). El usuario debe confirmar
+// que está OK eliminarlos antes de continuar con el guardado.
+// ═══════════════════════════════════════════════════════════════════
+function EmptyEntriesConfirmDialog({ emptyCorr, emptyPrev, onConfirm, onCancel }) {
+  // Cerrar con Escape
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const parts = [];
+  if (emptyCorr > 0) parts.push(`${emptyCorr} OT correctiva${emptyCorr === 1 ? '' : 's'}`);
+  if (emptyPrev > 0) parts.push(`${emptyPrev} preventivo${emptyPrev === 1 ? '' : 's'}`);
+  const lista = parts.join(' y ');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="w-5 h-5 text-amber-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Entradas vacías detectadas
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Se detectaron <strong>{lista}</strong> sin información cargada
+              (sin N° OT/equipo, sin descripción y sin técnicos).
+            </p>
+            <p className="text-sm text-slate-600 leading-relaxed mt-2">
+              Al confirmar, esas entradas se <strong>eliminarán</strong> y se guardará el reporte
+              con el resto de la información.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={onConfirm}
+            className="px-4 py-2 text-sm font-medium text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition inline-flex items-center gap-1.5">
+            <Save className="w-4 h-4" />
+            Confirmar y guardar
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1333,7 +1468,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
         </Field>
       </Card>
 
-      {/* CORRECTIVOS — V2.0: SIN botón eliminar */}
+      {/* CORRECTIVOS — V2.0: SIN botón eliminar; V2.5: técnico obligatorio siempre + banner */}
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <SectionTitle icon={Wrench} accent="orange">Mantenimiento Correctivo</SectionTitle>
@@ -1342,12 +1477,20 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             <Plus className="w-4 h-4" />Agregar OT
           </button>
         </div>
+
+        {/* V2.5 — Banner permanente sobre OTs heredadas */}
+        <div className="mb-4 flex items-start gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="text-[13px] text-red-700 leading-snug">
+            Para las OTs de turnos previos que aún no están cerradas, actualizá el "Estado de avance" sólo si hay novedades.
+          </div>
+        </div>
+
         {report.corrective.length === 0 && <EmptyHint>Sin órdenes de trabajo correctivas.</EmptyHint>}
         <div className="space-y-3">
           {report.corrective.map((c, i) => {
-            // V2.0: marcar visualmente las OTs realizadas sin técnico (para guiar al usuario)
-            const requiresTech = c.state === 'Realizada';
-            const missingTech = requiresTech && (!c.technicians || c.technicians.length === 0);
+            // V2.5 — Técnico obligatorio en cualquier estado (no solo "Realizada")
+            const missingTech = (!c.technicians || c.technicians.length === 0);
             // V2.4 — Determinar si la OT es nueva (creada en este turno) o legacy
             // Las nuevas se editan con OTNumberInput estructurado, las legacy con input plano
             const currentShiftKey = `${report.date}-${report.shift}`;
@@ -1376,7 +1519,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                       {ESTADOS_OT.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </Field>
-                  <Field label={`Técnico/s asignado/s${requiresTech ? ' *' : ''}`} className="col-span-4">
+                  <Field label="Técnico/s asignado/s *" className="col-span-4">
                     <MultiSelect options={teamOptions} value={c.technicians}
                       onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
                       placeholder={report.team.length === 0 ? 'Cargá primero el equipo del turno' : 'Seleccionar…'} />
@@ -1386,7 +1529,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 {missingTech && (
                   <div className="text-[11px] text-red-700 mb-1 inline-flex items-center gap-1">
                     <AlertTriangle className="w-3 h-3" />
-                    Las OTs en estado "Realizada" deben tener al menos un técnico asignado
+                    Todas las OTs deben tener al menos un técnico asignado
                   </div>
                 )}
                 {otHasError && (
@@ -1806,8 +1949,11 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
         </div>
         {report.preventive.length === 0 && <EmptyHint>Sin tareas preventivas.</EmptyHint>}
         <div className="space-y-3">
-          {report.preventive.map((p, i) => (
-            <div key={i} className="border border-slate-200 rounded-lg p-3 bg-slate-50/40">
+          {report.preventive.map((p, i) => {
+            // V2.5 — Técnico obligatorio también en preventivos
+            const missingTechPrev = (!p.technicians || p.technicians.length === 0);
+            return (
+            <div key={i} className={`border rounded-lg p-3 ${missingTechPrev ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
               <div className="grid grid-cols-12 gap-2 mb-2">
                 <Field label="Código de tarea" className="col-span-2">
                   <input className={`${inputCls} num`} value={p.codigoTarea}
@@ -1827,7 +1973,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                     {FRECUENCIAS.map(f => <option key={f}>{f}</option>)}
                   </select>
                 </Field>
-                <Field label="Técnico/s asignado/s" className="col-span-2">
+                <Field label="Técnico/s asignado/s *" className="col-span-2">
                   <MultiSelect options={teamOptions} value={p.technicians}
                     onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
                     placeholder={report.team.length === 0 ? 'Cargá el equipo' : 'Seleccionar…'} />
@@ -1839,6 +1985,12 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   </button>
                 </div>
               </div>
+              {missingTechPrev && (
+                <div className="text-[11px] text-red-700 mb-1 inline-flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  Todos los preventivos deben tener al menos un técnico asignado
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-2">
                 <Field label="Tarea">
                   <textarea rows={2} className={inputCls} value={p.task}
@@ -1854,9 +2006,69 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 </Field>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
       </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V2.5 — SUB-COMPONENTE: SECCIÓN DE CORRECTIVOS EN DASHBOARD
+// Renderiza una sub-sección titulada con N OTs. Soporta:
+//   - showStateBadge: muestra el StatePill (Sin Iniciar / En Curso)
+//   - showAvanceMark: muestra badge "Avance hoy" + última entrada del turno actual
+// Cuando count === 0, muestra "Sin novedades" con el subtítulo igual.
+// ═══════════════════════════════════════════════════════════════════
+function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark }) {
+  return (
+    <div className="mb-3 last:mb-0">
+      <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1.5 pb-0.5 border-b border-slate-100">
+        {title} ({count})
+      </div>
+      {count === 0 ? (
+        <div className="text-[10px] text-slate-400 italic py-1">Sin novedades</div>
+      ) : (
+        <div className="divide-y-2 divide-slate-200">
+          {items.map((c, i) => {
+            const hasAvance = showAvanceMark && c._currentShiftEntry;
+            return (
+              <div key={i} className="py-2 first:pt-0 last:pb-0">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                    <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
+                    {hasAvance && (
+                      <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded font-semibold whitespace-nowrap">
+                        <Activity className="w-2.5 h-2.5" />
+                        Avance hoy
+                      </span>
+                    )}
+                    {c.equipoCodigo && (
+                      <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
+                    )}
+                  </div>
+                  {showStateBadge && <StatePill state={c.state} />}
+                </div>
+                <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
+                {hasAvance && (
+                  <div className="mt-1 text-[11px] text-emerald-800 bg-emerald-50/60 border-l-2 border-emerald-300 pl-2 py-0.5 leading-snug whitespace-pre-wrap break-words">
+                    <span className="text-emerald-600 font-semibold mr-1">↳ Avance del turno:</span>
+                    {c._currentShiftEntry.text || '—'}
+                  </div>
+                )}
+                {(c.technicians || []).length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {c.technicians.map(t => (
+                      <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1866,6 +2078,8 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 //   - Solo muestra OTs del turno actual (creadas o modificadas en este turno)
 //   - Las del carry-over que nadie tocó NO aparecen acá (sí en Cargar Reporte)
 //   - Detalle por técnico de preventivos en grid 2-col compacto
+// V2.5 — Correctivos en 4 categorías: Realizados del turno / Heredados realizados /
+//        Pendientes del turno / Pendientes heredados
 // ═══════════════════════════════════════════════════════════════════
 function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride }) {
   const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
@@ -1945,6 +2159,40 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     });
   }, [report.corrective, currentShiftKey, isExistingReport]);
 
+  // V2.5 — Particiones de correctivos en 4 categorías para el Dashboard:
+  //  - Realizados del turno      → creados en este turno (createdInShift === currentShiftKey) y estado "Realizada"
+  //  - Realizados heredados      → creados en turno previo y ahora en "Realizada"
+  //  - Pendientes del turno      → creados en este turno y no "Realizada"
+  //  - Pendientes heredados      → creados en turno previo y no "Realizada"
+  // El criterio es por CREACIÓN de la OT (createdInShift), no por trabajo realizado.
+  // Si una OT vieja recibió un avance en este turno, sigue siendo "heredada"
+  // pero se marca con badge "Avance hoy" y se muestra el texto del último avance.
+  const correctivePartitions = useMemo(() => {
+    const isCreatedHere = (c) => c.createdInShift === currentShiftKey;
+    const isDone = (c) => c.state === 'Realizada';
+
+    // Para el avance del turno actual: buscar entrada de timeline cuyo shiftKey === currentShiftKey
+    const findCurrentShiftEntry = (c) => {
+      const tl = c.timeline || [];
+      // Si hay varias entradas del turno, tomar la última (más reciente)
+      const entries = tl.filter(e => e.shiftKey === currentShiftKey);
+      return entries.length > 0 ? entries[entries.length - 1] : null;
+    };
+
+    const enriched = correctiveActual.map(c => ({
+      ...c,
+      _createdHere: isCreatedHere(c),
+      _currentShiftEntry: findCurrentShiftEntry(c)
+    }));
+
+    return {
+      realizadosTurno:     enriched.filter(c => isDone(c) && c._createdHere),
+      realizadosHeredados: enriched.filter(c => isDone(c) && !c._createdHere),
+      pendientesTurno:     enriched.filter(c => !isDone(c) && c._createdHere),
+      pendientesHeredados: enriched.filter(c => !isDone(c) && !c._createdHere)
+    };
+  }, [correctiveActual, currentShiftKey]);
+
   // V2.2 — Export del Dashboard a PNG/PDF
   const dashboardRef = useRef(null);
   const [exporting, setExporting] = useState('');
@@ -1962,6 +2210,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   });
 
   // Captura el dashboard expandiendo todos los scrolls internos para que se vea completo.
+  // V2.5 — también des-trunca los textos para que no se corten en el export.
   // Devuelve el canvas resultado.
   const captureDashboard = async () => {
     if (!window.html2canvas) {
@@ -1994,6 +2243,25 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       }
     });
 
+    // V2.5 — Des-truncar textos para que no se corten en el export.
+    // Tailwind `truncate` aplica white-space:nowrap + overflow:hidden + text-overflow:ellipsis.
+    // Sobreescribimos esos estilos en línea para que el texto fluya y se envuelva normal.
+    const truncatedEls = node.querySelectorAll('.truncate');
+    const originalTextStyles = [];
+    truncatedEls.forEach(el => {
+      originalTextStyles.push({
+        el,
+        whiteSpace: el.style.whiteSpace,
+        overflow: el.style.overflow,
+        textOverflow: el.style.textOverflow,
+        wordBreak: el.style.wordBreak
+      });
+      el.style.whiteSpace = 'normal';
+      el.style.overflow = 'visible';
+      el.style.textOverflow = 'clip';
+      el.style.wordBreak = 'break-word';
+    });
+
     // Esperar un frame para que se aplique
     await new Promise(r => requestAnimationFrame(r));
     await new Promise(r => setTimeout(r, 50));
@@ -2015,6 +2283,13 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         el.style.overflowY = overflowY;
         el.style.maxHeight = maxHeight;
         el.style.height = height;
+      });
+      // V2.5 — restaurar también los estilos de truncate
+      originalTextStyles.forEach(({ el, whiteSpace, overflow, textOverflow, wordBreak }) => {
+        el.style.whiteSpace = whiteSpace;
+        el.style.overflow = overflow;
+        el.style.textOverflow = textOverflow;
+        el.style.wordBreak = wordBreak;
       });
     }
     return canvas;
@@ -2227,79 +2502,55 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       */}
       <div className="grid grid-cols-12 gap-3" style={{ minHeight: '500px' }}>
 
-        {/* COL IZQ: CORRECTIVOS (50% del ancho, sub-divididos en Realizadas | Pendientes) */}
+        {/* COL IZQ: CORRECTIVOS — V2.5: 4 sub-secciones (Del turno / Heredados, en cada columna) */}
         <Card className="col-span-6 p-3 flex flex-col overflow-hidden">
           <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
             <Wrench className="w-4 h-4" />Correctivos del turno ({correctiveActual.length})
           </h3>
           <div className="overflow-auto flex-1 grid grid-cols-2 gap-3" style={{ maxHeight: 'calc(100vh - 280px)' }}>
-            {/* SUB-COL: REALIZADAS */}
+
+            {/* SUB-COL: REALIZADAS — V2.5: dividida en "Del turno" y "Heredados" */}
             <div className="border-r border-slate-200 pr-3">
               <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <CheckCircle2 className="w-3 h-3" />
-                Realizadas ({correctiveActual.filter(c => c.state === 'Realizada').length})
+                Realizadas ({correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length})
               </div>
-              {correctiveActual.filter(c => c.state === 'Realizada').length === 0
-                ? <div className="text-[10px] text-slate-400 italic py-2">Sin realizadas</div>
-                : (
-                  <div className="divide-y-2 divide-slate-200">
-                    {correctiveActual.filter(c => c.state === 'Realizada').map((c, i) => (
-                      <div key={i} className="py-2 first:pt-0 last:pb-0">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
-                            {c.equipoCodigo && (
-                              <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
-                        {(c.technicians || []).length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {c.technicians.map(t => (
-                              <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <CorrectiveSubsection
+                title="Del turno"
+                count={correctivePartitions.realizadosTurno.length}
+                items={correctivePartitions.realizadosTurno}
+                showStateBadge={false}
+                showAvanceMark={false}
+              />
+              <CorrectiveSubsection
+                title="Heredados realizados"
+                count={correctivePartitions.realizadosHeredados.length}
+                items={correctivePartitions.realizadosHeredados}
+                showStateBadge={false}
+                showAvanceMark={false}
+              />
             </div>
 
-            {/* SUB-COL: PENDIENTES (Sin Iniciar + En Curso) */}
+            {/* SUB-COL: PENDIENTES — V2.5: dividida en "Del turno" y "Heredados" */}
             <div>
               <div className="text-[10px] uppercase tracking-wide text-amber-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <AlertTriangle className="w-3 h-3" />
-                Pendientes ({correctiveActual.filter(c => c.state !== 'Realizada').length})
+                Pendientes ({correctivePartitions.pendientesTurno.length + correctivePartitions.pendientesHeredados.length})
               </div>
-              {correctiveActual.filter(c => c.state !== 'Realizada').length === 0
-                ? <div className="text-[10px] text-slate-400 italic py-2">Sin pendientes</div>
-                : (
-                  <div className="divide-y-2 divide-slate-200">
-                    {correctiveActual.filter(c => c.state !== 'Realizada').map((c, i) => (
-                      <div key={i} className="py-2 first:pt-0 last:pb-0">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
-                            {c.equipoCodigo && (
-                              <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
-                            )}
-                          </div>
-                          <StatePill state={c.state} />
-                        </div>
-                        <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
-                        {(c.technicians || []).length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {c.technicians.map(t => (
-                              <span key={t} className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">{t}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <CorrectiveSubsection
+                title="Del turno"
+                count={correctivePartitions.pendientesTurno.length}
+                items={correctivePartitions.pendientesTurno}
+                showStateBadge={true}
+                showAvanceMark={false}
+              />
+              <CorrectiveSubsection
+                title="Heredados"
+                count={correctivePartitions.pendientesHeredados.length}
+                items={correctivePartitions.pendientesHeredados}
+                showStateBadge={true}
+                showAvanceMark={true}
+              />
             </div>
           </div>
         </Card>
