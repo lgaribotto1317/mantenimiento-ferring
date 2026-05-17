@@ -1431,26 +1431,34 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history]);
 
-  // V2.5 — Opciones para asignar técnicos a OTs (correctivos y preventivos).
-  // Incluye SIEMPRE a los encargados (RESPONSABLES) al PRINCIPIO de la lista,
-  // antes del equipo del turno, porque suelen hacer seguimiento de proveedores
-  // y presupuesto, y deben poder figurar como asignados aunque no estén en el
-  // equipo operativo.
-  // Si no hay equipo cargado, se permite seleccionar entre todos los técnicos
-  // (con los encargados igualmente al principio).
-  // El detalle "por técnico" del Resumen de Preventivos NO usa esta lista
-  // (sigue usando `report.team` directo, sin encargados).
-  const encargadosNames = RESPONSABLES.map(r => r.name);
-  const teamOptions = useMemo(() => {
-    const tecnicosBase = report.team.length > 0 ? report.team : TECNICO_NAMES;
-    // Encargados primero, después los técnicos. Sin duplicar si alguno coincide.
-    const merged = [...encargadosNames];
-    tecnicosBase.forEach(name => {
-      if (!merged.includes(name)) merged.push(name);
+  // V2.5 — Opciones para asignar técnicos a OTs y preventivos.
+  // Reglas:
+  //  - Encargados (RESPONSABLES): siempre al principio de la lista.
+  //  - Técnicos: SOLO los que están en "Equipo del Turno" actual.
+  //    Si no hay equipo cargado, no se muestran técnicos (solo encargados).
+  //  - Excepción por OT: si una OT heredada ya tiene asignados técnicos
+  //    de turnos previos que no están en el equipo actual, se preservan
+  //    en la lista de esa OT puntual (sino se mostrarían los chips pero
+  //    no se podrían deseleccionar). Por eso `teamOptionsForOT(c)` recibe
+  //    la OT y arma la lista incluyendo los técnicos heredados ya asignados.
+  //  - El detalle "por técnico" del Resumen de Preventivos NO usa esta
+  //    lista (sigue usando `report.team` directo, sin encargados).
+  const encargadosNames = useMemo(() => RESPONSABLES.map(r => r.name), []);
+  const teamOptionsForOT = useCallback((ot) => {
+    // Base: encargados primero, después técnicos del equipo del turno
+    const list = [...encargadosNames];
+    (report.team || []).forEach(name => {
+      if (!list.includes(name)) list.push(name);
     });
-    return merged;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report.team]);
+    // Preservar técnicos ya asignados a ESTA OT que no estén en el equipo
+    // (ej: técnicos heredados de turnos previos)
+    if (ot && Array.isArray(ot.technicians)) {
+      ot.technicians.forEach(name => {
+        if (!list.includes(name)) list.push(name);
+      });
+    }
+    return list;
+  }, [encargadosNames, report.team]);
 
   // V2.5 — Mapa de "estado previo" de cada OT (por número), buscando en history
   // el reporte más reciente ANTERIOR al turno actual donde aparece la misma OT.
@@ -1635,7 +1643,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                     </select>
                   </Field>
                   <Field label="Técnico/s asignado/s *" className="col-span-4">
-                    <MultiSelect options={teamOptions} value={c.technicians}
+                    <MultiSelect options={teamOptionsForOT(c)} value={c.technicians}
                       onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
                       placeholder="Seleccionar técnico/s o encargado/s…" />
                   </Field>
@@ -2093,9 +2101,9 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   </select>
                 </Field>
                 <Field label="Técnico/s asignado/s *" className="col-span-2">
-                  <MultiSelect options={teamOptions} value={p.technicians}
+                  <MultiSelect options={report.team} value={p.technicians}
                     onChange={vals => updateList('preventive', l => l.map((x, j) => j === i ? { ...x, technicians: vals } : x))}
-                    placeholder="Seleccionar…" />
+                    placeholder={report.team.length === 0 ? 'Cargá el equipo del turno' : 'Seleccionar…'} />
                 </Field>
                 <div className="col-span-1 flex items-end justify-end">
                   <button onClick={() => updateList('preventive', l => l.filter((_, j) => j !== i))}
