@@ -1,4 +1,23 @@
 Changelog — Reporte Diario de Mantenimiento Ferring
+v2.6 — 2026-05-17
+Cambios principales
+1. Modo administrador con password
+Nuevo botón "Admin" (candado) en el header, debajo del badge "Supabase conectado". Al clickearlo se abre un modal de login con password hardcoded (FerringBiomas2026). Soporta Enter para confirmar y Escape para cancelar.
+Una vez activado, aparece un badge rojo "MODO ADMIN" junto con un botón "Salir" para desactivarlo.
+Sin trazabilidad / audit trail: decisión deliberada por tratarse de control personal del responsable del proyecto, no flujo GMP regulado.
+2. Edición y eliminación de OTs correctivas en modo admin
+Botón 🗑️ en la esquina superior derecha de cada OT correctiva para eliminarla individualmente del reporte.
+Botones ✏️ y 🗑️ por cada entrada del timeline de Estado de avance, permitiendo edición inline y eliminación de entradas históricas.
+3. Eliminación de reportes completos en modo admin
+Desde FormView: nuevo botón "Eliminar reporte" en la action bar (solo aparece si el reporte ya está guardado en Supabase).
+Desde Histórico: columna nueva "Acciones" con botón 🗑️ rojo en cada fila de reportes guardados.
+Ambos disparan un modal de confirmación antes del borrado. El delete es hard delete (sin papelera ni recuperación).
+4. Edición desde Dashboard en modo admin
+Click en una OT correctiva del Dashboard → redirige a "Cargar Reporte" con ese reporte abierto para edición.
+Click en la card de Preventivos del Turno → mismo comportamiento.
+Las cards muestran hover azulado y ring sky para indicar que son clickeables.
+5. Las ediciones en modo admin no marcan lastModifiedInShift
+Las correcciones retroactivas no aparecen como trabajo del turno actual en filtros del Dashboard. Esto preserva la coherencia del filtro V2.3 (Dashboard muestra solo OTs trabajadas en el turno).
 v2.5 — 2026-05-17
 Cambios principales
 1. Dashboard: correctivos divididos en 4 sub-secciones
