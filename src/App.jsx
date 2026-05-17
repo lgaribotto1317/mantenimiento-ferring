@@ -2018,10 +2018,22 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 // V2.5 — SUB-COMPONENTE: SECCIÓN DE CORRECTIVOS EN DASHBOARD
 // Renderiza una sub-sección titulada con N OTs. Soporta:
 //   - showStateBadge: muestra el StatePill (Sin Iniciar / En Curso)
-//   - showAvanceMark: muestra badge "Avance hoy" + última entrada del turno actual
+//   - showAvanceMark: cuando es true, las OTs con avance del turno actual:
+//       · van ordenadas primero (arriba)
+//       · muestran la línea destacada en verde "↳ Avance del turno: ..."
+//     Sin badge "Avance hoy" — la línea verde es suficiente señal visual.
 // Cuando count === 0, muestra "Sin novedades" con el subtítulo igual.
 // ═══════════════════════════════════════════════════════════════════
 function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark }) {
+  // V2.5 — Si showAvanceMark, ordenar items con avance del turno arriba.
+  // Mantiene el orden relativo dentro de cada grupo (con y sin avance).
+  const sortedItems = showAvanceMark
+    ? [
+        ...items.filter(c => c._currentShiftEntry),
+        ...items.filter(c => !c._currentShiftEntry)
+      ]
+    : items;
+
   return (
     <div className="mb-3 last:mb-0">
       <div className="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1.5 pb-0.5 border-b border-slate-100">
@@ -2031,19 +2043,13 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
         <div className="text-[10px] text-slate-400 italic py-1">Sin novedades</div>
       ) : (
         <div className="divide-y-2 divide-slate-200">
-          {items.map((c, i) => {
+          {sortedItems.map((c, i) => {
             const hasAvance = showAvanceMark && c._currentShiftEntry;
             return (
               <div key={i} className="py-2 first:pt-0 last:pb-0">
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
-                    {hasAvance && (
-                      <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded font-semibold whitespace-nowrap">
-                        <Activity className="w-2.5 h-2.5" />
-                        Avance hoy
-                      </span>
-                    )}
                     {c.equipoCodigo && (
                       <span className="text-[10px] text-slate-500 truncate">· {c.equipoCodigo}</span>
                     )}
