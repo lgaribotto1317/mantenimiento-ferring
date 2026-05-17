@@ -4,7 +4,8 @@ import {
   Wrench, Activity, FileSpreadsheet, CheckCircle2, AlertTriangle, Building2,
   HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
-  CalendarDays, Clock, Image as ImageIcon, FileDown
+  CalendarDays, Clock, Image as ImageIcon, FileDown,
+  Lock, LogOut, Edit3, Shield
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -29,7 +30,15 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.5';
+const APP_VERSION = 'v2.6';
+
+// ═══════════════════════════════════════════════════════════════════
+// V2.6 — MODO ADMINISTRADOR
+// Password hardcoded para acceso a edición/eliminación avanzada.
+// Sirve como barrera contra clicks accidentales, NO es control de
+// acceso real (el password queda visible en GitHub).
+// ═══════════════════════════════════════════════════════════════════
+const ADMIN_PASSWORD = 'FerringBiomas2026';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -321,14 +330,28 @@ const storage = {
     } else {
       localStorage.setItem(`rep:${id}`, JSON.stringify(report));
     }
+  },
+
+  // V2.6 — Eliminar reporte completo (modo admin)
+  async delete(date, shift) {
+    const id = `${date}-${shift}`;
+    if (supabaseConfigured) {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/reportes?id=eq.${encodeURIComponent(id)}`,
+        { method: 'DELETE', headers: sbHeaders() }
+      );
+      if (!res.ok) throw new Error(`Supabase: ${res.status} ${await res.text()}`);
+    } else {
+      localStorage.removeItem(`rep:${id}`);
+    }
   }
 };
 
 // ═══════════════════════════════════════════════════════════════════
 // UI PRIMITIVES
 // ═══════════════════════════════════════════════════════════════════
-const Card = ({ children, className = '' }) => (
-  <div className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`}>{children}</div>
+const Card = ({ children, className = '', ...rest }) => (
+  <div className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`} {...rest}>{children}</div>
 );
 
 const SectionTitle = ({ icon: Icon, children, accent = 'sky' }) => {
@@ -541,6 +564,12 @@ export default function App() {
   // hasta que el usuario confirme.
   const [emptyConfirm, setEmptyConfirm] = useState(null); // null | { emptyCorr, emptyPrev, cleanedReport }
 
+  // V2.6 — Modo administrador (no persistente, solo en sesión actual del navegador)
+  const [adminMode, setAdminMode] = useState(false);
+  const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+  // V2.6 — Confirmación de eliminación de reporte completo
+  const [deleteReportConfirm, setDeleteReportConfirm] = useState(null); // null | { date, shift, source }
+
   // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
   // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
   // modifica el reporte activo (Pregunta 1 opción B).
@@ -752,6 +781,70 @@ export default function App() {
     await doSaveReport(cleaned);
   };
   const handleCancelEmpty = () => setEmptyConfirm(null);
+
+  // V2.6 — Handlers de modo administrador
+  const handleAdminLogin = (passwordTry) => {
+    if (passwordTry === ADMIN_PASSWORD) {
+      setAdminMode(true);
+      setAdminLoginOpen(false);
+      return true;
+    }
+    return false;
+  };
+  const handleAdminLogout = () => {
+    setAdminMode(false);
+  };
+
+  // V2.6 — Eliminar reporte completo (modo admin)
+  // `source` puede ser 'form' (estás editando ese reporte) o 'history' (eliminás desde la lista)
+  const requestDeleteReport = (date, shift, source = 'form') => {
+    setDeleteReportConfirm({ date, shift, source });
+  };
+  const confirmDeleteReport = async () => {
+    if (!deleteReportConfirm) return;
+    const { date, shift, source } = deleteReportConfirm;
+    setDeleteReportConfirm(null);
+    try {
+      await storage.delete(date, shift);
+      await refresh();
+      // Si estabas editando el reporte que se eliminó, limpiar el form
+      if (source === 'form' && report.date === date && report.shift === shift) {
+        setReport(emptyReport());
+        setDashboardOverride(null);
+      }
+      setSaveMsg('✓ Reporte eliminado');
+      setTimeout(() => setSaveMsg(''), 2500);
+    } catch (e) {
+      setSaveMsg(`Error: ${e.message}`);
+    }
+  };
+  const cancelDeleteReport = () => setDeleteReportConfirm(null);
+
+  // V2.6 — Redirección desde Dashboard a Cargar Reporte para editar una OT específica.
+  // Cuando el admin clickea una OT en el Dashboard, se carga el reporte
+  // correspondiente en el form y se cambia de pestaña.
+  // scrollTarget opcional: 'preventivos' o 'ot:<numero>' para scrollear a esa sección.
+  const editFromDashboard = (reportData, scrollTarget = null) => {
+    setReport(hydrate(reportData));
+    setDashboardOverride(null);
+    setTab('form');
+    if (scrollTarget) {
+      // Pequeño delay para que el form se monte primero.
+      // Reintenta una vez si el elemento aún no está en el DOM (form recién montado en dispositivos lentos).
+      const id = scrollTarget === 'preventivos'
+        ? 'form-preventivos'
+        : `form-ot-${scrollTarget.replace(/^ot:/, '')}`;
+      const tryScroll = (attempt = 0) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else if (attempt < 3) {
+          setTimeout(() => tryScroll(attempt + 1), 100);
+        }
+      };
+      setTimeout(() => tryScroll(0), 80);
+    }
+  };
 
   // ── Excel exports (matching template format + V2.0 additions) ────────────────────
   const exportFull = () => {
@@ -1091,8 +1184,8 @@ export default function App() {
         .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
       `}</style>
 
-      {/* HEADER */}
-      <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800">
+      {/* HEADER — V2.6: sticky para acceso permanente a tabs y modo admin durante scroll */}
+      <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-lg">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-4">
             {/* LOGO BIOMAS — V2.0: reemplaza el icono del casco. Fondo blanco según pedido. */}
@@ -1122,23 +1215,43 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs">
-            <div className="flex items-center gap-2">
-              {supabaseConfigured ? (
-                connError
-                  ? <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/20 text-red-200 rounded ring-1 ring-red-400/30">
-                    <CloudOff className="w-3.5 h-3.5" />Sin conexión
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-2">
+                {supabaseConfigured ? (
+                  connError
+                    ? <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/20 text-red-200 rounded ring-1 ring-red-400/30">
+                      <CloudOff className="w-3.5 h-3.5" />Sin conexión
+                    </span>
+                    : <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 text-emerald-200 rounded ring-1 ring-emerald-400/30">
+                      <Cloud className="w-3.5 h-3.5" />Supabase conectado
+                    </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/20 text-amber-200 rounded ring-1 ring-amber-400/30">
+                    <Settings className="w-3.5 h-3.5" />Modo local
                   </span>
-                  : <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 text-emerald-200 rounded ring-1 ring-emerald-400/30">
-                    <Cloud className="w-3.5 h-3.5" />Supabase conectado
+                )}
+                <button onClick={refresh} className="p-1.5 hover:bg-white/10 rounded transition" title="Refrescar">
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+              </div>
+              {/* V2.6 — Botón Admin debajo del badge de Supabase */}
+              {adminMode ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/30 text-red-100 rounded ring-1 ring-red-400/50 font-semibold">
+                    <Shield className="w-3.5 h-3.5" />MODO ADMIN
                   </span>
+                  <button onClick={handleAdminLogout}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded transition text-[10px]"
+                    title="Salir de modo admin">
+                    <LogOut className="w-3 h-3" />Salir
+                  </button>
+                </div>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/20 text-amber-200 rounded ring-1 ring-amber-400/30">
-                  <Settings className="w-3.5 h-3.5" />Modo local
-                </span>
+                <button onClick={() => setAdminLoginOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-slate-300 rounded ring-1 ring-white/10 transition">
+                  <Lock className="w-3.5 h-3.5" />Admin
+                </button>
               )}
-              <button onClick={refresh} className="p-1.5 hover:bg-white/10 rounded transition" title="Refrescar">
-                <RefreshCw className="w-4 h-4" />
-              </button>
             </div>
             <div className="text-right">
               <div className="num text-sm font-semibold text-white capitalize">
@@ -1180,13 +1293,25 @@ export default function App() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5">
         {loading && <div className="text-center text-slate-500 py-20">Cargando…</div>}
-        {!loading && tab === 'form' && <FormView report={report} setReport={setReportAndResetOverride} onSave={saveReport} saveMsg={saveMsg} setSaveMsg={setSaveMsg} saving={saving} history={history} />}
+        {!loading && tab === 'form' && <FormView
+          report={report}
+          setReport={setReportAndResetOverride}
+          onSave={saveReport}
+          saveMsg={saveMsg}
+          setSaveMsg={setSaveMsg}
+          saving={saving}
+          history={history}
+          adminMode={adminMode}
+          onDeleteReport={() => requestDeleteReport(report.date, report.shift, 'form')}
+        />}
         {!loading && tab === 'dashboard' && <DashboardView
           report={dashboardOverride || report}
           history={history}
           activeReport={report}
           dashboardOverride={dashboardOverride}
           setDashboardOverride={setDashboardOverride}
+          adminMode={adminMode}
+          onEditFromDashboard={editFromDashboard}
         />}
         {!loading && tab === 'stats' && <StatsView history={history} />}
         {!loading && tab === 'history' && <HistoryView history={history}
@@ -1194,7 +1319,10 @@ export default function App() {
           onExportPreventives={() => exportSingleSheet('preventivos')}
           onExportComments={() => exportSingleSheet('comentarios')}
           onExportProviders={() => exportSingleSheet('proveedores')}
-          onExportFull={exportFull} />}
+          onExportFull={exportFull}
+          adminMode={adminMode}
+          onDeleteReport={(date, shift) => requestDeleteReport(date, shift, 'history')}
+        />}
       </main>
 
       {/* V2.5 — Modal de confirmación cuando se quiere guardar con entradas vacías */}
@@ -1206,6 +1334,136 @@ export default function App() {
           onCancel={handleCancelEmpty}
         />
       )}
+
+      {/* V2.6 — Modal de login admin */}
+      {adminLoginOpen && (
+        <AdminLoginDialog
+          onConfirm={handleAdminLogin}
+          onCancel={() => setAdminLoginOpen(false)}
+        />
+      )}
+
+      {/* V2.6 — Modal de confirmación de eliminación de reporte */}
+      {deleteReportConfirm && (
+        <DeleteReportConfirmDialog
+          date={deleteReportConfirm.date}
+          shift={deleteReportConfirm.shift}
+          onConfirm={confirmDeleteReport}
+          onCancel={cancelDeleteReport}
+        />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V2.6 — MODAL DE LOGIN ADMIN
+// Pide el password de administrador antes de activar el modo admin.
+// ═══════════════════════════════════════════════════════════════════
+function AdminLoginDialog({ onConfirm, onCancel }) {
+  const [pwd, setPwd] = useState('');
+  const [error, setError] = useState('');
+  const inputRef = useRef(null);
+
+  // Cerrar con Escape, autofocus al abrir
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    inputRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const submit = () => {
+    const ok = onConfirm(pwd);
+    if (!ok) setError('Password incorrecto');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center flex-shrink-0">
+            <Shield className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Modo administrador
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Ingresá el password para activar la edición y eliminación avanzada.
+            </p>
+          </div>
+        </div>
+        <input ref={inputRef} type="password" value={pwd}
+          onChange={e => { setPwd(e.target.value); setError(''); }}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+          placeholder="Password"
+          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-500 transition" />
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={submit}
+            className="px-4 py-2 text-sm font-medium text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition inline-flex items-center gap-1.5">
+            <Lock className="w-4 h-4" />
+            Ingresar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V2.6 — MODAL DE CONFIRMACIÓN DE ELIMINACIÓN DE REPORTE
+// Pide confirmación antes de eliminar un reporte completo de Supabase.
+// La acción es irreversible.
+// ═══════════════════════════════════════════════════════════════════
+function DeleteReportConfirmDialog({ date, shift, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+            <Trash2 className="w-5 h-5 text-red-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Eliminar reporte completo
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Vas a eliminar el reporte del <strong>{date}</strong> turno <strong>{shift}</strong>.
+            </p>
+            <p className="text-sm text-red-700 leading-relaxed mt-2 font-medium">
+              Esta acción es irreversible. Se borra toda la información del reporte:
+              correctivos, preventivos, servicios, comentarios y avance.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={onConfirm}
+            className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition inline-flex items-center gap-1.5">
+            <Trash2 className="w-4 h-4" />
+            Eliminar reporte
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1275,7 +1533,7 @@ function EmptyEntriesConfirmDialog({ emptyCorr, emptyPrev, onConfirm, onCancel }
 //   - Planta de Efluentes y Caldera con schema nuevo (PTEL + Caldera + Ablandadores)
 //   - Resumen Preventivos del Turno al final del formulario
 // ═══════════════════════════════════════════════════════════════════
-function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history }) {
+function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history, adminMode, onDeleteReport }) {
   const update = (patch) => setReport(r => ({ ...r, ...patch }));
   const updateList = (key, fn) => setReport(r => ({ ...r, [key]: fn(r[key]) }));
   const updateServicios = (patch) => setReport(r => ({ ...r, servicios: { ...r.servicios, ...patch } }));
@@ -1285,6 +1543,8 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // hubo cambios, setea lastModifiedInShift al turno actual. Esto permite que el
   // Dashboard distinga OTs "tocadas" en el turno actual (visibles) de las del
   // carry-over que nadie modificó (no visibles).
+  // V2.6 — En modo admin, las modificaciones NO marcan lastModifiedInShift
+  // (porque pueden ser correcciones retroactivas, no trabajo del turno).
   const updateCorrectiveItem = (i, patch) => setReport(r => ({
     ...r,
     corrective: r.corrective.map((x, j) => {
@@ -1292,6 +1552,10 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       // si la patch no cambia nada efectivo, no actualizamos lastModifiedInShift
       const changed = Object.keys(patch).some(k => x[k] !== patch[k]);
       if (!changed) return x;
+      if (adminMode) {
+        // V2.6 — admin: aplicar patch sin tocar lastModifiedInShift
+        return { ...x, ...patch };
+      }
       return { ...x, ...patch, lastModifiedInShift: `${r.date}-${r.shift}` };
     })
   }));
@@ -1302,8 +1566,13 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // - Cargado solo cuando el estado es "En Curso" (y al guardar la app valida
   //   que haya entrada del turno actual)
   // - Las entradas anteriores son read-only (no se pueden editar ni borrar)
+  // - V2.6 — En modo admin, las entradas son editables y eliminables
   // - timelineDraft mantiene el texto en redacción por índice de OT
   const [timelineDraft, setTimelineDraft] = useState({});
+  // V2.6 — Edición inline de entradas existentes (solo admin)
+  // editingKey es del tipo "i-ei" (índice de OT - índice de entrada)
+  const [timelineEditingKey, setTimelineEditingKey] = useState(null);
+  const [timelineEditDraft, setTimelineEditDraft] = useState('');
 
   const addTimelineEntry = (i) => {
     const text = (timelineDraft[i] || '').trim();
@@ -1551,6 +1820,14 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
             {saveMsg && <span className={`text-sm font-medium ${saveMsg.startsWith('Error') ? 'text-red-600' : saveMsg.startsWith('✓') ? 'text-emerald-600' : 'text-slate-500'}`}>{saveMsg}</span>}
+            {/* V2.6 — Botón eliminar reporte (solo modo admin y si el reporte ya está guardado) */}
+            {adminMode && history.some(r => r.date === report.date && r.shift === report.shift) && (
+              <button onClick={onDeleteReport}
+                className={`${buttonCls} bg-red-50 text-red-700 hover:bg-red-100 ring-1 ring-red-200`}
+                title="Eliminar este reporte completo">
+                <Trash2 className="w-4 h-4" />Eliminar reporte
+              </button>
+            )}
             <button onClick={cleanForm} className={`${buttonCls} bg-slate-100 text-slate-600 hover:bg-slate-200`}>
               Limpiar
             </button>
@@ -1621,7 +1898,16 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             const isLegacyFormat = !isValidOT(c.ot) && !isNewOT;
             const otHasError = isNewOT && !isValidOT(c.ot);
             return (
-              <div key={i} className={`border rounded-lg p-3 ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+              <div key={i} id={`form-ot-${c.ot || `idx-${i}`}`} className={`border rounded-lg p-3 relative scroll-mt-32 ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+                {/* V2.6 — Botón eliminar OT (solo modo admin) */}
+                {adminMode && (
+                  <button
+                    onClick={() => updateList('corrective', l => l.filter((_, j) => j !== i))}
+                    className="absolute top-2 right-2 z-10 text-red-500 hover:text-red-700 hover:bg-red-100 rounded p-1.5 transition ring-1 ring-red-200 bg-white"
+                    title="Eliminar OT (modo admin)">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <div className="grid grid-cols-12 gap-2 mb-2">
                   <Field label="N° OT *" className="col-span-3">
                     <OTNumberInput
@@ -1647,7 +1933,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                       onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
                       placeholder="Seleccionar técnico/s o encargado/s…" />
                   </Field>
-                  {/* V2.0: BOTÓN ELIMINAR REMOVIDO */}
+                  {/* V2.0: BOTÓN ELIMINAR REMOVIDO; V2.6: re-agregado solo en modo admin (arriba derecha) */}
                 </div>
                 {missingTech && (
                   <div className="text-[11px] text-red-700 mb-1 inline-flex items-center gap-1">
@@ -1694,24 +1980,91 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                         )}
                       </div>
 
-                      {/* Entradas previas (read-only) */}
+                      {/* Entradas previas (read-only para usuarios normales, editables en modo admin) */}
                       {timeline.length > 0 && (
                         <div className="space-y-1.5 mb-2">
-                          {timeline.map((entry, ei) => (
-                            <div key={ei} className="flex items-start gap-2 text-[12px] bg-white border border-slate-200 rounded px-2 py-1.5">
-                              <div className="flex-shrink-0 w-32">
-                                <div className="text-[10px] text-slate-500 num font-medium">
-                                  {entry.date} · {entry.shift}
+                          {timeline.map((entry, ei) => {
+                            // V2.6 — Estado local de edición inline (solo admin)
+                            const editKey = `${i}-${ei}`;
+                            const isEditing = adminMode && timelineEditingKey === editKey;
+                            return (
+                              <div key={ei} className={`flex items-start gap-2 text-[12px] bg-white border rounded px-2 py-1.5 ${isEditing ? 'border-sky-400 ring-1 ring-sky-200' : 'border-slate-200'}`}>
+                                <div className="flex-shrink-0 w-32">
+                                  <div className="text-[10px] text-slate-500 num font-medium">
+                                    {entry.date} · {entry.shift}
+                                  </div>
+                                  <div className="text-[9px] text-slate-400 truncate" title={entry.author}>
+                                    {entry.author || '—'}
+                                  </div>
                                 </div>
-                                <div className="text-[9px] text-slate-400 truncate" title={entry.author}>
-                                  {entry.author || '—'}
+                                <div className="flex-1 min-w-0">
+                                  {isEditing ? (
+                                    <textarea
+                                      rows={2}
+                                      autoFocus
+                                      className={`${inputCls} text-[12px] w-full`}
+                                      value={timelineEditDraft}
+                                      onChange={e => setTimelineEditDraft(e.target.value)}
+                                    />
+                                  ) : (
+                                    <div className="text-slate-700 whitespace-pre-wrap break-words">
+                                      {entry.text}
+                                    </div>
+                                  )}
                                 </div>
+                                {/* V2.6 — Botones admin para editar/eliminar entrada */}
+                                {adminMode && !isEditing && (
+                                  <div className="flex flex-col gap-1 flex-shrink-0">
+                                    <button
+                                      onClick={() => {
+                                        setTimelineEditingKey(editKey);
+                                        setTimelineEditDraft(entry.text || '');
+                                      }}
+                                      className="text-sky-600 hover:text-sky-800 hover:bg-sky-50 rounded p-1 transition"
+                                      title="Editar (admin)">
+                                      <Edit3 className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        updateCorrectiveItem(i, {
+                                          timeline: timeline.filter((_, j) => j !== ei)
+                                        });
+                                      }}
+                                      className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-1 transition"
+                                      title="Eliminar entrada (admin)">
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                )}
+                                {isEditing && (
+                                  <div className="flex flex-col gap-1 flex-shrink-0">
+                                    <button
+                                      onClick={() => {
+                                        const newTimeline = timeline.map((e, j) =>
+                                          j === ei ? { ...e, text: timelineEditDraft } : e
+                                        );
+                                        updateCorrectiveItem(i, { timeline: newTimeline });
+                                        setTimelineEditingKey(null);
+                                        setTimelineEditDraft('');
+                                      }}
+                                      className="text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded p-1 transition"
+                                      title="Guardar">
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setTimelineEditingKey(null);
+                                        setTimelineEditDraft('');
+                                      }}
+                                      className="text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded p-1 transition"
+                                      title="Cancelar">
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                              <div className="flex-1 text-slate-700 whitespace-pre-wrap break-words">
-                                {entry.text}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
 
@@ -1745,7 +2098,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       </Card>
 
       {/* RESUMEN PREVENTIVOS DEL TURNO — V2.1: subido a la 4ta posición (antes de Servicios) */}
-      <Card className="p-5">
+      <Card className="p-5 scroll-mt-32" id="form-preventivos">
         <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
         <p className="text-xs text-slate-500 mb-4">
           Estos son los totales globales del turno (los carga el responsable). Si hay realizados &gt; 0,
@@ -2151,7 +2504,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 //     Sin badge "Avance hoy" — la línea verde es suficiente señal visual.
 // Cuando count === 0, muestra "Sin novedades" con el subtítulo igual.
 // ═══════════════════════════════════════════════════════════════════
-function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark }) {
+function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark, adminMode, onItemClick }) {
   // V2.5 — Si showAvanceMark, ordenar items con avance del turno arriba.
   // Mantiene el orden relativo dentro de cada grupo (con y sin avance).
   const sortedItems = showAvanceMark
@@ -2172,8 +2525,12 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
         <div className="divide-y-2 divide-slate-200">
           {sortedItems.map((c, i) => {
             const hasAvance = showAvanceMark && c._currentShiftEntry;
+            const clickable = adminMode && onItemClick;
             return (
-              <div key={i} className="py-2 first:pt-0 last:pb-0">
+              <div key={i}
+                className={`py-2 first:pt-0 last:pb-0 ${clickable ? 'cursor-pointer hover:bg-sky-50/60 -mx-1 px-1 rounded transition' : ''}`}
+                onClick={clickable ? () => onItemClick(c) : undefined}
+                title={clickable ? 'Click para editar en Cargar Reporte' : undefined}>
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <span className="num text-[11px] font-bold text-slate-800 whitespace-nowrap">{c.ot || '—'}</span>
@@ -2214,7 +2571,7 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
 // V2.5 — Correctivos en 4 categorías: Realizados del turno / Heredados realizados /
 //        Pendientes del turno / Pendientes heredados
 // ═══════════════════════════════════════════════════════════════════
-function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride }) {
+function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride, adminMode, onEditFromDashboard }) {
   const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
   const dateShort = useMemo(() => formatDateShort(report.date), [report.date]);
   const p = report.servicios.plantaCaldera;
@@ -2585,6 +2942,16 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         </div>
       </div>
 
+      {/* V2.6 — Banner de modo admin para indicar que se puede editar haciendo click */}
+      {adminMode && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-sky-50 border border-sky-200 rounded-lg text-[12px] text-sky-800">
+          <Shield className="w-4 h-4 text-sky-600 flex-shrink-0" />
+          <div>
+            Modo administrador activo. Hacé click en cualquier correctivo o preventivo para editarlo en "Cargar Reporte".
+          </div>
+        </div>
+      )}
+
       {/* Wrapper que va a ser capturado por html2canvas */}
       <div ref={dashboardRef} className="space-y-3">
       {/* HEADER — V2.0: equipo con wrap multi-línea */}
@@ -2654,6 +3021,8 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.realizadosTurno}
                 showStateBadge={false}
                 showAvanceMark={false}
+                adminMode={adminMode}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
               <CorrectiveSubsection
                 title="Heredados realizados"
@@ -2661,6 +3030,8 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.realizadosHeredados}
                 showStateBadge={false}
                 showAvanceMark={false}
+                adminMode={adminMode}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
             </div>
 
@@ -2676,6 +3047,8 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.pendientesTurno}
                 showStateBadge={true}
                 showAvanceMark={false}
+                adminMode={adminMode}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
               <CorrectiveSubsection
                 title="Heredados"
@@ -2683,6 +3056,8 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.pendientesHeredados}
                 showStateBadge={true}
                 showAvanceMark={true}
+                adminMode={adminMode}
+                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
             </div>
           </div>
@@ -2690,8 +3065,14 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
 
         {/* COL DER: STACK con PREVENTIVOS arriba y SERVICIOS abajo */}
         <div className="col-span-6 flex flex-col gap-3" style={{ maxHeight: 'calc(100vh - 220px)' }}>
-          {/* PREVENTIVOS DEL TURNO */}
-          <Card className="p-3 flex flex-col overflow-hidden flex-shrink-0">
+          {/* PREVENTIVOS DEL TURNO — V2.6: Card entera clickeable en modo admin */}
+          <Card
+            className={`p-3 flex flex-col overflow-hidden flex-shrink-0 ${
+              adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''
+            }`}
+            onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
+            title={adminMode ? 'Click para editar preventivos del turno' : undefined}
+          >
             <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
               <ListChecks className="w-4 h-4" />Preventivos del Turno
             </h3>
@@ -3546,7 +3927,7 @@ function computeStats(history, range, customStart, customEnd) {
 //   - botones nuevos: Solo Comentarios, Solo Proveedores
 //   - fechas en formato dd/mmm/aa
 // ═══════════════════════════════════════════════════════════════════
-function HistoryView({ history, onExportCorrectives, onExportPreventives, onExportComments, onExportProviders, onExportFull }) {
+function HistoryView({ history, onExportCorrectives, onExportPreventives, onExportComments, onExportProviders, onExportFull, adminMode, onDeleteReport }) {
   const [filter, setFilter] = useState('');
   const filtered = history.filter(r =>
     !filter || r.date.includes(filter) || r.shift.toLowerCase().includes(filter.toLowerCase()) ||
@@ -3637,6 +4018,7 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
                   <th className="pb-2 font-medium text-right">Correctivos</th>
                   <th className="pb-2 font-medium text-right">Preventivos</th>
                   <th className="pb-2 font-medium text-right">Urgentes</th>
+                  {adminMode && <th className="pb-2 font-medium text-right">Acciones</th>}
                 </tr>
               </thead>
               <tbody>
@@ -3651,6 +4033,17 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
                     <td className="py-2 text-right num">
                       {r.comments?.filter(c => c.priority === 'Urgente').length || 0}
                     </td>
+                    {adminMode && (
+                      <td className="py-2 text-right">
+                        <button
+                          onClick={() => onDeleteReport(r.date, r.shift)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-red-600 hover:bg-red-50 hover:text-red-700 transition text-xs"
+                          title="Eliminar reporte"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
