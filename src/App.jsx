@@ -350,8 +350,8 @@ const storage = {
 // ═══════════════════════════════════════════════════════════════════
 // UI PRIMITIVES
 // ═══════════════════════════════════════════════════════════════════
-const Card = ({ children, className = '' }) => (
-  <div className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`}>{children}</div>
+const Card = ({ children, className = '', ...rest }) => (
+  <div className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`} {...rest}>{children}</div>
 );
 
 const SectionTitle = ({ icon: Icon, children, accent = 'sky' }) => {
