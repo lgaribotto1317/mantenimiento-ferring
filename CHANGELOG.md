@@ -1,4 +1,35 @@
 Changelog — Reporte Diario de Mantenimiento Ferring
+v2.5 — 2026-05-17
+Cambios principales
+1. Dashboard: correctivos divididos en 4 sub-secciones
+La columna "Realizadas" ahora se divide en "Del turno" (creadas y cerradas en este turno) y "Heredados realizados" (creadas en turno previo, cerradas acá).
+La columna "Pendientes" ahora se divide en "Del turno" (creadas acá, aún sin cerrar) y "Heredados" (creadas en turno previo, aún sin cerrar).
+El criterio es por creación de la OT (createdInShift), no por trabajo realizado.
+El total del header (Correctivos del turno (N)) se mantiene combinado.
+Si una categoría está vacía, se muestra "Sin novedades" debajo del subtítulo.
+2. Marca de "Avance hoy" en pendientes heredados
+Cuando una OT heredada tiene una entrada de timeline cargada en el turno actual, aparece un badge verde "Avance hoy" al lado del N° OT.
+Adicionalmente, debajo de la descripción, se muestra una línea destacada en verde con el texto del último avance del turno: "↳ Avance del turno: ...".
+3. Técnico obligatorio en correctivos y preventivos
+Antes: el técnico era obligatorio solo en correctivos con estado "Realizada".
+Ahora: es obligatorio en cualquier estado (Sin Iniciar, En Curso, Realizada) y también en todos los preventivos cargados.
+Las filas sin técnico se muestran con borde rojo y mensaje inline antes de apretar Guardar.
+4. Banner permanente en sección Correctivos del formulario
+Arriba de la lista de OTs aparece un banner rojo recordando que, para OTs heredadas de turnos previos, solo cargue "Estado de avance" si hay novedades.
+5. Modal de confirmación al guardar con entradas vacías
+Si al apretar Guardar hay correctivos o preventivos completamente vacíos (sin N° OT/equipo, sin descripción y sin técnicos), se abre un modal indicando cuántas filas se van a eliminar y pidiendo confirmación.
+Al confirmar: se eliminan las filas vacías y se guarda el resto.
+Al cancelar: vuelve al formulario sin cambios.
+6. Bug fix: texto cortado al exportar Dashboard a PNG/PDF
+Los campos largos (códigos de equipo, descripciones) que en pantalla quedan con truncate ahora se des-truncan durante la captura.
+La vista normal en pantalla sigue con truncate para mantener el layout compacto.
+Sin cambios en
+Esquema de Supabase (todo sigue en el JSONB existente).
+Lógica de carry-over de OTs pendientes al siguiente turno.
+Catálogos (responsables, técnicos, equipos auxiliares).
+Exports a Excel (mismas hojas y columnas que V2.4).
+Estadísticas y KPIs.
+Filtrado del Dashboard de reportes nuevos vs guardados.
 v2.4 — 2026-05-10
 Cambios principales
 1. N° OT con formato estandarizado XXX-YYYYY (según SOP 10.3.2)
