@@ -1184,8 +1184,8 @@ export default function App() {
         .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
       `}</style>
 
-      {/* HEADER */}
-      <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800">
+      {/* HEADER — V2.6: sticky para acceso permanente a tabs y modo admin durante scroll */}
+      <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-lg">
         <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-4">
             {/* LOGO BIOMAS — V2.0: reemplaza el icono del casco. Fondo blanco según pedido. */}
@@ -1898,7 +1898,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             const isLegacyFormat = !isValidOT(c.ot) && !isNewOT;
             const otHasError = isNewOT && !isValidOT(c.ot);
             return (
-              <div key={i} id={`form-ot-${c.ot || `idx-${i}`}`} className={`border rounded-lg p-3 relative ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+              <div key={i} id={`form-ot-${c.ot || `idx-${i}`}`} className={`border rounded-lg p-3 relative scroll-mt-32 ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
                 {/* V2.6 — Botón eliminar OT (solo modo admin) */}
                 {adminMode && (
                   <button
@@ -2098,7 +2098,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       </Card>
 
       {/* RESUMEN PREVENTIVOS DEL TURNO — V2.1: subido a la 4ta posición (antes de Servicios) */}
-      <Card className="p-5" id="form-preventivos">
+      <Card className="p-5 scroll-mt-32" id="form-preventivos">
         <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
         <p className="text-xs text-slate-500 mb-4">
           Estos son los totales globales del turno (los carga el responsable). Si hay realizados &gt; 0,
