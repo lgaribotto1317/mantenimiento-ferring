@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.6';
+const APP_VERSION = 'v2.7';
 
 // ═══════════════════════════════════════════════════════════════════
 // V2.6 — MODO ADMINISTRADOR
@@ -1313,7 +1313,7 @@ export default function App() {
           adminMode={adminMode}
           onEditFromDashboard={editFromDashboard}
         />}
-        {!loading && tab === 'stats' && <StatsView history={history} />}
+        {!loading && tab === 'stats' && <StatsView history={history} adminMode={adminMode} />}
         {!loading && tab === 'history' && <HistoryView history={history}
           onExportCorrectives={() => exportSingleSheet('correctivos')}
           onExportPreventives={() => exportSingleSheet('preventivos')}
@@ -3303,7 +3303,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
 //   - Apartado "Fin de Semana" cerrado (viernes Noche + sábado + domingo)
 //   - Apartado "Último Día" (últimos 3 turnos del día más reciente con datos)
 // ═══════════════════════════════════════════════════════════════════
-function StatsView({ history }) {
+function StatsView({ history, adminMode }) {
   const [range, setRange] = useState('week');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -3311,6 +3311,12 @@ function StatsView({ history }) {
   const stats = useMemo(() => computeStats(history, range, customStart, customEnd), [history, range, customStart, customEnd]);
   const finde = useMemo(() => computeWeekendStats(history), [history]);
   const ultimoDia = useMemo(() => computeLastDayStats(history), [history]);
+  // V2.7 — Estadísticas admin: OTs pendientes por turno de origen + OTs heredadas cerradas por turno.
+  // Solo se calcula cuando adminMode === true. Usa el mismo rango (startStr/endStr) de computeStats.
+  const shiftPerformance = useMemo(
+    () => adminMode ? computeShiftPerformance(history, stats.startStr, stats.endStr) : null,
+    [history, stats.startStr, stats.endStr, adminMode]
+  );
 
   if (history.length === 0) {
     return (
@@ -3466,9 +3472,14 @@ function StatsView({ history }) {
           }
         </Card>
 
+        {/* V2.7 — Bloque admin-only: métricas de performance por turno.
+            Incluye las dos tarjetas existentes (Distribución por turno, Carga por técnico)
+            y las dos nuevas de V2.7 (Pendientes por origen, Heredadas cerradas). */}
+        {adminMode && (<>
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
             <Calendar className="w-4 h-4" />Distribución por turno
+            <span className="text-[10px] text-amber-600 font-normal ml-2">(admin)</span>
           </h3>
           {stats.shiftDist.every(s => s.value === 0) ? <EmptyHint>Sin datos</EmptyHint> :
             <ResponsiveContainer width="100%" height={240}>
@@ -3489,6 +3500,7 @@ function StatsView({ history }) {
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
             <Users className="w-4 h-4" />Carga por técnico
             <span className="text-[10px] text-slate-500 font-normal ml-2">(todos los técnicos del catálogo)</span>
+            <span className="text-[10px] text-amber-600 font-normal ml-1">· (admin)</span>
           </h3>
           {stats.topTechs.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
             <ResponsiveContainer width="100%" height={Math.max(240, stats.topTechs.length * 22)}>
@@ -3504,6 +3516,32 @@ function StatsView({ history }) {
             </ResponsiveContainer>
           }
         </Card>
+
+        {/* V2.7 — OTs dejadas pendientes por turno de origen.
+            Por cada OT en history (excluyendo legacy sin formato XXX-YYYYY),
+            se toma el turno donde se creó (createdInShift) y su último estado global.
+            Si el último estado es Sin Iniciar o En Curso, suma al turno de origen.
+            Solo se consideran OTs creadas dentro del rango [startStr, endStr]. */}
+        <ShiftRankingCard
+          title="OTs dejadas pendientes por turno de origen"
+          tooltip="Cuenta OTs creadas en cada turno cuyo último estado global sigue en Sin Iniciar o En Curso. Filtro por fecha aplica al turno de creación. Excluye OTs legacy."
+          data={shiftPerformance?.pendingByOriginShift}
+          icon={AlertTriangle}
+          colorBar="#ef4444"
+        />
+
+        {/* V2.7 — OTs heredadas cerradas por turno.
+            Una transición Sin Iniciar/En Curso → Realizada en un turno distinto
+            al de creación cuenta para el turno donde ocurrió el cierre.
+            Solo se cuentan cierres ocurridos dentro del rango [startStr, endStr]. */}
+        <ShiftRankingCard
+          title="OTs heredadas cerradas por turno"
+          tooltip="Cuenta cierres (estado → Realizada) de OTs creadas en turnos anteriores. Filtro por fecha aplica al turno del cierre. Excluye OTs legacy."
+          data={shiftPerformance?.closedByShift}
+          icon={CheckCircle2}
+          colorBar="#10b981"
+        />
+        </>)}
 
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
@@ -3588,8 +3626,200 @@ const KPI = ({ label, value, icon: Icon, color }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// V2.7 — Card de ranking por turno (admin)
+//   - Muestra ranking 1°/2°/3° arriba + barra horizontal abajo.
+//   - data: { Mañana: number|null, Tarde: number|null, Noche: number|null }
+//     null = "—" (turno sin datos relevantes en la ventana)
+// ═══════════════════════════════════════════════════════════════════
+function ShiftRankingCard({ title, tooltip, data, icon: Icon, colorBar }) {
+  if (!data) return null;
+  const SHIFTS = ['Mañana', 'Tarde', 'Noche'];
+  // Ordenar para ranking: nulls al final, ties por orden M/T/N
+  const ranked = SHIFTS
+    .map(s => ({ shift: s, value: data[s] }))
+    .sort((a, b) => {
+      if (a.value === null && b.value === null) return 0;
+      if (a.value === null) return 1;
+      if (b.value === null) return -1;
+      return b.value - a.value;
+    });
+  const allNull = ranked.every(r => r.value === null);
+  const barData = SHIFTS.map(s => ({ name: s, value: data[s] === null ? 0 : data[s] }));
+  return (
+    <Card className="p-4">
+      <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
+        <Icon className="w-4 h-4" />{title}
+        <span className="text-[10px] text-amber-600 font-normal ml-1">(admin)</span>
+      </h3>
+      <p className="text-[10px] text-slate-500 mb-3 leading-snug">{tooltip}</p>
+      {allNull ? <EmptyHint>Sin datos en la ventana</EmptyHint> : (
+        <>
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            {ranked.map((r, i) => (
+              <div key={r.shift} className={`rounded-lg p-2 border text-center ${
+                i === 0 && r.value !== null && r.value > 0 ? 'bg-amber-50 border-amber-200' :
+                i === 1 && r.value !== null && r.value > 0 ? 'bg-slate-50 border-slate-200' :
+                'bg-white border-slate-200'
+              }`}>
+                <div className="text-[9px] uppercase tracking-wide text-slate-500 font-semibold">
+                  {i === 0 ? '1°' : i === 1 ? '2°' : '3°'} · {r.shift}
+                </div>
+                <div className="text-xl font-bold num mt-0.5 text-slate-800">
+                  {r.value === null ? '—' : r.value}
+                </div>
+              </div>
+            ))}
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={barData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="name" stroke="#64748b" style={{ fontSize: '11px' }} />
+              <YAxis stroke="#64748b" style={{ fontSize: '10px' }} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }}
+                formatter={(v, n, p) => {
+                  const original = data[p.payload.name];
+                  return [original === null ? '—' : original, 'OTs'];
+                }}
+              />
+              <Bar dataKey="value" fill={colorBar} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // STATS COMPUTATION HELPERS
 // ═══════════════════════════════════════════════════════════════════
+
+// V2.7 — Estadísticas admin de performance por turno.
+//
+// Devuelve dos métricas, cada una como { 'Mañana': n|null, 'Tarde': n|null, 'Noche': n|null }:
+//
+//   1) pendingByOriginShift — OTs creadas en cada turno cuyo último estado GLOBAL
+//      sigue en Sin Iniciar o En Curso. Filtro por fecha aplica al turno de origen
+//      (createdInShift). Excluye OTs legacy (sin formato XXX-YYYYY válido).
+//
+//   2) closedByShift — Cierres ocurridos (transición Sin Iniciar/En Curso → Realizada)
+//      en turnos distintos al de creación, dentro del rango [startStr, endStr].
+//      El cierre se atribuye al turno donde sucedió la transición (no al de origen).
+//      Excluye OTs legacy.
+//
+// IMPORTANTE: "último estado global" se calcula sobre TODO el history, no solo el rango.
+// El filtro por fecha solo recorta qué OTs entran al cálculo (por origen o por cierre).
+//
+// Si una OT no fue tocada por ningún turno en la ventana, su turno cuenta 0.
+// Si NINGUNA OT entró al cálculo para un turno (ej: no hubo creaciones de ese turno en la ventana),
+// ese turno devuelve null y se muestra como "—".
+function computeShiftPerformance(history, startStr, endStr) {
+  const SHIFTS = ['Mañana', 'Tarde', 'Noche'];
+  const SHIFT_ORDER = { 'Mañana': 0, 'Tarde': 1, 'Noche': 2 };
+  // Validar formato XXX-YYYYY (idéntico a isValidOT). Hay que duplicarlo acá porque
+  // las funciones de computo viven fuera del componente que importa isValidOT.
+  const isValid = (ot) => {
+    if (!ot || typeof ot !== 'string') return false;
+    const m = ot.trim().match(/^([A-Z0-9]+)-(\d{5})$/);
+    if (!m) return false;
+    return SECTORES_CODES.includes(m[1]);
+  };
+
+  // 1) Construir mapas globales: createdInShift y ÚLTIMO estado global por OT.
+  //    También guardamos en qué reportes apareció cada OT (ordenado cronológicamente).
+  const sortedHistory = [...history].sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return SHIFT_ORDER[a.shift] - SHIFT_ORDER[b.shift];
+  });
+
+  // Por OT: { createdInShift, lastState, occurrences: [{date, shift, state}] }
+  const otMap = new Map();
+  sortedHistory.forEach(r => {
+    (r.corrective || []).forEach(c => {
+      if (!isValid(c.ot)) return; // Excluye legacy
+      const key = c.ot;
+      let entry = otMap.get(key);
+      if (!entry) {
+        entry = {
+          createdInShift: c.createdInShift || null, // shiftKey "YYYY-MM-DD-Turno"
+          lastState: null,
+          occurrences: []
+        };
+        otMap.set(key, entry);
+      }
+      // El último que se procese en orden cronológico será el lastState
+      entry.lastState = c.state || null;
+      entry.occurrences.push({ date: r.date, shift: r.shift, state: c.state || null });
+    });
+  });
+
+  // Helper: parsear createdInShift "YYYY-MM-DD-Turno" → {date, shift}
+  // Cuidado: el formato es DATE-SHIFT donde DATE = "YYYY-MM-DD" (3 partes separadas por "-"),
+  // así que split('-').slice(0,3).join('-') da la fecha y .slice(3).join('-') daría el shift.
+  // Pero "Mañana"/"Tarde"/"Noche" no tienen guiones, entonces basta con slice(0,3)+slice(3,4).
+  const parseShiftKey = (sk) => {
+    if (!sk || typeof sk !== 'string') return null;
+    const parts = sk.split('-');
+    if (parts.length < 4) return null;
+    return { date: parts.slice(0, 3).join('-'), shift: parts[3] };
+  };
+
+  // 2) Métrica 1: pendientes por turno de origen.
+  //    Inicializamos cada turno como null. Cuando una OT del rango entra, lo pasamos a 0.
+  //    Si está pendiente, sumamos 1.
+  const pending = { 'Mañana': null, 'Tarde': null, 'Noche': null };
+  otMap.forEach((entry, ot) => {
+    const origin = parseShiftKey(entry.createdInShift);
+    if (!origin) return; // sin createdInShift → no podemos atribuir
+    if (origin.date < startStr || origin.date > endStr) return;
+    if (!SHIFTS.includes(origin.shift)) return;
+    // Al menos una OT del turno entró → pasar de null a 0
+    if (pending[origin.shift] === null) pending[origin.shift] = 0;
+    if (entry.lastState === 'Sin Iniciar' || entry.lastState === 'En Curso') {
+      pending[origin.shift] += 1;
+    }
+  });
+
+  // 3) Métrica 2: cierres heredados por turno donde ocurrió el cierre.
+  //    Una OT puede haber cerrado UNA SOLA VEZ (transición → Realizada).
+  //    Detectamos esa transición buscando la primera ocurrencia donde state === 'Realizada'
+  //    y el state previo era distinto de 'Realizada'.
+  //    Solo cuenta si el turno del cierre ≠ turno de creación.
+  const closed = { 'Mañana': null, 'Tarde': null, 'Noche': null };
+  otMap.forEach((entry, ot) => {
+    const origin = parseShiftKey(entry.createdInShift);
+    if (!origin) return;
+    if (!SHIFTS.includes(origin.shift)) return;
+    let prevState = null;
+    let closingOcc = null;
+    for (const occ of entry.occurrences) {
+      if (occ.state === 'Realizada' && prevState !== 'Realizada') {
+        closingOcc = occ;
+        break;
+      }
+      prevState = occ.state;
+    }
+    if (!closingOcc) return;
+    // El turno del cierre tiene que ser distinto al de creación (heredada)
+    if (closingOcc.date === origin.date && closingOcc.shift === origin.shift) return;
+    // El cierre tiene que estar dentro de la ventana
+    if (closingOcc.date < startStr || closingOcc.date > endStr) return;
+    if (!SHIFTS.includes(closingOcc.shift)) return;
+    if (closed[closingOcc.shift] === null) closed[closingOcc.shift] = 0;
+    closed[closingOcc.shift] += 1;
+  });
+
+  // 4) Para los turnos que tuvieron actividad (creaciones en la ventana), cierre
+  //    debería arrancar al menos en 0 si hubo cierres reportables. Pero como
+  //    closedByShift se cuenta independiente de creaciones, dejamos null si nadie
+  //    cerró nada en ese turno en la ventana. Esto evita confusión con "0".
+
+  return {
+    pendingByOriginShift: pending,
+    closedByShift: closed
+  };
+}
 
 // Calcula el último FDS cerrado: viernes Noche + sábado completo + domingo completo,
 // donde el domingo ya pasó en el día actual.
