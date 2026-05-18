@@ -1,4 +1,11 @@
 Changelog — Reporte Diario de Mantenimiento Ferring
+## [v2.7] - 2026-05-17
+  ### Cambios en pestaña Estadísticas
+  - **Visibilidad admin-only** para tarjetas "Distribución por turno" y "Carga por técnico" (antes visibles para todos)
+  - **Nueva tarjeta admin**: "OTs dejadas pendientes por turno de origen" — ranking M/T/N + barras
+  - **Nueva tarjeta admin**: "OTs heredadas cerradas por turno" — ranking M/T/N + barras
+  - Excluye OTs legacy (sin formato XXX-YYYYY) en los rankings nuevos
+  - Turnos sin datos en la ventana se muestran como "—"
 v2.6 — 2026-05-17
 Cambios principales
 1. Modo administrador con password
