@@ -583,6 +583,13 @@ export default function App() {
 
   // V2.6 — Modo administrador (no persistente, solo en sesión actual del navegador)
   const [adminMode, setAdminMode] = useState(false);
+
+  // V2.9 — Snapshot del reporte original al momento de cargarlo.
+  // Se captura siempre que se abre un reporte histórico (vía setDateShift o
+  // al montar el form con un reporte existente). Solo se USA cuando adminMode
+  // está activo al momento de guardar, para detectar diffs y propagar cambios
+  // a reportes posteriores. null = no hay snapshot (reporte nuevo o ya limpio).
+  const [originalReport, setOriginalReport] = useState(null);
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   // V2.6 — Confirmación de eliminación de reporte completo
   const [deleteReportConfirm, setDeleteReportConfirm] = useState(null); // null | { date, shift, source }
@@ -868,6 +875,7 @@ export default function App() {
       // V2.5 — Si se limpiaron entradas vacías, persistir el cambio en el state local
       // así el usuario ve el form sin las filas vacías
       if (reportToSave !== report) setReport(reportToSave);
+      setOriginalReport(JSON.parse(JSON.stringify(reportToSave)));  // V2.9 — actualizar snapshot al guardado nuevo
       setSaveMsg('✓ Reporte guardado');
       setTimeout(() => setSaveMsg(''), 2500);
     } catch (e) {
@@ -933,6 +941,7 @@ export default function App() {
     try {
       await storage.save(fixedReport);
       await refresh();
+      setOriginalReport(JSON.parse(JSON.stringify(fixedReport)));  // V2.9 — actualizar snapshot al guardado nuevo
       setSaveMsg('✓ Reporte guardado');
       setTimeout(() => setSaveMsg(''), 2500);
     } catch (e) {
@@ -1475,8 +1484,8 @@ export default function App() {
         </div>
       )}
 
-      <main className="max-w-[1600px] mx-auto px-6 py-5">
-        {loading && <div className="text-center text-slate-500 py-20">Cargando…</div>}
+     <main className="max-w-[1600px] mx-auto px-6 py-5">
+       {loading && <div className="text-center text-slate-500 py-20">Cargando…</div>}
         {!loading && tab === 'form' && <FormView
           report={report}
           setReport={setReportAndResetOverride}
@@ -1486,6 +1495,8 @@ export default function App() {
           saving={saving}
           history={history}
           adminMode={adminMode}
+          originalReport={originalReport}
+          setOriginalReport={setOriginalReport}                                
           onDeleteReport={() => requestDeleteReport(report.date, report.shift, 'form')}
         />}
         {!loading && tab === 'dashboard' && <DashboardView
@@ -1883,7 +1894,7 @@ function ClosedConflictDialog({ conflicts, adminMode, onResolve, onCancel }) {
 //   - Planta de Efluentes y Caldera con schema nuevo (PTEL + Caldera + Ablandadores)
 //   - Resumen Preventivos del Turno al final del formulario
 // ═══════════════════════════════════════════════════════════════════
-function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history, adminMode, onDeleteReport }) {
+function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history, adminMode, originalReport, setOriginalReport, onDeleteReport }) {
   const update = (patch) => setReport(r => ({ ...r, ...patch }));
   const updateList = (key, fn) => setReport(r => ({ ...r, [key]: fn(r[key]) }));
   const updateServicios = (patch) => setReport(r => ({ ...r, servicios: { ...r.servicios, ...patch } }));
@@ -1985,15 +1996,17 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   //  - if a saved report exists for that date+shift -> load it as-is
   //  - otherwise, build a new empty report with pending correctivos pre-loaded
   const setDateShift = (newDate, newShift) => {
-    const existing = history.find(r => r.date === newDate && r.shift === newShift);
-    if (existing) {
+      const existing = history.find(r => r.date === newDate && r.shift === newShift);
+      if (existing) {
       setReport(hydrate(existing));
+      setOriginalReport(JSON.parse(JSON.stringify(hydrate(existing))));  // V2.9 — snapshot deep copy  
       setLoadInfo(`✓ Reporte cargado del histórico (${formatDateShort(newDate)} - ${newShift})`);
       setTimeout(() => setLoadInfo(''), 4000);
       return;
     }
     const pending = computePending(newDate, newShift);
     setReport({ ...emptyReport(), date: newDate, shift: newShift, corrective: pending });
+    setOriginalReport(null);  // V2.9 — reporte nuevo: sin snapshot
     if (pending.length > 0) {
       setLoadInfo(`↻ ${pending.length} correctivo${pending.length === 1 ? '' : 's'} pendiente${pending.length === 1 ? '' : 's'} traído${pending.length === 1 ? '' : 's'} del turno anterior`);
       setTimeout(() => setLoadInfo(''), 5000);
@@ -2039,10 +2052,12 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     const existing = history.find(r => r.date === report.date && r.shift === report.shift);
     if (existing) {
       setReport(hydrate(existing));
+      setOriginalReport(JSON.parse(JSON.stringify(hydrate(existing))));  // V2.9 — snapshot deep copy
     } else {
       const pending = computePending(report.date, report.shift);
       if (pending.length > 0) {
         setReport(r => ({ ...r, corrective: pending }));
+        setOriginalReport(null);  // V2.9 — reporte nuevo: sin snapshot
         setLoadInfo(`↻ ${pending.length} correctivo${pending.length === 1 ? '' : 's'} pendiente${pending.length === 1 ? '' : 's'} del turno anterior`);
         setTimeout(() => setLoadInfo(''), 5000);
       }
@@ -2160,6 +2175,16 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 
   return (
     <div className="space-y-5">
+      {/* V2.9 — Banner: admin editando reporte histórico (que ya está guardado). */}
+      {adminMode && originalReport && (
+        <div className="flex items-start gap-2 px-3 py-2.5 bg-sky-50 border border-sky-200 rounded-lg">
+          <Shield className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
+          <div className="text-[13px] text-sky-800 leading-snug">
+            <strong>Estás editando un reporte histórico</strong> ({formatDateShort(report.date)} · {report.shift}).
+            {' '}Los cambios que hagas sobre OTs (estado o entradas del timeline) pueden propagarse a reportes posteriores que tengan las mismas OTs. Vas a poder revisar antes de confirmar.
+          </div>
+        </div>
+      )}
       {/* TOP ACTION BAR — sticky so the Save button is always visible */}
       <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-slate-50/95 backdrop-blur border-b border-slate-200">
         <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
