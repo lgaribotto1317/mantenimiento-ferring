@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.7';
+const APP_VERSION = 'v2.8';
 
 // ═══════════════════════════════════════════════════════════════════
 // V2.6 — MODO ADMINISTRADOR
@@ -570,6 +570,14 @@ export default function App() {
   // V2.6 — Confirmación de eliminación de reporte completo
   const [deleteReportConfirm, setDeleteReportConfirm] = useState(null); // null | { date, shift, source }
 
+  // V2.8 — Conflictos de OT cerrada detectados al guardar.
+  // Cuando se intenta guardar un reporte que contiene una OT en estado
+  // Sin Iniciar / En Curso pero esa misma OT ya está Realizada en otro reporte
+  // posterior en Supabase, se abre este modal para que el usuario decida qué hacer.
+  // Cada conflicto: { otNumber, otTask, closedIn: {date, shift, responsable}, currentStateInForm }
+  // Estructura: null | { conflicts: [...], onResolve: (decisions) => void }
+  const [closedConflicts, setClosedConflicts] = useState(null);
+
   // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
   // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
   // modifica el reporte activo (Pregunta 1 opción B).
@@ -739,6 +747,68 @@ export default function App() {
 
   // Ejecuta el guardado real (sin modal). Se llama directo si no hay vacíos,
   // o desde el modal después de confirmar.
+  // V2.8 — Detección de OTs cerradas en otros turnos (carry-over stale guard).
+  //
+  // Problema que resuelve: si un turno A marca una OT como Realizada y guarda, pero
+  // el turno B tenía el form ya abierto (con la OT En Curso heredada del carry-over
+  // viejo), al guardar B con la OT En Curso PISA la lógica de cierre de A.
+  //
+  // Esta función detecta esos casos comparando el reporte que se va a guardar
+  // contra el history fresco recién traído de Supabase.
+  //
+  // Devuelve array de conflictos con shape:
+  //   { otNumber, otTask, formState, closedIn: {date, shift, responsable, when} }
+  // Solo considera OTs con número de OT no vacío (las legacy se incluyen porque
+  // también pueden estar en estado contradictorio).
+  //
+  // Política: una OT se considera "ya cerrada" si EN OTRO REPORTE del history fresco
+  // (que NO sea el actual que estamos por guardar) tiene state === 'Realizada'.
+  //
+  // Importante: el chequeo es por número de OT exacto (string match). OTs con
+  // exactamente el mismo número (incluso legacy con espacios) caen al mismo bucket.
+  const detectClosedConflicts = (reportToCheck, freshHistory) => {
+    const conflicts = [];
+    const corrective = reportToCheck.corrective || [];
+
+    // Helper: buscar en freshHistory si la OT está Realizada en algún reporte
+    // distinto al actual.
+    const findClosingReport = (otNumber) => {
+      // Iteramos en orden descendente (más reciente primero) para reportar el cierre más reciente
+      const sorted = [...freshHistory].sort((a, b) => {
+        const ka = `${b.date}-${shiftOrder(b.shift)}`;
+        const kb = `${a.date}-${shiftOrder(a.shift)}`;
+        return ka.localeCompare(kb);
+      });
+      for (const rep of sorted) {
+        // Excluir el reporte actual (mismo date+shift)
+        if (rep.date === reportToCheck.date && rep.shift === reportToCheck.shift) continue;
+        const match = (rep.corrective || []).find(c => c.ot === otNumber && c.state === 'Realizada');
+        if (match) return { date: rep.date, shift: rep.shift, responsable: rep.responsable, ot: match };
+      }
+      return null;
+    };
+
+    corrective.forEach(c => {
+      if (!c.ot) return; // Sin número de OT no hay forma de detectar conflicto
+      if (c.state === 'Realizada') return; // Si el form ya tiene Realizada, no hay conflicto
+      const closing = findClosingReport(c.ot);
+      if (closing) {
+        conflicts.push({
+          otNumber: c.ot,
+          otTask: c.task || '(sin descripción)',
+          formState: c.state,
+          closedIn: {
+            date: closing.date,
+            shift: closing.shift,
+            responsable: closing.responsable || '(sin responsable)'
+          }
+        });
+      }
+    });
+
+    return conflicts;
+  };
+
   const doSaveReport = async (reportToSave) => {
     if (!reportToSave.date || !reportToSave.shift) { setSaveMsg('Falta fecha o turno'); return; }
     const validationError = validateReport(reportToSave);
@@ -747,6 +817,33 @@ export default function App() {
       return;
     }
     setSaving(true);
+    setSaveMsg('Verificando…');
+
+    // V2.8 — Antes de guardar, recargamos history fresh para detectar conflictos
+    // de carry-over stale (turno B intenta pisar OT que A ya cerró).
+    let freshHistory;
+    try {
+      freshHistory = (await storage.list()).map(hydrate);
+    } catch (e) {
+      // Si falla la recarga, igual permitimos guardar (no bloquear al usuario por
+      // un problema de red en la verificación; el guardado en sí puede funcionar).
+      console.warn('No se pudo recargar history para verificar conflictos:', e);
+      freshHistory = history;
+    }
+
+    const conflicts = detectClosedConflicts(reportToSave, freshHistory);
+    if (conflicts.length > 0) {
+      // Hay conflicto: abrir modal y postergar guardado real
+      setSaving(false);
+      setSaveMsg('');
+      setClosedConflicts({
+        conflicts,
+        reportToSave, // guardamos referencia para usar después de resolver
+      });
+      return;
+    }
+
+    // Sin conflictos: proceder al guardado real
     setSaveMsg('Guardando…');
     try {
       await storage.save(reportToSave);
@@ -760,6 +857,75 @@ export default function App() {
       setSaveMsg(`Error: ${e.message}`);
     }
     setSaving(false);
+  };
+
+  // V2.8 — Resolución del modal de conflictos.
+  // decisions: Array<{ otNumber, action: 'remove' | 'reopen', reopenReason?: string }>
+  // - 'remove': la OT se elimina del array corrective del reporte antes de guardar
+  // - 'reopen': la OT se mantiene como está + se agrega entrada al timeline
+  //             documentando la reapertura. Solo permitido en adminMode.
+  const handleConflictResolve = async (decisions) => {
+    if (!closedConflicts) return;
+    const { reportToSave } = closedConflicts;
+    setClosedConflicts(null);
+
+    // Aplicar decisiones al reporte
+    const decisionByOt = new Map(decisions.map(d => [d.otNumber, d]));
+    const nowIso = new Date().toISOString();
+    const shiftKey = `${reportToSave.date}-${reportToSave.shift}`;
+
+    const newCorrective = (reportToSave.corrective || []).reduce((acc, c) => {
+      const decision = decisionByOt.get(c.ot);
+      if (!decision) {
+        acc.push(c);
+        return acc;
+      }
+      if (decision.action === 'remove') {
+        // No se incluye en el reporte (se elimina)
+        return acc;
+      }
+      if (decision.action === 'reopen') {
+        // Mantener la OT + agregar entrada al timeline documentando la reapertura
+        const reopenEntry = {
+          date: reportToSave.date,
+          text: `[Reapertura admin] Motivo: ${decision.reopenReason || '(sin motivo)'}`,
+          shift: reportToSave.shift,
+          author: reportToSave.responsable || '(admin)',
+          shiftKey,
+          timestamp: nowIso
+        };
+        acc.push({
+          ...c,
+          timeline: [...(c.timeline || []), reopenEntry]
+        });
+        return acc;
+      }
+      acc.push(c);
+      return acc;
+    }, []);
+
+    const fixedReport = { ...reportToSave, corrective: newCorrective };
+    // Actualizar también el state local así el usuario ve los cambios aplicados
+    setReport(fixedReport);
+
+    // Llamar al guardado real saltando la verificación (ya la pasamos).
+    // Para evitar recursión infinita usamos un guardado directo sin re-detección.
+    setSaving(true);
+    setSaveMsg('Guardando…');
+    try {
+      await storage.save(fixedReport);
+      await refresh();
+      setSaveMsg('✓ Reporte guardado');
+      setTimeout(() => setSaveMsg(''), 2500);
+    } catch (e) {
+      setSaveMsg(`Error: ${e.message}`);
+    }
+    setSaving(false);
+  };
+
+  const handleConflictCancel = () => {
+    setClosedConflicts(null);
+    setSaveMsg('');
   };
 
   const saveReport = async () => {
@@ -1352,6 +1518,18 @@ export default function App() {
           onCancel={cancelDeleteReport}
         />
       )}
+
+      {/* V2.8 — Modal de conflictos de OT cerrada (carry-over stale guard).
+          Se abre cuando al guardar se detecta que el reporte contiene OTs en estado
+          Sin Iniciar/En Curso que YA están como Realizada en otro reporte del history. */}
+      {closedConflicts && (
+        <ClosedConflictDialog
+          conflicts={closedConflicts.conflicts}
+          adminMode={adminMode}
+          onResolve={handleConflictResolve}
+          onCancel={handleConflictCancel}
+        />
+      )}
     </div>
   );
 }
@@ -1519,6 +1697,160 @@ function EmptyEntriesConfirmDialog({ emptyCorr, emptyPrev, onConfirm, onCancel }
             className="px-4 py-2 text-sm font-medium text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition inline-flex items-center gap-1.5">
             <Save className="w-4 h-4" />
             Confirmar y guardar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V2.8 — MODAL DE CONFLICTOS DE OT CERRADA (carry-over stale guard)
+//
+// Se abre antes de guardar un reporte si se detecta que contiene OTs cuyo
+// estado en el form (Sin Iniciar / En Curso) contradice el estado Realizada
+// que ya tienen en otro reporte del history (escenario clásico: el turno
+// dejó el form abierto, otro turno cerró la OT, y al guardar el primero
+// estaría pisando esa decisión).
+//
+// Por cada conflicto el usuario elige UNA acción:
+//   - "Quitarla del reporte" (recomendado): la OT se elimina del corrective[]
+//     de este reporte antes de guardar. El cierre del otro turno queda intacto.
+//   - "Reabrir explícitamente" (SOLO ADMIN): la OT se mantiene tal como está
+//     en el form (estado En Curso / Sin Iniciar), pero se agrega una entrada
+//     al timeline documentando el motivo. La OT queda efectivamente reabierta.
+//
+// Hasta que NO se decida sobre TODOS los conflictos, el botón Guardar está
+// deshabilitado. Cancelar cierra el modal sin guardar (el usuario puede seguir
+// editando o decidir más tarde).
+// ═══════════════════════════════════════════════════════════════════
+function ClosedConflictDialog({ conflicts, adminMode, onResolve, onCancel }) {
+  // decisions[i] = { action: 'remove' | 'reopen', reopenReason: string } | null
+  const [decisions, setDecisions] = useState(() => conflicts.map(() => null));
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const setDecision = (i, partial) => {
+    setDecisions(prev => {
+      const next = [...prev];
+      next[i] = { ...(next[i] || {}), ...partial };
+      return next;
+    });
+  };
+
+  // Validación: todos los conflictos deben tener decisión, y los "reopen" deben tener motivo
+  const allResolved = decisions.every((d, i) => {
+    if (!d || !d.action) return false;
+    if (d.action === 'reopen' && (!d.reopenReason || d.reopenReason.trim().length === 0)) return false;
+    return true;
+  });
+
+  const submit = () => {
+    if (!allResolved) return;
+    const payload = conflicts.map((c, i) => ({
+      otNumber: c.otNumber,
+      action: decisions[i].action,
+      reopenReason: decisions[i].reopenReason || ''
+    }));
+    onResolve(payload);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="w-5 h-5 text-amber-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              {conflicts.length === 1 ? 'Conflicto detectado' : `${conflicts.length} conflictos detectados`}
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              {conflicts.length === 1
+                ? 'Una OT de este reporte ya fue cerrada por otro turno. Decidí qué hacer antes de guardar.'
+                : 'Estas OTs ya fueron cerradas por otros turnos. Decidí qué hacer con cada una antes de guardar.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 mb-4">
+          {conflicts.map((c, i) => {
+            const d = decisions[i] || {};
+            return (
+              <div key={c.otNumber + i} className="border border-slate-200 rounded-lg p-3 bg-slate-50">
+                <div className="text-sm font-semibold text-slate-800 mb-1">
+                  <span className="num">{c.otNumber}</span>
+                  <span className="text-slate-500 font-normal ml-2 text-xs">({c.otTask})</span>
+                </div>
+                <div className="text-xs text-slate-600 mb-2 leading-relaxed">
+                  En tu reporte: <strong className="text-orange-700">{c.formState}</strong>
+                  {' · '}
+                  Ya cerrada por: <strong>{c.closedIn.responsable}</strong>
+                  {' en '}
+                  <strong className="num">{c.closedIn.date}</strong> {c.closedIn.shift}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="inline-flex items-start gap-2 text-xs cursor-pointer">
+                    <input
+                      type="radio"
+                      name={`conflict-${i}`}
+                      checked={d.action === 'remove'}
+                      onChange={() => setDecision(i, { action: 'remove' })}
+                      className="mt-0.5"
+                    />
+                    <span className="text-slate-700">
+                      <strong>Quitarla de este reporte</strong> (recomendado).
+                      La OT se elimina de tu reporte. El cierre del otro turno queda intacto.
+                    </span>
+                  </label>
+                  <label className={`inline-flex items-start gap-2 text-xs ${adminMode ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                    <input
+                      type="radio"
+                      name={`conflict-${i}`}
+                      checked={d.action === 'reopen'}
+                      onChange={() => adminMode && setDecision(i, { action: 'reopen' })}
+                      disabled={!adminMode}
+                      className="mt-0.5"
+                    />
+                    <span className="text-slate-700">
+                      <strong>Reabrir la OT</strong> (solo admin).
+                      La OT se mantiene en estado {c.formState} y queda registrado en el timeline.
+                      {!adminMode && <span className="text-slate-500 italic"> Logueate como admin para usar esta opción.</span>}
+                    </span>
+                  </label>
+                  {d.action === 'reopen' && (
+                    <textarea
+                      placeholder="Motivo de reapertura (obligatorio)…"
+                      value={d.reopenReason || ''}
+                      onChange={(e) => setDecision(i, { reopenReason: e.target.value })}
+                      rows={2}
+                      className="mt-1 w-full text-xs px-2 py-1.5 border border-slate-300 rounded resize-none focus:outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button
+            onClick={submit}
+            disabled={!allResolved}
+            className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition inline-flex items-center gap-1.5
+              ${allResolved ? 'bg-amber-600 hover:bg-amber-700' : 'bg-slate-300 cursor-not-allowed'}`}>
+            Aplicar y guardar
           </button>
         </div>
       </div>
