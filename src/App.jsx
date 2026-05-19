@@ -1986,6 +1986,213 @@ function ClosedConflictDialog({ conflicts, adminMode, onResolve, onCancel }) {
     </div>
   );
 }
+// ═══════════════════════════════════════════════════════════════════
+// V2.9 — MODAL DE PROPAGACIÓN ADMIN
+//
+// Se abre cuando admin edita un reporte histórico, guarda, y se detectan
+// cambios propagables (diffs por OT) Y existen reportes posteriores que
+// contienen las mismas OTs.
+//
+// UI HÍBRIDA:
+//   - Sección "Cambios uniformes": resumen compacto de entradas de timeline
+//     agregadas/borradas. Aplica a TODOS los reportes posteriores afectados
+//     que tengan la OT correspondiente. No requiere confirmación por reporte.
+//   - Sección "Cambios de estado": una entrada por (OT × reporte posterior).
+//     Cada uno es un radio button: "propagar" o "no propagar". Admin decide
+//     caso por caso porque el reporte posterior puede tener un estado distinto
+//     ya cargado manualmente que el admin no quiere pisar.
+//
+// El resultado del modal es un payload que se pasa al callback onResolve
+// y se ejecuta vía la RPC propagate_admin_changes en Supabase.
+//
+// Cancelar: cierra el modal SIN guardar el reporte editado. Admin puede
+// seguir editando o decidir más tarde.
+// ═══════════════════════════════════════════════════════════════════
+function PropagationModal({ diffs, affectedReports, onConfirm, onCancel }) {
+  // Decisiones de propagación de state, indexadas por "reportId:ot".
+  // Cada valor: 'propagate' | 'skip'. Default 'propagate' para mantener consistencia.
+  const [stateDecisions, setStateDecisions] = useState(() => {
+    const initial = {};
+    affectedReports.forEach(({ report, affectedOts }) => {
+      affectedOts.forEach(({ ot, diff }) => {
+        if (diff.stateChange) {
+          initial[`${report.date}|${report.shift}|${ot}`] = 'propagate';
+        }
+      });
+    });
+    return initial;
+  });
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  // Stats agregadas de cambios de timeline (uniformes)
+  const totalAdded = diffs.reduce((s, d) => s + d.addedEntries.length, 0);
+  const totalDeleted = diffs.reduce((s, d) => s + d.deletedEntries.length, 0);
+
+  // Cambios de state que tienen al menos un reporte posterior con la OT
+  const stateChanges = [];
+  diffs.forEach(d => {
+    if (!d.stateChange) return;
+    affectedReports.forEach(({ report, affectedOts }) => {
+      const ao = affectedOts.find(a => a.ot === d.ot);
+      if (ao) stateChanges.push({ diff: d, report, currentState: ao.currentState });
+    });
+  });
+
+  const setStateDecision = (key, value) => {
+    setStateDecisions(prev => ({ ...prev, [key]: value }));
+  };
+
+  const submit = () => {
+    onConfirm({ stateDecisions });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center flex-shrink-0">
+            <Shield className="w-5 h-5 text-sky-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Propagar cambios a reportes posteriores
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Detectamos cambios en {diffs.length} OT{diffs.length === 1 ? '' : 's'} que afectan a {affectedReports.length} reporte{affectedReports.length === 1 ? '' : 's'} posterior{affectedReports.length === 1 ? '' : 'es'}.
+              Revisá qué se va a propagar antes de confirmar.
+            </p>
+          </div>
+        </div>
+
+        {/* SECCIÓN 1 — Cambios uniformes de timeline */}
+        {(totalAdded > 0 || totalDeleted > 0) && (
+          <div className="mb-5 border border-slate-200 rounded-lg p-3 bg-slate-50">
+            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2 inline-flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-amber-500" />
+              Cambios uniformes (timeline)
+            </div>
+            <p className="text-[12px] text-slate-600 leading-snug mb-3">
+              Estos cambios se aplican automáticamente a <strong>todos los reportes posteriores</strong> que contengan la OT correspondiente.
+            </p>
+            <div className="space-y-2">
+              {diffs.filter(d => d.addedEntries.length > 0 || d.deletedEntries.length > 0).map(d => (
+                <div key={d.ot} className="bg-white border border-slate-200 rounded p-2">
+                  <div className="text-[12px] font-semibold text-slate-800 mb-1">
+                    <span className="num">{d.ot}</span>
+                    <span className="text-slate-500 font-normal ml-2 text-[11px]">({d.otTask})</span>
+                  </div>
+                  {d.addedEntries.map(e => (
+                    <div key={e.id} className="text-[11px] text-emerald-700 bg-emerald-50/60 border-l-2 border-emerald-300 pl-2 py-0.5 mb-1">
+                      <span className="font-semibold mr-1">+ Agregar:</span>
+                      <span className="text-slate-700">"{e.text}"</span>
+                      <span className="text-slate-400 ml-1 text-[10px]">— {e.date} {e.shift}, {e.author}</span>
+                    </div>
+                  ))}
+                  {d.deletedEntries.map(e => (
+                    <div key={e.id} className="text-[11px] text-red-700 bg-red-50/60 border-l-2 border-red-300 pl-2 py-0.5 mb-1">
+                      <span className="font-semibold mr-1">− Borrar:</span>
+                      <span className="text-slate-700 line-through">"{e.text}"</span>
+                      <span className="text-slate-400 ml-1 text-[10px]">— {e.date} {e.shift}, {e.author}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* SECCIÓN 2 — Cambios de estado (caso por caso) */}
+        {stateChanges.length > 0 && (
+          <div className="mb-5 border border-slate-200 rounded-lg p-3 bg-slate-50">
+            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2 inline-flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+              Cambios de estado (decisión caso por caso)
+            </div>
+            <p className="text-[12px] text-slate-600 leading-snug mb-3">
+              El reporte posterior puede tener un estado distinto cargado manualmente. Decidí si propagar el cambio en cada caso.
+            </p>
+            <div className="space-y-2">
+              {stateChanges.map(({ diff, report, currentState }, idx) => {
+                const key = `${report.date}|${report.shift}|${diff.ot}`;
+                const decision = stateDecisions[key] || 'propagate';
+                return (
+                  <div key={idx} className="bg-white border border-slate-200 rounded p-2">
+                    <div className="text-[12px] font-semibold text-slate-800 mb-1">
+                      <span className="num">{diff.ot}</span>
+                      <span className="text-slate-500 font-normal ml-2 text-[11px]">({diff.otTask})</span>
+                    </div>
+                    <div className="text-[11px] text-slate-600 mb-2">
+                      En reporte <strong className="num">{report.date} {report.shift}</strong>
+                      {' · '}
+                      Estado actual ahí: <StatePill state={currentState} />
+                    </div>
+                    <div className="text-[11px] text-slate-700 mb-2 leading-snug">
+                      Cambio detectado en el reporte editado: <StatePill state={diff.stateChange.from} /> → <StatePill state={diff.stateChange.to} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="inline-flex items-start gap-2 text-[11px] cursor-pointer">
+                        <input
+                          type="radio"
+                          name={`state-${idx}`}
+                          checked={decision === 'propagate'}
+                          onChange={() => setStateDecision(key, 'propagate')}
+                          className="mt-0.5"
+                        />
+                        <span className="text-slate-700">
+                          <strong>Propagar</strong>: cambiar a <StatePill state={diff.stateChange.to} /> también en este reporte posterior.
+                        </span>
+                      </label>
+                      <label className="inline-flex items-start gap-2 text-[11px] cursor-pointer">
+                        <input
+                          type="radio"
+                          name={`state-${idx}`}
+                          checked={decision === 'skip'}
+                          onChange={() => setStateDecision(key, 'skip')}
+                          className="mt-0.5"
+                        />
+                        <span className="text-slate-700">
+                          <strong>No propagar</strong>: mantener <StatePill state={currentState} /> tal como está acá.
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Resumen previo */}
+        <div className="mb-4 px-3 py-2 bg-sky-50 border border-sky-200 rounded text-[12px] text-sky-800">
+          <strong>Resumen:</strong> {totalAdded > 0 && <>se agregan {totalAdded} entrada{totalAdded === 1 ? '' : 's'} de timeline · </>}
+          {totalDeleted > 0 && <>se borran {totalDeleted} entrada{totalDeleted === 1 ? '' : 's'} de timeline · </>}
+          {stateChanges.length > 0 && <>{Object.values(stateDecisions).filter(v => v === 'propagate').length} cambio{Object.values(stateDecisions).filter(v => v === 'propagate').length === 1 ? '' : 's'} de estado a propagar · </>}
+          afecta {affectedReports.length} reporte{affectedReports.length === 1 ? '' : 's'} posterior{affectedReports.length === 1 ? '' : 'es'}.
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={submit}
+            className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition inline-flex items-center gap-1.5">
+            <Save className="w-4 h-4" />
+            Guardar y propagar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 // FORM VIEW — V2.0
