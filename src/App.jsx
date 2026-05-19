@@ -833,6 +833,106 @@ export default function App() {
     return conflicts;
   };
 
+
+  // V2.9 — Detecta cambios entre el reporte original (snapshot al cargar) y el
+  // reporte actual (form en pantalla). Devuelve un array de diffs por OT.
+  //
+  // Solo considera cambios "propagables":
+  //   - state: la OT cambió de Sin Iniciar/En Curso/Realizada a otro estado
+  //   - timeline.added: hay entradas nuevas en el timeline (matching por id)
+  //   - timeline.deleted: faltan entradas que estaban en el original (matching por id)
+  //
+  // Cada diff: { ot, otTask, stateChange: {from, to} | null, addedEntries: [...], deletedEntries: [...] }
+  // Solo se incluye una OT en el resultado si tiene al menos un cambio.
+  // Las OTs nuevas (que no existían en el original) NO se incluyen — no hay nada
+  // que propagar de algo que recién apareció.
+  const detectChangesForPropagation = (original, current) => {
+    if (!original || !current) return [];
+    const origByOt = new Map();
+    (original.corrective || []).forEach(c => {
+      if (c.ot) origByOt.set(c.ot, c);
+    });
+    const diffs = [];
+    (current.corrective || []).forEach(currOt => {
+      if (!currOt.ot) return;
+      const origOt = origByOt.get(currOt.ot);
+      if (!origOt) return; // OT nueva: no hay original, no hay propagación
+
+      // Cambio de state
+      let stateChange = null;
+      if (origOt.state !== currOt.state) {
+        stateChange = { from: origOt.state, to: currOt.state };
+      }
+
+      // Diff de timeline por id
+      const origIds = new Set((origOt.timeline || []).map(e => e.id).filter(Boolean));
+      const currIds = new Set((currOt.timeline || []).map(e => e.id).filter(Boolean));
+      const addedEntries = (currOt.timeline || []).filter(e => e.id && !origIds.has(e.id));
+      const deletedEntries = (origOt.timeline || []).filter(e => e.id && !currIds.has(e.id));
+
+      if (stateChange || addedEntries.length > 0 || deletedEntries.length > 0) {
+        diffs.push({
+          ot: currOt.ot,
+          otTask: currOt.task || '(sin descripción)',
+          stateChange,
+          addedEntries,
+          deletedEntries
+        });
+      }
+    });
+    return diffs;
+  };
+
+  // V2.9 — Identifica reportes posteriores al reporte editado que contienen
+  // las OTs afectadas por los diffs.
+  //
+  // "Posterior" = (date > editedReport.date) OR
+  //               (date == editedReport.date AND shiftOrder(shift) > shiftOrder(edited.shift))
+  //
+  // Por cada OT afectada, devuelve los reportes posteriores donde aparece esa OT
+  // (matching por número exacto). Si la OT no aparece en ningún reporte posterior,
+  // no se incluye en el resultado.
+  //
+  // Devuelve: array de { report, affectedOts: [{ ot, currentState, currentTimelineIds, diff }] }
+  //   - report: el reporte posterior completo (con date, shift, id de Supabase, etc.)
+  //   - affectedOts: las OTs de ese reporte que matchean con algún diff, junto con
+  //     su estado actual en ese reporte y el diff correspondiente.
+  const findAffectedLaterReports = (editedReport, diffs, allReports) => {
+    if (!diffs || diffs.length === 0) return [];
+    const editedKey = `${editedReport.date}-${shiftOrder(editedReport.shift)}`;
+    const diffByOt = new Map(diffs.map(d => [d.ot, d]));
+
+    const laterReports = allReports
+      .filter(r => {
+        const k = `${r.date}-${shiftOrder(r.shift)}`;
+        return k > editedKey;
+      })
+      .sort((a, b) => {
+        const ka = `${a.date}-${shiftOrder(a.shift)}`;
+        const kb = `${b.date}-${shiftOrder(b.shift)}`;
+        return ka.localeCompare(kb); // cronológico ascendente
+      });
+
+    const result = [];
+    laterReports.forEach(r => {
+      const affectedOts = [];
+      (r.corrective || []).forEach(c => {
+        if (!c.ot) return;
+        const diff = diffByOt.get(c.ot);
+        if (!diff) return;
+        affectedOts.push({
+          ot: c.ot,
+          currentState: c.state,
+          currentTimelineIds: new Set((c.timeline || []).map(e => e.id).filter(Boolean)),
+          diff
+        });
+      });
+      if (affectedOts.length > 0) {
+        result.push({ report: r, affectedOts });
+      }
+    });
+    return result;
+  };
   const doSaveReport = async (reportToSave) => {
     if (!reportToSave.date || !reportToSave.shift) { setSaveMsg('Falta fecha o turno'); return; }
     const validationError = validateReport(reportToSave);
