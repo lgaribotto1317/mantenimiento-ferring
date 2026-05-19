@@ -30,7 +30,24 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.8';
+const APP_VERSION = 'v2.9';
+// ═══════════════════════════════════════════════════════════════════
+// V2.9 — ID único para entradas del timeline
+// Formato: tl_xxxxxx (6 chars alfanuméricos random).
+// Sirve para identificar inequívocamente cada entrada al detectar diffs
+// y propagar cambios admin retroactivos a reportes posteriores.
+// Las entradas históricas (pre-V2.9) ya tienen id asignado vía
+// migración SQL one-shot. Las nuevas se generan acá.
+// ═══════════════════════════════════════════════════════════════════
+const generateTimelineId = () => {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = 'tl_';
+  for (let i = 0; i < 6; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+};
+
 
 // ═══════════════════════════════════════════════════════════════════
 // V2.6 — MODO ADMINISTRADOR
@@ -887,6 +904,7 @@ export default function App() {
       if (decision.action === 'reopen') {
         // Mantener la OT + agregar entrada al timeline documentando la reapertura
         const reopenEntry = {
+          id: generateTimelineId(),                // V2.9 — id único
           date: reportToSave.date,
           text: `[Reapertura admin] Motivo: ${decision.reopenReason || '(sin motivo)'}`,
           shift: reportToSave.shift,
@@ -1914,6 +1932,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       corrective: r.corrective.map((x, j) => {
         if (j !== i) return x;
         const newEntry = {
+          id: generateTimelineId(),                // V2.9 — id único
           shiftKey: `${r.date}-${r.shift}`,
           date: r.date,
           shift: r.shift,
