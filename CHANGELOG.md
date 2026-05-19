@@ -1,4 +1,12 @@
 Changelog — Reporte Diario de Mantenimiento Ferring
+## [v2.8] - 2026-05-19
+  ### Bug crítico resuelto: carry-over stale (OTs Realizadas que reaparecían)
+  - **Detección de conflictos al guardar**: antes de cada save, la app verifica contra Supabase si las OTs del reporte ya fueron cerradas por otro turno. Si hay conflicto, abre modal para decidir.
+  - **Modal de resolución**: por cada OT en conflicto, el usuario debe elegir entre quitarla o reabrirla. Reapertura solo en modo admin y con motivo obligatorio registrado en timeline.
+  - **Migración SQL del histórico**: script one-time corrigió todas las apariciones contradictorias previas, agregando entradas auditables al timeline.
+
+  ### Notas técnicas
+  - La verificación al guardar agrega ~1s al guardado, dependiente de la latencia de Supabase. Si falla por red, el guardado procede sin verificación (no bloquea al usuario).
 ## [v2.7] - 2026-05-17
   ### Cambios en pestaña Estadísticas
   - **Visibilidad admin-only** para tarjetas "Distribución por turno" y "Carga por técnico" (antes visibles para todos)
