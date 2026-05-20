@@ -112,6 +112,14 @@ const SECTORES_OT = [
 ];
 const SECTORES_CODES = SECTORES_OT.map(s => s.code);
 
+// V3.0 — Cutoff para KPIs admin de performance por turno.
+// Las OTs creadas o cerradas antes de esta fecha NO se cuentan en:
+//   - "OTs dejadas pendientes por turno de origen"
+//   - "OTs heredadas cerradas por turno"
+// Motivo: limpieza retroactiva de OTs admin pre-20/05 que distorsionaba las métricas.
+// Si querés mover el cutoff a futuro, cambiá esta constante y redeploy.
+const KPI_CUTOFF_DATE = '2026-05-20';
+
 // Valida formato XXX-YYYYY donde XXX es uno de los sectores y YYYYY exactamente 5 dígitos
 const isValidOT = (ot) => {
   if (!ot || typeof ot !== 'string') return false;
@@ -4435,7 +4443,7 @@ function StatsView({ history, adminMode }) {
             Solo se consideran OTs creadas dentro del rango [startStr, endStr]. */}
         <ShiftRankingCard
           title="OTs dejadas pendientes por turno de origen"
-          tooltip="Cuenta OTs creadas en cada turno cuyo último estado global sigue en Sin Iniciar o En Curso. Filtro por fecha aplica al turno de creación. Excluye OTs legacy."
+          tooltip="Cuenta OTs creadas en cada turno cuyo último estado global sigue en Sin Iniciar o En Curso. Filtro por fecha aplica al turno de creación. Excluye OTs legacy. Estadísticas desde 20/05/2026."
           data={shiftPerformance?.pendingByOriginShift}
           icon={AlertTriangle}
           colorBar="#ef4444"
@@ -4447,7 +4455,7 @@ function StatsView({ history, adminMode }) {
             Solo se cuentan cierres ocurridos dentro del rango [startStr, endStr]. */}
         <ShiftRankingCard
           title="OTs heredadas cerradas por turno"
-          tooltip="Cuenta cierres (estado → Realizada) de OTs creadas en turnos anteriores. Filtro por fecha aplica al turno del cierre. Excluye OTs legacy."
+          tooltip="Cuenta cierres (estado → Realizada) de OTs creadas en turnos anteriores. Filtro por fecha aplica al turno del cierre. Excluye OTs legacy. Estadísticas desde 20/05/2026."
           data={shiftPerformance?.closedByShift}
           icon={CheckCircle2}
           colorBar="#10b981"
@@ -4683,6 +4691,7 @@ function computeShiftPerformance(history, startStr, endStr) {
   otMap.forEach((entry, ot) => {
     const origin = parseShiftKey(entry.createdInShift);
     if (!origin) return; // sin createdInShift → no podemos atribuir
+    if (origin.date < KPI_CUTOFF_DATE) return; // V3.0 — cutoff retroactivo
     if (origin.date < startStr || origin.date > endStr) return;
     if (!SHIFTS.includes(origin.shift)) return;
     // Al menos una OT del turno entró → pasar de null a 0
@@ -4714,6 +4723,7 @@ function computeShiftPerformance(history, startStr, endStr) {
     if (!closingOcc) return;
     // El turno del cierre tiene que ser distinto al de creación (heredada)
     if (closingOcc.date === origin.date && closingOcc.shift === origin.shift) return;
+    if (closingOcc.date < KPI_CUTOFF_DATE) return; // V3.0 — cutoff retroactivo
     // El cierre tiene que estar dentro de la ventana
     if (closingOcc.date < startStr || closingOcc.date > endStr) return;
     if (!SHIFTS.includes(closingOcc.shift)) return;
