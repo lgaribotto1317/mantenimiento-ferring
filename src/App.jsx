@@ -602,6 +602,13 @@ export default function App() {
   // Estructura: null | { conflicts: [...], onResolve: (decisions) => void }
   const [closedConflicts, setClosedConflicts] = useState(null);
 
+  // V2.9 — Modal de propagación admin.
+  // Estructura: null | { diffs, affectedReports, fixedReport }
+  //   - diffs: salida de detectChangesForPropagation
+  //   - affectedReports: salida de findAffectedLaterReports
+  //   - fixedReport: el reporte editado que se va a guardar después de confirmar
+  const [propagationModal, setPropagationModal] = useState(null);
+
   // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
   // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
   // modifica el reporte activo (Pregunta 1 opción B).
@@ -968,6 +975,77 @@ export default function App() {
     }
 
     // Sin conflictos: proceder al guardado real
+    // V2.9 — Propagación admin retroactiva.
+    // Solo entra acá si adminMode && hay snapshot original (= reporte histórico editado).
+    // Detectamos diffs vs original; si hay cambios:
+    //   - Cambios SOLO de timeline → propagar silenciosamente (decisión B).
+    //   - Cambios de state (con o sin timeline) → abrir modal para decisión caso por caso.
+    // Si no hay reportes posteriores afectados, guardar normal sin propagar.
+    if (adminMode && originalReport) {
+      const diffs = detectChangesForPropagation(originalReport, reportToSave);
+      if (diffs.length > 0) {
+        const affectedReports = findAffectedLaterReports(reportToSave, diffs, freshHistory);
+        if (affectedReports.length > 0) {
+          const hasStateChanges = diffs.some(d => d.stateChange);
+          if (hasStateChanges) {
+            // Abrir modal para decisión caso por caso
+            setSaving(false);
+            setSaveMsg('');
+            setPropagationModal({ diffs, affectedReports, fixedReport: reportToSave });
+            return;
+          }
+          // Solo timeline changes → propagar silenciosamente
+          setSaveMsg('Propagando cambios…');
+          try {
+            // Generar entrada de auditoría en el reporte original
+            const nowIso = new Date().toISOString();
+            const shiftKey = `${reportToSave.date}-${reportToSave.shift}`;
+            const fixedWithAudit = {
+              ...reportToSave,
+              corrective: (reportToSave.corrective || []).map(c => {
+                const diff = diffs.find(d => d.ot === c.ot);
+                if (!diff) return c;
+                const auditParts = [];
+                if (diff.addedEntries.length > 0) {
+                  auditParts.push(`${diff.addedEntries.length} entrada${diff.addedEntries.length === 1 ? '' : 's'} agregada${diff.addedEntries.length === 1 ? '' : 's'}`);
+                }
+                if (diff.deletedEntries.length > 0) {
+                  auditParts.push(`${diff.deletedEntries.length} entrada${diff.deletedEntries.length === 1 ? '' : 's'} borrada${diff.deletedEntries.length === 1 ? '' : 's'}`);
+                }
+                const propagatedCount = affectedReports.filter(({ affectedOts }) =>
+                  affectedOts.some(a => a.ot === c.ot)
+                ).length;
+                const auditText = `[Edición admin] ${auditParts.join(' · ')}. Propagado a ${propagatedCount} reporte${propagatedCount === 1 ? '' : 's'} posterior${propagatedCount === 1 ? '' : 'es'}.`;
+                const auditEntry = {
+                  id: generateTimelineId(),
+                  shiftKey,
+                  date: reportToSave.date,
+                  shift: reportToSave.shift,
+                  author: reportToSave.responsable || '(admin)',
+                  text: auditText,
+                  timestamp: nowIso
+                };
+                return { ...c, timeline: [...(c.timeline || []), auditEntry] };
+              })
+            };
+            await propagateChanges(fixedWithAudit, diffs, affectedReports, {});
+            await refresh();
+            setReport(fixedWithAudit);
+            setOriginalReport(JSON.parse(JSON.stringify(fixedWithAudit)));
+            setSaveMsg('✓ Reporte guardado y propagado');
+            setTimeout(() => setSaveMsg(''), 3000);
+            setSaving(false);
+            return;
+          } catch (e) {
+            setSaveMsg(`Error: ${e.message}`);
+            setSaving(false);
+            return;
+          }
+        }
+        // Hay diffs pero no hay reportes posteriores afectados → guardar normal.
+        // (Ej: admin editó el último reporte cargado, o la OT no aparece en ningún posterior).
+      }
+    }
     setSaveMsg('Guardando…');
     try {
       await storage.save(reportToSave);
@@ -989,6 +1067,134 @@ export default function App() {
   // - 'remove': la OT se elimina del array corrective del reporte antes de guardar
   // - 'reopen': la OT se mantiene como está + se agrega entrada al timeline
   //             documentando la reapertura. Solo permitido en adminMode.
+  // V2.9 — Ejecuta la propagación de cambios admin a reportes posteriores.
+  // Llama a la RPC propagate_admin_changes en Supabase en una transacción atómica.
+  //
+  // Toma las decisiones del PropagationModal (qué state changes propagar y cuáles no),
+  // arma el payload y lo manda. Los cambios de timeline (add/delete) siempre se propagan
+  // de forma uniforme a todos los reportes posteriores afectados (decidido en B).
+  //
+  // Si la RPC falla, no se guarda nada (rollback automático en Supabase).
+  // Si tiene éxito, refrescamos el history para reflejar los cambios.
+  const propagateChanges = async (fixedReport, diffs, affectedReports, stateDecisions) => {
+    if (!supabaseConfigured) {
+      throw new Error('Propagación solo disponible con Supabase configurado');
+    }
+    const originalReportId = `${fixedReport.date}-${fixedReport.shift}`;
+
+    // Armar lista de operaciones por reporte posterior
+    const propagations = affectedReports.map(({ report, affectedOts }) => {
+      const operations = [];
+      affectedOts.forEach(({ ot, currentTimelineIds, diff }) => {
+        // Add timeline (uniforme): por cada entrada nueva del original, agregar a este reporte
+        // si todavía no la tiene (matching por id).
+        diff.addedEntries.forEach(entry => {
+          if (!currentTimelineIds.has(entry.id)) {
+            operations.push({ type: 'add_timeline', ot, entry });
+          }
+        });
+        // Delete timeline (uniforme): por cada entrada borrada del original, borrar de este reporte
+        // si la tiene (matching por id).
+        diff.deletedEntries.forEach(entry => {
+          if (currentTimelineIds.has(entry.id)) {
+            operations.push({ type: 'delete_timeline', ot, entry_id: entry.id });
+          }
+        });
+        // Change state (caso por caso): solo si admin lo decidió en el modal.
+        if (diff.stateChange) {
+          const key = `${report.date}|${report.shift}|${ot}`;
+          if (stateDecisions[key] === 'propagate') {
+            operations.push({ type: 'change_state', ot, new_state: diff.stateChange.to });
+          }
+        }
+      });
+      return {
+        report_id: `${report.date}-${report.shift}`,
+        operations
+      };
+    }).filter(p => p.operations.length > 0); // descartar reportes sin operaciones efectivas
+
+    const payload = {
+      original_report_id: originalReportId,
+      original_report_data: fixedReport,
+      propagations
+    };
+
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/rpc/propagate_admin_changes`,
+      {
+        method: 'POST',
+        headers: { ...sbHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload })
+      }
+    );
+    if (!res.ok) {
+      throw new Error(`Propagación falló: ${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  };
+
+  // V2.9 — Callback del PropagationModal cuando admin confirma.
+  // Aplica los cambios del modal + ejecuta la propagación + refresca history.
+  const handlePropagationConfirm = async ({ stateDecisions }) => {
+    if (!propagationModal) return;
+    const { diffs, affectedReports, fixedReport } = propagationModal;
+    setPropagationModal(null);
+    setSaving(true);
+    setSaveMsg('Propagando cambios…');
+    try {
+      // V2.9 — Agregar entrada de auditoría [Edición admin] en el reporte original
+      // ANTES de propagar. Se agrega en cada OT que tuvo cambios.
+      const nowIso = new Date().toISOString();
+      const shiftKey = `${fixedReport.date}-${fixedReport.shift}`;
+      const fixedWithAudit = {
+        ...fixedReport,
+        corrective: (fixedReport.corrective || []).map(c => {
+          const diff = diffs.find(d => d.ot === c.ot);
+          if (!diff) return c;
+          const auditParts = [];
+          if (diff.stateChange) {
+            auditParts.push(`estado ${diff.stateChange.from} → ${diff.stateChange.to}`);
+          }
+          if (diff.addedEntries.length > 0) {
+            auditParts.push(`${diff.addedEntries.length} entrada${diff.addedEntries.length === 1 ? '' : 's'} agregada${diff.addedEntries.length === 1 ? '' : 's'}`);
+          }
+          if (diff.deletedEntries.length > 0) {
+            auditParts.push(`${diff.deletedEntries.length} entrada${diff.deletedEntries.length === 1 ? '' : 's'} borrada${diff.deletedEntries.length === 1 ? '' : 's'}`);
+          }
+          const propagatedCount = affectedReports.filter(({ affectedOts }) =>
+            affectedOts.some(a => a.ot === c.ot)
+          ).length;
+          const auditText = `[Edición admin] ${auditParts.join(' · ')}. Propagado a ${propagatedCount} reporte${propagatedCount === 1 ? '' : 's'} posterior${propagatedCount === 1 ? '' : 'es'}.`;
+          const auditEntry = {
+            id: generateTimelineId(),
+            shiftKey,
+            date: fixedReport.date,
+            shift: fixedReport.shift,
+            author: fixedReport.responsable || '(admin)',
+            text: auditText,
+            timestamp: nowIso
+          };
+          return { ...c, timeline: [...(c.timeline || []), auditEntry] };
+        })
+      };
+
+      await propagateChanges(fixedWithAudit, diffs, affectedReports, stateDecisions);
+      await refresh();
+      setReport(fixedWithAudit);
+      setOriginalReport(JSON.parse(JSON.stringify(fixedWithAudit)));
+      setSaveMsg('✓ Reporte guardado y propagado');
+      setTimeout(() => setSaveMsg(''), 3000);
+    } catch (e) {
+      setSaveMsg(`Error: ${e.message}`);
+    }
+    setSaving(false);
+  };
+
+  const handlePropagationCancel = () => {
+    setPropagationModal(null);
+    setSaveMsg('');
+  };
   const handleConflictResolve = async (decisions) => {
     if (!closedConflicts) return;
     const { reportToSave } = closedConflicts;
@@ -1657,6 +1863,19 @@ export default function App() {
           adminMode={adminMode}
           onResolve={handleConflictResolve}
           onCancel={handleConflictCancel}
+        />
+      )}
+
+      {/* V2.9 — Modal de propagación admin retroactiva.
+          Se abre al guardar un reporte histórico (admin) si hay cambios de state
+          con reportes posteriores afectados. Cambios solo de timeline propagan
+          silenciosamente (decisión B). */}
+      {propagationModal && (
+        <PropagationModal
+          diffs={propagationModal.diffs}
+          affectedReports={propagationModal.affectedReports}
+          onConfirm={handlePropagationConfirm}
+          onCancel={handlePropagationCancel}
         />
       )}
     </div>
@@ -2671,7 +2890,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                             const editKey = `${i}-${ei}`;
                             const isEditing = adminMode && timelineEditingKey === editKey;
                             return (
-                              <div key={ei} className={`flex items-start gap-2 text-[12px] bg-white border rounded px-2 py-1.5 ${isEditing ? 'border-sky-400 ring-1 ring-sky-200' : 'border-slate-200'}`}>
+                              <div key={ei} className={`flex items-start gap-2 text-[12px] border rounded px-2 py-1.5 ${isEditing ? 'border-sky-400 ring-1 ring-sky-200 bg-white' : (entry.text && (entry.text.startsWith('[Edición admin]') || entry.text.startsWith('[Reapertura admin]'))) ? 'bg-slate-100 border-slate-300' : 'bg-white border-slate-200'}`}>
                                 <div className="flex-shrink-0 w-32">
                                   <div className="text-[10px] text-slate-500 num font-medium">
                                     {entry.date} · {entry.shift}
