@@ -5261,6 +5261,9 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
               className="pl-8 pr-3 py-2 text-sm border border-slate-300 rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-sky-500/40" />
           </div>
         </div>
+        <p className="text-[11px] text-slate-400 -mt-2 mb-4">
+          Las columnas Correctivos y Preventivos muestran el total de tareas cargadas en cada reporte (realizadas + pendientes), no solo las realizadas.
+        </p>
         {filtered.length === 0 ? (
           <EmptyHint>{history.length === 0 ? 'No hay reportes guardados.' : 'Sin coincidencias para el filtro.'}</EmptyHint>
         ) : (
