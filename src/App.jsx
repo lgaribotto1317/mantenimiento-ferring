@@ -638,6 +638,12 @@ export default function App() {
   // Validaciones antes de guardar (V2.0)
   // Devuelve string con error o '' si todo OK
   const validateReport = (r) => {
+    // V2.9 — Si admin está editando un reporte histórico (tiene snapshot original),
+    // saltar todas las validaciones contextuales. Admin asume responsabilidad de
+    // lo que guarda. Esto evita que reglas retroactivas (técnico obligatorio,
+    // avance de turno cuando hay cambio de estado, formato XXX-YYYYY, etc.) bloqueen
+    // la edición de reportes pre-V2.5 / pre-V2.4 / etc.
+    if (adminMode && originalReport) return '';
     const currentShiftKey = `${r.date}-${r.shift}`;
 
     // V2.4 — 1. OTs nuevas (creadas en este turno) deben tener formato XXX-YYYYY válido
