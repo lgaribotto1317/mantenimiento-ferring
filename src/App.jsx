@@ -961,8 +961,11 @@ export default function App() {
       console.warn('No se pudo recargar history para verificar conflictos:', e);
       freshHistory = history;
     }
-
-    const conflicts = detectClosedConflicts(reportToSave, freshHistory);
+    // V2.9 — Si admin está editando un reporte histórico (tiene snapshot original),
+    // saltar la detección V2.8 de conflictos. V2.8 está pensada para responsables
+    // que tenían el form abierto cuando otro turno cerró la OT; admin con snapshot
+    // ya sabe que edita un reporte pasado y la propagación V2.9 maneja el caso.
+    const conflicts = (adminMode && originalReport) ? [] : detectClosedConflicts(reportToSave, freshHistory);
     if (conflicts.length > 0) {
       // Hay conflicto: abrir modal y postergar guardado real
       setSaving(false);
