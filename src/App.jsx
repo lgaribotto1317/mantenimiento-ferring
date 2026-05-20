@@ -4406,13 +4406,18 @@ function StatsView({ history, adminMode }) {
           }
         </Card>
 
-        {/* GRÁFICO 2 — Estado al cierre del período filtrado */}
+        {/* GRÁFICO 2 — Estado al cierre del período filtrado.
+            V3.1 — Solo admin: incluye OTs huérfanas (pendientes viejas que dejaron de
+            arrastrarse) que inflan el conteo. Se mantiene oculto a operativos hasta
+            limpiar esos datos en Supabase (ver BACKLOG #17). */}
+        {adminMode && (
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
             <Activity className="w-4 h-4" />Correctivos: estado al cierre del período
+            <span className="text-[10px] text-amber-600 font-normal ml-2">(admin)</span>
           </h3>
           <p className="text-[11px] text-slate-400 mb-3">
-            Cómo quedaron las OTs al final del período seleccionado ({stats.pendientesPeriodo} pendientes al cierre).
+            Cómo quedaron las OTs al final del período seleccionado ({stats.pendientesPeriodo} pendientes al cierre). Puede incluir OTs huérfanas sin cerrar (ver limpieza pendiente).
           </p>
           {stats.stateDistPeriodo.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
             <ResponsiveContainer width="100%" height={240}>
@@ -4428,6 +4433,7 @@ function StatsView({ history, adminMode }) {
             </ResponsiveContainer>
           }
         </Card>
+        )}
 
         {/* V2.7 — Bloque admin-only: métricas de performance por turno.
             Incluye las dos tarjetas existentes (Distribución por turno, Carga por técnico)
@@ -4982,25 +4988,37 @@ function computeStats(history, range, customStart, customEnd) {
   ];
 
   // V3.1 — ESTADO VIGENTE HOY (para Gráfico 1 del pie).
-  // Se calcula sobre TODO el histórico (no el rango filtrado): el estado de cada OT
-  // según su aparición MÁS RECIENTE en cualquier reporte. Así "pendientes" refleja
-  // lo que sigue abierto al día de hoy (coincide con el carry-over del Dashboard),
-  // sin importar el período seleccionado en Estadísticas.
+  // Definición (opción 1): "lo que tengo abierto hoy" = los correctivos del ÚLTIMO
+  // reporte cargado en el histórico (el de fecha+turno más reciente). Ese reporte
+  // ya refleja el carry-over real: arrastra solo las pendientes vivas y descarta las
+  // realizadas. Las OTs huérfanas (pendientes viejas que dejaron de arrastrarse) NO
+  // aparecen acá porque no están en el último reporte. No se modifica ningún dato:
+  // solo cambia cómo cuenta el gráfico.
+  // El total de Realizadas se sigue calculando sobre todo el histórico (estado más
+  // reciente de cada OT) para que la torta tenga sentido proporcional.
   const allReportsSorted = [...history].sort((a, b) =>
     `${a.date}-${shiftOrder(a.shift)}`.localeCompare(`${b.date}-${shiftOrder(b.shift)}`)
   );
-  const latestStateByOT = new Map();  // ot# -> estado de la aparición más reciente
-  const noOTStatesVigente = [];       // OTs sin número (cada aparición cuenta)
+  const lastReport = allReportsSorted[allReportsSorted.length - 1] || null;
+  const stateDistVigente = { 'Sin Iniciar': 0, 'En Curso': 0, 'Realizada': 0 };
+  // Pendientes: solo las del último reporte cargado (carry-over real de hoy)
+  if (lastReport) {
+    (lastReport.corrective || []).forEach(c => {
+      if (c.state === 'Sin Iniciar' || c.state === 'En Curso') stateDistVigente[c.state]++;
+    });
+  }
+  // Realizadas: total de OTs cuya aparición más reciente en TODO el histórico es Realizada
+  const latestStateByOT = new Map();
+  const noOTRealizadas = [];
   allReportsSorted.forEach(r => {
     (r.corrective || []).forEach(c => {
       const key = (c.ot || '').trim();
-      if (!key) { noOTStatesVigente.push(c.state); return; }
-      latestStateByOT.set(key, c.state);  // iteramos ordenado: la última asignación es la más reciente
+      if (!key) { if (c.state === 'Realizada') noOTRealizadas.push(1); return; }
+      latestStateByOT.set(key, c.state);
     });
   });
-  const stateDistVigente = { 'Sin Iniciar': 0, 'En Curso': 0, 'Realizada': 0 };
-  latestStateByOT.forEach(st => { if (st in stateDistVigente) stateDistVigente[st]++; });
-  noOTStatesVigente.forEach(st => { if (st in stateDistVigente) stateDistVigente[st]++; });
+  latestStateByOT.forEach(st => { if (st === 'Realizada') stateDistVigente['Realizada']++; });
+  stateDistVigente['Realizada'] += noOTRealizadas.length;
 
   // Bucketing diario/semanal/mensual
   const buckets = {};
