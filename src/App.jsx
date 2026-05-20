@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.0';
+const APP_VERSION = 'v3.1';
 // ═══════════════════════════════════════════════════════════════════
 // V2.9 — ID único para entradas del timeline
 // Formato: tl_xxxxxx (6 chars alfanuméricos random).
@@ -4366,9 +4366,10 @@ function StatsView({ history, adminMode }) {
       {/* CHARTS GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
             <BarChart3 className="w-4 h-4" />Trabajos en el período
           </h3>
+          <p className="text-[11px] text-slate-400 mb-3">Correctivos: OTs pasadas a Realizada cada día · Preventivos: realizados por turno</p>
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={stats.daily}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -4382,16 +4383,43 @@ function StatsView({ history, adminMode }) {
           </ResponsiveContainer>
         </Card>
 
+        {/* GRÁFICO 1 — Estado vigente HOY (todo el histórico) */}
         <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
-            <Activity className="w-4 h-4" />Estado de Correctivos
+          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
+            <Activity className="w-4 h-4" />Correctivos: estado al día de hoy
           </h3>
-          {stats.stateDist.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+          <p className="text-[11px] text-slate-400 mb-3">
+            Pendientes abiertas al día de hoy ({stats.pendientesVigentes}). Incluye OTs anteriores al período. No cambia según el rango.
+          </p>
+          {stats.stateDistVigente.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
-                <Pie data={stats.stateDist} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}
+                <Pie data={stats.stateDistVigente} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}
                   label={(e) => `${e.name}: ${e.value}`} labelLine={false}>
-                  {stats.stateDist.map((entry, i) => (
+                  {stats.stateDistVigente.map((entry, i) => (
+                    <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+
+        {/* GRÁFICO 2 — Estado al cierre del período filtrado */}
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
+            <Activity className="w-4 h-4" />Correctivos: estado al cierre del período
+          </h3>
+          <p className="text-[11px] text-slate-400 mb-3">
+            Cómo quedaron las OTs al final del período seleccionado ({stats.pendientesPeriodo} pendientes al cierre).
+          </p>
+          {stats.stateDistPeriodo.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie data={stats.stateDistPeriodo} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}
+                  label={(e) => `${e.name}: ${e.value}`} labelLine={false}>
+                  {stats.stateDistPeriodo.map((entry, i) => (
                     <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
                   ))}
                 </Pie>
@@ -4953,6 +4981,27 @@ function computeStats(history, range, customStart, customEnd) {
     }))
   ];
 
+  // V3.1 — ESTADO VIGENTE HOY (para Gráfico 1 del pie).
+  // Se calcula sobre TODO el histórico (no el rango filtrado): el estado de cada OT
+  // según su aparición MÁS RECIENTE en cualquier reporte. Así "pendientes" refleja
+  // lo que sigue abierto al día de hoy (coincide con el carry-over del Dashboard),
+  // sin importar el período seleccionado en Estadísticas.
+  const allReportsSorted = [...history].sort((a, b) =>
+    `${a.date}-${shiftOrder(a.shift)}`.localeCompare(`${b.date}-${shiftOrder(b.shift)}`)
+  );
+  const latestStateByOT = new Map();  // ot# -> estado de la aparición más reciente
+  const noOTStatesVigente = [];       // OTs sin número (cada aparición cuenta)
+  allReportsSorted.forEach(r => {
+    (r.corrective || []).forEach(c => {
+      const key = (c.ot || '').trim();
+      if (!key) { noOTStatesVigente.push(c.state); return; }
+      latestStateByOT.set(key, c.state);  // iteramos ordenado: la última asignación es la más reciente
+    });
+  });
+  const stateDistVigente = { 'Sin Iniciar': 0, 'En Curso': 0, 'Realizada': 0 };
+  latestStateByOT.forEach(st => { if (st in stateDistVigente) stateDistVigente[st]++; });
+  noOTStatesVigente.forEach(st => { if (st in stateDistVigente) stateDistVigente[st]++; });
+
   // Bucketing diario/semanal/mensual
   const buckets = {};
   const dayMs = 86400000;
@@ -4983,10 +5032,28 @@ function computeStats(history, range, customStart, customEnd) {
     }
   };
 
-  // Trabajos en el período: correctivos por fecha de PRIMERA APARICIÓN (deduplicados),
-  // preventivos por reporte (cada turno suma su detalle individual).
-  uniqueCorrEntries.forEach(c => {
-    const { key, label } = bucketKeyAndLabel(c._firstDate);
+  // Trabajos en el período: correctivos contados el día en que pasaron a REALIZADA
+  // (primer reporte del rango donde la OT figura "Realizada"), una sola vez por OT.
+  // Preventivos por reporte (cada turno suma su detalle individual).
+  // Para detectar el día de cierre recorremos los reportes ordenados y, por cada OT,
+  // tomamos la fecha del primer reporte donde aparece con estado "Realizada".
+  const closedDateByOT = new Map();   // ot# -> fecha del primer reporte (en rango) con estado Realizada
+  const closedNoOT = [];              // OTs sin número, realizadas (cuentan cada aparición realizada)
+  sortedReports.forEach(r => {
+    (r.corrective || []).forEach(c => {
+      if (c.state !== 'Realizada') return;
+      const key = (c.ot || '').trim();
+      if (!key) { closedNoOT.push(r.date); return; }
+      if (!closedDateByOT.has(key)) closedDateByOT.set(key, r.date);
+    });
+  });
+  closedDateByOT.forEach(dateStr => {
+    const { key, label } = bucketKeyAndLabel(dateStr);
+    if (!buckets[key]) buckets[key] = { key, label, correctivos: 0, preventivos: 0 };
+    buckets[key].correctivos++;
+  });
+  closedNoOT.forEach(dateStr => {
+    const { key, label } = bucketKeyAndLabel(dateStr);
     if (!buckets[key]) buckets[key] = { key, label, correctivos: 0, preventivos: 0 };
     buckets[key].correctivos++;
   });
@@ -5000,7 +5067,7 @@ function computeStats(history, range, customStart, customEnd) {
   // KPIs principales: deduplicados
   let totalCorrectives = uniqueCorrEntries.length;
   let completedCorr = 0, pendingCorr = 0;
-  const stateDist = { 'Sin Iniciar': 0, 'En Curso': 0, 'Realizada': 0 };
+  const stateDistPeriodo = { 'Sin Iniciar': 0, 'En Curso': 0, 'Realizada': 0 };
   const equipmentCount = {};
   const techCount = {};
   const shiftCount = {
@@ -5012,7 +5079,7 @@ function computeStats(history, range, customStart, customEnd) {
   uniqueCorrEntries.forEach(c => {
     if (c.state === 'Realizada') completedCorr++;
     else if (c.state === 'Sin Iniciar' || c.state === 'En Curso') pendingCorr++;  // V2.4 fix
-    if (c.state in stateDist) stateDist[c.state]++;
+    if (c.state in stateDistPeriodo) stateDistPeriodo[c.state]++;
     const eq = (c.equipoCodigo || '').trim();
     if (eq && eq !== '-') equipmentCount[eq] = (equipmentCount[eq] || 0) + 1;
     (c.technicians || []).forEach(t => {
@@ -5078,7 +5145,12 @@ function computeStats(history, range, customStart, customEnd) {
     totalReports: filtered.length,
     totalCorrectives, totalPreventives, completedCorr, pendingCorr, urgent,
     completionRate, daily, startStr, endStr,
-    stateDist: Object.entries(stateDist).map(([name, value]) => ({ name, value })).filter(x => x.value > 0),
+    // Gráfico 1 (estado vigente HOY, sobre todo el histórico) y su total de pendientes reales
+    stateDistVigente: Object.entries(stateDistVigente).map(([name, value]) => ({ name, value })).filter(x => x.value > 0),
+    pendientesVigentes: stateDistVigente['Sin Iniciar'] + stateDistVigente['En Curso'],
+    // Gráfico 2 (estado al cierre del período filtrado)
+    stateDistPeriodo: Object.entries(stateDistPeriodo).map(([name, value]) => ({ name, value })).filter(x => x.value > 0),
+    pendientesPeriodo: stateDistPeriodo['Sin Iniciar'] + stateDistPeriodo['En Curso'],
     topEquipment, topTechs, shiftDist
   };
 }
