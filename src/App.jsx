@@ -2838,7 +2838,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   </button>
                 )}
                 <div className="grid grid-cols-12 gap-2 mb-2">
-                  <Field label="N° OT *" className="col-span-3">
+                  <Field label="N° OT *" className="col-span-7 lg:col-span-3">
                     <OTNumberInput
                       value={c.ot}
                       onChange={(newOt) => updateCorrectiveItem(i, { ot: newOt })}
@@ -2846,18 +2846,18 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                       hasError={otHasError}
                     />
                   </Field>
-                  <Field label="Equipo / Sector" className="col-span-3">
-                    <input className={inputCls} value={c.equipoCodigo}
-                      onChange={e => updateCorrectiveItem(i, { equipoCodigo: e.target.value })} />
-                  </Field>
-                  <Field label="Estado" className="col-span-2">
+                  <Field label="Estado" className="col-span-5 lg:col-span-2 lg:order-3">
                     <select className={`${inputCls} font-semibold ${c.state === 'Sin Iniciar' ? 'text-red-600' : c.state === 'En Curso' ? 'text-amber-600' : 'text-emerald-600'}`}
                       value={c.state}
                       onChange={e => updateCorrectiveItem(i, { state: e.target.value })}>
                       {ESTADOS_OT.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </Field>
-                  <Field label="Técnico/s asignado/s *" className="col-span-4">
+                  <Field label="Equipo / Sector" className="col-span-12 lg:col-span-3 lg:order-2">
+                    <input className={inputCls} value={c.equipoCodigo}
+                      onChange={e => updateCorrectiveItem(i, { equipoCodigo: e.target.value })} />
+                  </Field>
+                  <Field label="Técnico/s asignado/s *" className="col-span-12 lg:col-span-4 lg:order-4">
                     <MultiSelect options={teamOptionsForOT(c)} value={c.technicians}
                       onChange={vals => updateCorrectiveItem(i, { technicians: vals })}
                       placeholder="Seleccionar técnico/s o encargado/s…" />
@@ -2877,7 +2877,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   </div>
                 )}
                 <Field label="Tarea / descripción">
-                  <textarea rows={2} className={inputCls} value={c.task}
+                  <textarea rows={2} className={inputCls} style={{ fieldSizing: 'content', minHeight: '4rem' }} value={c.task}
                     onChange={e => updateCorrectiveItem(i, { task: e.target.value })} />
                 </Field>
                 {/* V2.4 — Timeline de Estado de Avance.
@@ -3164,7 +3164,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 ['tk2', '% Nivel TK2'],
                 ['tk7', '% Nivel TK7']
               ].map(([k, label]) => (
-                <Field key={k} label={label} className="col-span-2">
+                <Field key={k} label={label} className="col-span-4 lg:col-span-2">
                   <input type="number" step="any" className={`${inputCls} num`}
                     value={report.servicios.plantaCaldera[k] ?? ''}
                     onChange={e => updateServicios({ plantaCaldera: { ...report.servicios.plantaCaldera, [k]: e.target.value } })} />
@@ -3177,7 +3177,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="border border-slate-200 rounded-lg p-3 bg-red-50/30">
               <div className="text-[11px] font-bold text-red-700 uppercase tracking-wider mb-2">Caldera</div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 items-end">
                 <Field label="Conductividad (mS)">
                   <input type="number" step="any" className={`${inputCls} num`}
                     value={report.servicios.plantaCaldera.conductividadCaldera ?? ''}
@@ -3192,7 +3192,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             </div>
             <div className="border border-slate-200 rounded-lg p-3 bg-blue-50/30">
               <div className="text-[11px] font-bold text-blue-700 uppercase tracking-wider mb-2">Agua Ablandadores</div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 items-end">
                 <Field label="Conductividad (mS)">
                   <input type="number" step="any" className={`${inputCls} num`}
                     value={report.servicios.plantaCaldera.conductividadAblandador ?? ''}
