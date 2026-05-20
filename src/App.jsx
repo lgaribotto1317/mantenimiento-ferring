@@ -152,7 +152,11 @@ const buildOT = (sector, numero) => {
 };
 
 const TURNOS = ['Mañana', 'Tarde', 'Noche'];
-const shiftOrder = (s) => ({ 'Mañana': '1', 'Tarde': '2', 'Noche': '3' }[s] || '9');
+// Orden cronológico de turnos dentro de una jornada. El turno Noche arranca la víspera
+// (~23h) y se etiqueta con la fecha del día en que termina, por lo que cronológicamente
+// es el PRIMER turno de ese día calendario: Noche → Mañana → Tarde.
+// Convención consistente en todo el histórico. Afecta carry-over, dedup y "último estado".
+const shiftOrder = (s) => ({ 'Noche': '0', 'Mañana': '1', 'Tarde': '2' }[s] || '9');
 const ESTADOS_OT = ['Sin Iniciar', 'En Curso', 'Realizada'];
 const ESTADOS_SERVICIO = ['Operativo', 'No Operativo'];
 const ESTADOS_PLANTA = ['Operativa', 'No Operativa'];
@@ -4679,7 +4683,9 @@ function ShiftRankingCard({ title, tooltip, data, icon: Icon, colorBar }) {
 // ese turno devuelve null y se muestra como "—".
 function computeShiftPerformance(history, startStr, endStr) {
   const SHIFTS = ['Mañana', 'Tarde', 'Noche'];
-  const SHIFT_ORDER = { 'Mañana': 0, 'Tarde': 1, 'Noche': 2 };
+  // Orden cronológico: Noche es el primer turno de la jornada (arranca la víspera).
+  // Coherente con shiftOrder global. NO cambia el orden visual de SHIFTS (presentación).
+  const SHIFT_ORDER = { 'Noche': 0, 'Mañana': 1, 'Tarde': 2 };
   // Validar formato XXX-YYYYY (idéntico a isValidOT). Hay que duplicarlo acá porque
   // las funciones de computo viven fuera del componente que importa isValidOT.
   const isValid = (ot) => {
