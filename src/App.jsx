@@ -4398,13 +4398,14 @@ function StatsView({ history, adminMode }) {
           {stats.stateDistVigente.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
-                <Pie data={stats.stateDistVigente} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}
-                  label={(e) => `${e.name}: ${e.value}`} labelLine={false}>
+                <Pie data={stats.stateDistVigente} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
                   {stats.stateDistVigente.map((entry, i) => (
                     <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
                   ))}
                 </Pie>
                 <Tooltip />
+              <Legend wrapperStyle={{ fontSize: '11px' }}
+              formatter={(value, entry) => `${value}: ${entry.payload.value}`} />
               </PieChart>
             </ResponsiveContainer>
           }
@@ -4426,13 +4427,15 @@ function StatsView({ history, adminMode }) {
           {stats.stateDistPeriodo.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
-                <Pie data={stats.stateDistPeriodo} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}
-                  label={(e) => `${e.name}: ${e.value}`} labelLine={false}>
+                <Pie data={stats.stateDistPeriodo} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
+              
                   {stats.stateDistPeriodo.map((entry, i) => (
                     <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
                   ))}
                 </Pie>
                 <Tooltip />
+                <Legend wrapperStyle={{ fontSize: '11px' }}
+                formatter={(value, entry) => `${value}: ${entry.payload.value}`} />
               </PieChart>
             </ResponsiveContainer>
           }
