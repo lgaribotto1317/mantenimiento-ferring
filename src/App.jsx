@@ -1702,10 +1702,10 @@ export default function App() {
 
       {/* HEADER — V2.6: sticky para acceso permanente a tabs y modo admin durante scroll */}
       <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-lg">
-        <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-4">
+        <div className="max-w-[1600px] mx-auto px-6 py-2 md:py-4 flex items-center justify-between flex-wrap gap-2 md:gap-3">
+          <div className="flex items-center gap-2 md:gap-4">
             {/* LOGO BIOMAS — V2.0: reemplaza el icono del casco. Fondo blanco según pedido. */}
-            <div className="w-14 h-14 rounded-xl bg-white ring-1 ring-slate-200 flex items-center justify-center p-1.5 shadow-sm">
+            <div className="w-9 h-9 md:w-14 md:h-14 rounded-xl bg-white ring-1 ring-slate-200 flex items-center justify-center p-1 md:p-1.5 shadow-sm flex-shrink-0">
               <img
                 src="/logo-biomas.jpg"
                 alt="Biomas"
@@ -1722,9 +1722,12 @@ export default function App() {
                 }}
               />
             </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight">Reporte Diario de Mantenimiento</h1>
-              <p className="text-[11px] text-slate-300 mt-0.5">
+            <div className="min-w-0">
+              <h1 className="text-sm md:text-lg font-bold tracking-tight leading-tight flex items-center gap-2">
+                Reporte Diario de Mantenimiento
+                <span className="px-1.5 py-0.5 bg-slate-700 text-slate-200 rounded text-[10px] font-semibold num md:hidden">{APP_VERSION}</span>
+              </h1>
+              <p className="hidden md:block text-[11px] text-slate-300 mt-0.5">
                 Sistema integral · carga, dashboard, estadísticas y exportación
                 <span className="ml-2 px-1.5 py-0.5 bg-slate-700 text-slate-200 rounded text-[10px] font-semibold num">{APP_VERSION}</span>
               </p>
@@ -1736,14 +1739,14 @@ export default function App() {
                 {supabaseConfigured ? (
                   connError
                     ? <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/20 text-red-200 rounded ring-1 ring-red-400/30">
-                      <CloudOff className="w-3.5 h-3.5" />Sin conexión
+                      <CloudOff className="w-3.5 h-3.5" /><span className="hidden md:inline">Sin conexión</span>
                     </span>
                     : <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 text-emerald-200 rounded ring-1 ring-emerald-400/30">
-                      <Cloud className="w-3.5 h-3.5" />Supabase conectado
+                      <Cloud className="w-3.5 h-3.5" /><span className="hidden md:inline">Supabase conectado</span>
                     </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/20 text-amber-200 rounded ring-1 ring-amber-400/30">
-                    <Settings className="w-3.5 h-3.5" />Modo local
+                    <Settings className="w-3.5 h-3.5" /><span className="hidden md:inline">Modo local</span>
                   </span>
                 )}
                 <button onClick={refresh} className="p-1.5 hover:bg-white/10 rounded transition" title="Refrescar">
@@ -1771,7 +1774,14 @@ export default function App() {
             </div>
             <div className="text-right">
               <div className="num text-sm font-semibold text-white capitalize">
-                {new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}
+                <span className="hidden md:inline">{new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                <span className="md:hidden">{(() => {
+                  const d = new Date();
+                  const dias = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+                  const dd = String(d.getDate()).padStart(2, '0');
+                  const mm = String(d.getMonth() + 1).padStart(2, '0');
+                  return `${dias[d.getDay()]} ${dd}/${mm}`;
+                })()}</span>
               </div>
               <div className="text-slate-300">{history.length} {history.length === 1 ? 'reporte' : 'reportes'}</div>
             </div>
