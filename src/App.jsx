@@ -1734,7 +1734,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs">
-            <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-row md:flex-col items-center md:items-end gap-2 md:gap-1">
               <div className="flex items-center gap-2">
                 {supabaseConfigured ? (
                   connError
@@ -1757,12 +1757,12 @@ export default function App() {
               {adminMode ? (
                 <div className="flex items-center gap-1.5">
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/30 text-red-100 rounded ring-1 ring-red-400/50 font-semibold">
-                    <Shield className="w-3.5 h-3.5" />MODO ADMIN
+                    <Shield className="w-3.5 h-3.5" /><span className="md:hidden">ADMIN</span><span className="hidden md:inline">MODO ADMIN</span>
                   </span>
                   <button onClick={handleAdminLogout}
                     className="inline-flex items-center gap-1 px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded transition text-[10px]"
                     title="Salir de modo admin">
-                    <LogOut className="w-3 h-3" />Salir
+                    <LogOut className="w-3 h-3" /><span className="hidden md:inline">Salir</span>
                   </button>
                 </div>
               ) : (
@@ -1783,7 +1783,7 @@ export default function App() {
                   return `${dias[d.getDay()]} ${dd}/${mm}`;
                 })()}</span>
               </div>
-              <div className="text-slate-300">{history.length} {history.length === 1 ? 'reporte' : 'reportes'}</div>
+              <div className="hidden md:block text-slate-300">{history.length} {history.length === 1 ? 'reporte' : 'reportes'}</div>
             </div>
           </div>
         </div>
@@ -3885,8 +3885,8 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       <div ref={dashboardRef} className="space-y-3">
       {/* HEADER — V2.0: equipo con wrap multi-línea */}
       <Card className="p-3">
-        <div className="grid grid-cols-12 gap-3 items-start">
-          <div className="col-span-3 flex items-center gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-12 gap-3 items-start">
+          <div className="col-span-2 lg:col-span-3 flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-sky-100 ring-1 ring-sky-200 flex items-center justify-center flex-shrink-0">
               <Wrench className="w-5 h-5 text-sky-600" />
             </div>
@@ -3896,15 +3896,15 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
               <div className="text-[10px] text-slate-400 num">{dateShort}</div>
             </div>
           </div>
-          <div className="col-span-2 pt-1">
+          <div className="col-span-1 lg:col-span-2 pt-1">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Turno</div>
             <div className="text-sm font-medium">{report.shift}</div>
           </div>
-          <div className="col-span-3 pt-1">
+          <div className="col-span-1 lg:col-span-3 pt-1">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Responsable</div>
             <div className="text-sm font-medium text-slate-800">{report.responsable || '—'}</div>
           </div>
-          <div className="col-span-4 pt-1">
+          <div className="col-span-2 lg:col-span-4 pt-1">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold flex items-center gap-1 mb-1">
               <Users className="w-3 h-3" />Equipo ({report.team.length})
             </div>
@@ -3929,17 +3929,17 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
           - Preventivos del Turno arriba derecha
           - Servicios abajo derecha
       */}
-      <div className="grid grid-cols-12 gap-3" style={{ minHeight: '500px' }}>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3" style={{ minHeight: '500px' }}>
 
         {/* COL IZQ: CORRECTIVOS — V2.5: 4 sub-secciones (Del turno / Heredados, en cada columna) */}
-        <Card className="col-span-6 p-3 flex flex-col overflow-hidden">
+        <Card className="lg:col-span-6 p-3 flex flex-col lg:overflow-hidden">
           <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
             <Wrench className="w-4 h-4" />Correctivos del turno ({correctiveActual.length})
           </h3>
-          <div className="overflow-auto flex-1 grid grid-cols-2 gap-3" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+          <div className="overflow-visible lg:overflow-auto flex-1 grid grid-cols-1 lg:grid-cols-2 gap-3 lg:max-h-[calc(100vh-280px)]">
 
             {/* SUB-COL: REALIZADAS — V2.5: dividida en "Del turno" y "Heredados" */}
-            <div className="border-r border-slate-200 pr-3">
+            <div className="border-b lg:border-b-0 lg:border-r border-slate-200 pb-3 lg:pb-0 lg:pr-3 mb-3 lg:mb-0">
               <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <CheckCircle2 className="w-3 h-3" />
                 Realizadas ({correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length})
@@ -3993,10 +3993,10 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         </Card>
 
         {/* COL DER: STACK con PREVENTIVOS arriba y SERVICIOS abajo */}
-        <div className="col-span-6 flex flex-col gap-3" style={{ maxHeight: 'calc(100vh - 220px)' }}>
+        <div className="lg:col-span-6 flex flex-col gap-3 lg:max-h-[calc(100vh-220px)]">
           {/* PREVENTIVOS DEL TURNO — V2.6: Card entera clickeable en modo admin */}
           <Card
-            className={`p-3 flex flex-col overflow-hidden flex-shrink-0 ${
+            className={`p-3 flex flex-col lg:overflow-hidden flex-shrink-0 ${
               adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''
             }`}
             onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
@@ -4005,7 +4005,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
               <ListChecks className="w-4 h-4" />Preventivos del Turno
             </h3>
-            <div className="overflow-auto" style={{ maxHeight: '250px' }}>
+            <div className="lg:overflow-auto lg:max-h-[250px]">
               {/* Asignados / Realizados */}
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <div className="bg-slate-50 rounded p-2 text-center">
@@ -4056,11 +4056,11 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
           </Card>
 
           {/* SERVICIOS */}
-          <Card className="p-3 flex flex-col overflow-hidden flex-1 min-h-0">
+          <Card className="p-3 flex flex-col lg:overflow-hidden lg:flex-1 min-h-0">
             <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
               <Activity className="w-4 h-4" />Servicios
             </h3>
-            <div className="overflow-auto flex-1 space-y-3">
+            <div className="lg:overflow-auto lg:flex-1 space-y-3">
               {/* Planta de Efluentes y Caldera */}
               <div className="pb-3 border-b border-slate-100">
                 <div className="flex items-center justify-between mb-1.5">
