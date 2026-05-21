@@ -4367,7 +4367,13 @@ function StatsView({ history, adminMode }) {
         <KPI label="% Cumpl." value={`${stats.completionRate}%`} icon={TrendingUp} color="indigo" />
       </div>
 
-      {/* CHARTS GRID */}
+           {/* CHARTS GRID — orden v3.2:
+          Fila 1: Trabajos en el período | Evolución temporal
+          Fila 2: Estado al cierre del período | Estado al día de hoy
+          Fila 3: OTs pendientes por origen | OTs heredadas cerradas   (admin)
+          Fila 4: Carga por técnico | Distribución por turno           (admin)
+          Fila 5: Equipos con más correctivos
+          Gráfico "estado al cierre" pasó a público (BACKLOG #17 resuelto). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
@@ -4387,149 +4393,7 @@ function StatsView({ history, adminMode }) {
           </ResponsiveContainer>
         </Card>
 
-        {/* GRÁFICO 1 — Estado vigente HOY (todo el histórico) */}
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
-            <Activity className="w-4 h-4" />Correctivos: estado al día de hoy
-          </h3>
-          <p className="text-[11px] text-slate-400 mb-3">
-            Pendientes abiertas al día de hoy ({stats.pendientesVigentes}). Incluye OTs anteriores al período. No cambia según el rango.
-          </p>
-          {stats.stateDistVigente.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie data={stats.stateDistVigente} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
-                  {stats.stateDistVigente.map((entry, i) => (
-                    <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              <Legend wrapperStyle={{ fontSize: '11px' }}
-              formatter={(value, entry) => `${value}: ${entry.payload.value}`} />
-              </PieChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-
-        {/* GRÁFICO 2 — Estado al cierre del período filtrado.
-            V3.1 — Solo admin: incluye OTs huérfanas (pendientes viejas que dejaron de
-            arrastrarse) que inflan el conteo. Se mantiene oculto a operativos hasta
-            limpiar esos datos en Supabase (ver BACKLOG #17). */}
-        {adminMode && (
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
-            <Activity className="w-4 h-4" />Correctivos: estado al cierre del período
-            <span className="text-[10px] text-amber-600 font-normal ml-2">(admin)</span>
-          </h3>
-          <p className="text-[11px] text-slate-400 mb-3">
-            Cómo quedaron las OTs al final del período seleccionado ({stats.pendientesPeriodo} pendientes al cierre). Puede incluir OTs huérfanas sin cerrar (ver limpieza pendiente).
-          </p>
-          {stats.stateDistPeriodo.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie data={stats.stateDistPeriodo} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
-              
-                  {stats.stateDistPeriodo.map((entry, i) => (
-                    <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: '11px' }}
-                formatter={(value, entry) => `${value}: ${entry.payload.value}`} />
-              </PieChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-        )}
-
-        {/* V2.7 — Bloque admin-only: métricas de performance por turno.
-            Incluye las dos tarjetas existentes (Distribución por turno, Carga por técnico)
-            y las dos nuevas de V2.7 (Pendientes por origen, Heredadas cerradas). */}
-        {adminMode && (<>
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
-            <Calendar className="w-4 h-4" />Distribución por turno
-            <span className="text-[10px] text-amber-600 font-normal ml-2">(admin)</span>
-          </h3>
-          {stats.shiftDist.every(s => s.value === 0) ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={stats.shiftDist}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="name" stroke="#64748b" style={{ fontSize: '11px' }} />
-                <YAxis stroke="#64748b" style={{ fontSize: '10px' }} />
-                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
-                <Legend wrapperStyle={{ fontSize: '11px' }} />
-                <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" />
-                <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" />
-              </BarChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
-            <Users className="w-4 h-4" />Carga por técnico
-            <span className="text-[10px] text-slate-500 font-normal ml-2">(todos los técnicos del catálogo)</span>
-            <span className="text-[10px] text-amber-600 font-normal ml-1">· (admin)</span>
-          </h3>
-          {stats.topTechs.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={Math.max(240, stats.topTechs.length * 22)}>
-              <BarChart data={stats.topTechs} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} allowDecimals={false} />
-                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={120} interval={0} />
-                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
-                <Legend wrapperStyle={{ fontSize: '11px' }} />
-                <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" stackId="a" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" stackId="a" radius={[0, 3, 3, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-
-        {/* V2.7 — OTs dejadas pendientes por turno de origen.
-            Por cada OT en history (excluyendo legacy sin formato XXX-YYYYY),
-            se toma el turno donde se creó (createdInShift) y su último estado global.
-            Si el último estado es Sin Iniciar o En Curso, suma al turno de origen.
-            Solo se consideran OTs creadas dentro del rango [startStr, endStr]. */}
-        <ShiftRankingCard
-          title="OTs dejadas pendientes por turno de origen"
-          tooltip="Cuenta OTs creadas en cada turno cuyo último estado global sigue en Sin Iniciar o En Curso. Filtro por fecha aplica al turno de creación. Excluye OTs legacy. Estadísticas desde 20/05/2026."
-          data={shiftPerformance?.pendingByOriginShift}
-          icon={AlertTriangle}
-          colorBar="#ef4444"
-        />
-
-        {/* V2.7 — OTs heredadas cerradas por turno.
-            Una transición Sin Iniciar/En Curso → Realizada en un turno distinto
-            al de creación cuenta para el turno donde ocurrió el cierre.
-            Solo se cuentan cierres ocurridos dentro del rango [startStr, endStr]. */}
-        <ShiftRankingCard
-          title="OTs heredadas cerradas por turno"
-          tooltip="Cuenta cierres (estado → Realizada) de OTs creadas en turnos anteriores. Filtro por fecha aplica al turno del cierre. Excluye OTs legacy. Estadísticas desde 20/05/2026."
-          data={shiftPerformance?.closedByShift}
-          icon={CheckCircle2}
-          colorBar="#10b981"
-        />
-        </>)}
-
-        <Card className="p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
-            <Wrench className="w-4 h-4" />Equipos con más correctivos
-          </h3>
-          {stats.topEquipment.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={stats.topEquipment} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} />
-                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={110} />
-                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
-                <Bar dataKey="count" fill="#0ea5e9" radius={[0, 3, 3, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          }
-        </Card>
-
+        {/* Evolución temporal */}
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
             <TrendingUp className="w-4 h-4" />Evolución temporal
@@ -4556,7 +4420,138 @@ function StatsView({ history, adminMode }) {
             </AreaChart>
           </ResponsiveContainer>
         </Card>
+
+        {/* GRÁFICO 2 — Estado al cierre del período filtrado.
+            V3.2 — Público: las OTs huérfanas se limpiaron en Supabase (BACKLOG #17). */}
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
+            <Activity className="w-4 h-4" />Correctivos: estado al cierre del período
+          </h3>
+          <p className="text-[11px] text-slate-400 mb-3">
+            Cómo quedaron las OTs al final del período seleccionado ({stats.pendientesPeriodo} pendientes al cierre).
+          </p>
+          {stats.stateDistPeriodo.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie data={stats.stateDistPeriodo} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
+                  {stats.stateDistPeriodo.map((entry, i) => (
+                    <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: '11px' }}
+                  formatter={(value, entry) => `${value}: ${entry.payload.value}`} />
+              </PieChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+
+        {/* GRÁFICO 1 — Estado vigente HOY (todo el histórico) */}
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-1 inline-flex items-center gap-2">
+            <Activity className="w-4 h-4" />Correctivos: estado al día de hoy
+          </h3>
+          <p className="text-[11px] text-slate-400 mb-3">
+            Pendientes abiertas al día de hoy ({stats.pendientesVigentes}). Incluye OTs anteriores al período. No cambia según el rango.
+          </p>
+          {stats.stateDistVigente.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie data={stats.stateDistVigente} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
+                  {stats.stateDistVigente.map((entry, i) => (
+                    <Cell key={i} fill={entry.name === 'Realizada' ? '#10b981' : entry.name === 'En Curso' ? '#f59e0b' : '#ef4444'} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: '11px' }}
+                  formatter={(value, entry) => `${value}: ${entry.payload.value}`} />
+              </PieChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+
+        {/* V2.7 — Bloque admin-only: métricas de performance por turno.
+            Orden v3.2: Pendientes por origen, Heredadas cerradas, Carga por técnico, Distribución por turno. */}
+        {adminMode && (<>
+        {/* V2.7 — OTs dejadas pendientes por turno de origen. */}
+        <ShiftRankingCard
+          title="OTs dejadas pendientes por turno de origen"
+          tooltip="Cuenta OTs creadas en cada turno cuyo último estado global sigue en Sin Iniciar o En Curso. Filtro por fecha aplica al turno de creación. Excluye OTs legacy. Estadísticas desde 20/05/2026."
+          data={shiftPerformance?.pendingByOriginShift}
+          icon={AlertTriangle}
+          colorBar="#ef4444"
+        />
+
+        {/* V2.7 — OTs heredadas cerradas por turno. */}
+        <ShiftRankingCard
+          title="OTs heredadas cerradas por turno"
+          tooltip="Cuenta cierres (estado → Realizada) de OTs creadas en turnos anteriores. Filtro por fecha aplica al turno del cierre. Excluye OTs legacy. Estadísticas desde 20/05/2026."
+          data={shiftPerformance?.closedByShift}
+          icon={CheckCircle2}
+          colorBar="#10b981"
+        />
+
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
+            <Users className="w-4 h-4" />Carga por técnico
+            <span className="text-[10px] text-slate-500 font-normal ml-2">(todos los técnicos del catálogo)</span>
+            <span className="text-[10px] text-amber-600 font-normal ml-1">· (admin)</span>
+          </h3>
+          {stats.topTechs.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={Math.max(240, stats.topTechs.length * 22)}>
+              <BarChart data={stats.topTechs} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} allowDecimals={false} />
+                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={120} interval={0} />
+                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" stackId="a" radius={[0, 0, 0, 0]} />
+                <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" stackId="a" radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
+            <Calendar className="w-4 h-4" />Distribución por turno
+            <span className="text-[10px] text-amber-600 font-normal ml-2">(admin)</span>
+          </h3>
+          {stats.shiftDist.every(s => s.value === 0) ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={stats.shiftDist}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="name" stroke="#64748b" style={{ fontSize: '11px' }} />
+                <YAxis stroke="#64748b" style={{ fontSize: '10px' }} />
+                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                <Bar dataKey="correctivos" fill="#f97316" name="Correctivos" />
+                <Bar dataKey="preventivos" fill="#10b981" name="Preventivos" />
+              </BarChart>
+            </ResponsiveContainer>
+          }
+        </Card>
+        </>)}
+
+        {/* Equipos con más correctivos */}
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700 mb-3 inline-flex items-center gap-2">
+            <Wrench className="w-4 h-4" />Equipos con más correctivos
+          </h3>
+          {stats.topEquipment.length === 0 ? <EmptyHint>Sin datos</EmptyHint> :
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={stats.topEquipment} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" stroke="#64748b" style={{ fontSize: '10px' }} />
+                <YAxis dataKey="name" type="category" stroke="#64748b" style={{ fontSize: '10px' }} width={110} />
+                <Tooltip contentStyle={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px' }} />
+                <Bar dataKey="count" fill="#0ea5e9" radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          }
+        </Card>
       </div>
+
     </div>
   );
 }
