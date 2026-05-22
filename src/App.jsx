@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.1';
+const APP_VERSION = 'v3.2';
 // ═══════════════════════════════════════════════════════════════════
 // V2.9 — ID único para entradas del timeline
 // Formato: tl_xxxxxx (6 chars alfanuméricos random).
