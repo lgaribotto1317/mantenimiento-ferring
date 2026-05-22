@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.2';
+const APP_VERSION = 'v3.3';
 // ═══════════════════════════════════════════════════════════════════
 // V2.9 — ID único para entradas del timeline
 // Formato: tl_xxxxxx (6 chars alfanuméricos random).
@@ -621,6 +621,12 @@ export default function App() {
   //   - fixedReport: el reporte editado que se va a guardar después de confirmar
   const [propagationModal, setPropagationModal] = useState(null);
 
+  // V3.3 — Guard de sobreescritura (BACKLOG #20).
+  // Se abre cuando el destino (date+shift) ya existe en Supabase con datos,
+  // y es distinto del reporte que se tenía abierto originalmente (originalReport).
+  // Estructura: null | { reportToSave, existingN: número de correctivos del reporte existente }
+  const [overwriteConfirm, setOverwriteConfirm] = useState(null);
+
   // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
   // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
   // modifica el reporte activo (Pregunta 1 opción B).
@@ -958,7 +964,7 @@ export default function App() {
     });
     return result;
   };
-  const doSaveReport = async (reportToSave) => {
+  const doSaveReport = async (reportToSave, overwriteConfirmed = false) => {
     if (!reportToSave.date || !reportToSave.shift) { setSaveMsg('Falta fecha o turno'); return; }
     const validationError = validateReport(reportToSave);
     if (validationError) {
@@ -979,6 +985,35 @@ export default function App() {
       console.warn('No se pudo recargar history para verificar conflictos:', e);
       freshHistory = history;
     }
+    // V3.3 — Guard de sobreescritura (BACKLOG #20).
+    // Si el destino (date+shift) ya existe en freshHistory con datos, y NO es el mismo
+    // reporte que teníamos abierto originalmente (originalReport), mostrar modal de
+    // confirmación antes de pisar. Esto previene el incidente del 2026-05-21 donde
+    // se guardó encima de Mañana sin querer al no cambiar el selector de turno.
+    // No dispara si: re-guardás el mismo reporte abierto, guardás uno nuevo, admin
+    // edita con snapshot, o ya confirmaste la sobreescritura (overwriteConfirmed).
+    if (!overwriteConfirmed && !(adminMode && originalReport)) {
+      const destId = `${reportToSave.date}-${reportToSave.shift}`;
+      const originalId = originalReport ? `${originalReport.date}-${originalReport.shift}` : null;
+      const existing = freshHistory.find(r => `${r.date}-${r.shift}` === destId);
+      const hasData = existing && (
+        (existing.corrective || []).length > 0 ||
+        (existing.team || []).length > 0 ||
+        (existing.comments || []).length > 0
+      );
+      if (hasData && destId !== originalId) {
+        setSaving(false);
+        setSaveMsg('');
+        setOverwriteConfirm({
+          reportToSave,
+          existingN: (existing.corrective || []).length,
+          date: reportToSave.date,
+          shift: reportToSave.shift,
+        });
+        return;
+      }
+    }
+
     // V2.9 — Si admin está editando un reporte histórico (tiene snapshot original),
     // saltar la detección V2.8 de conflictos. V2.8 está pensada para responsables
     // que tenían el form abierto cuando otro turno cerró la OT; admin con snapshot
@@ -1909,6 +1944,26 @@ export default function App() {
           onCancel={handlePropagationCancel}
         />
       )}
+
+      {/* V3.3 — Modal guard de sobreescritura (BACKLOG #20).
+          Se abre cuando el destino ya tiene un reporte guardado con datos
+          y es distinto del que se tenía abierto originalmente. */}
+      {overwriteConfirm && (
+        <OverwriteConfirmDialog
+          date={overwriteConfirm.date}
+          shift={overwriteConfirm.shift}
+          existingN={overwriteConfirm.existingN}
+          onConfirm={() => {
+            const rts = overwriteConfirm.reportToSave;
+            setOverwriteConfirm(null);
+            // V3.3 — Reintentar el guardado con la sobreescritura ya confirmada.
+            // NO tocamos originalReport (tiene semántica de snapshot admin); usamos
+            // el flag overwriteConfirmed para que el guard no vuelva a disparar.
+            doSaveReport(rts, true);
+          }}
+          onCancel={() => { setOverwriteConfirm(null); setSaveMsg(''); }}
+        />
+      )}
     </div>
   );
 }
@@ -2026,7 +2081,55 @@ function DeleteReportConfirmDialog({ date, shift, onConfirm, onCancel }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// V2.5 — MODAL DE CONFIRMACIÓN DE ENTRADAS VACÍAS
+// V3.3 — MODAL GUARD DE SOBREESCRITURA (BACKLOG #20)
+// Se muestra antes de guardar si el destino (date+shift) ya tiene un
+// reporte con datos en Supabase y es distinto del que se tenía abierto.
+// Previene pisadas accidentales como el incidente del 2026-05-21.
+// ═══════════════════════════════════════════════════════════════════
+function OverwriteConfirmDialog({ date, shift, existingN, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="w-5 h-5 text-amber-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Reporte ya existente
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Ya hay un reporte guardado para <strong>{date}</strong> turno <strong>{shift}</strong>
+              {existingN > 0 && <> con <strong>{existingN} OT{existingN === 1 ? '' : 's'} correctiva{existingN === 1 ? '' : 's'}</strong></>}.
+            </p>
+            <p className="text-sm text-amber-700 leading-relaxed mt-2 font-medium">
+              Si continuás, el contenido actual del formulario va a reemplazar ese reporte. Esta acción no se puede deshacer.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={onConfirm}
+            className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition inline-flex items-center gap-1.5">
+            <Save className="w-4 h-4" />
+            Sobreescribir
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 // Se muestra antes de guardar si hay correctivos o preventivos completamente
 // vacíos (sin OT/equipo, sin task, sin técnicos). El usuario debe confirmar
 // que está OK eliminarlos antes de continuar con el guardado.
@@ -2581,6 +2684,11 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       // Conservar correctivos que NO estén en "Realizada"
       corrective: (r.corrective || []).filter(c => c.state !== 'Realizada')
     }));
+    // V3.3 — Limpiar desvincula el form del reporte cargado. Así, si después se
+    // guarda sobre un destino con datos, el guard de sobreescritura (#20) vuelve
+    // a disparar. Antes quedaba apuntando al reporte viejo y el guard no protegía
+    // el caso del incidente del 2026-05-21.
+    setOriginalReport(null);
     const pendingCount = (report.corrective || []).filter(c => c.state !== 'Realizada').length;
     const removedCount = (report.corrective || []).filter(c => c.state === 'Realizada').length;
     if (pendingCount > 0 && removedCount > 0) {
@@ -2761,9 +2869,15 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 <Trash2 className="w-4 h-4" />Eliminar reporte
               </button>
             )}
-            <button onClick={cleanForm} className={`${buttonCls} bg-slate-100 text-slate-600 hover:bg-slate-200`}>
-              Limpiar
-            </button>
+            {/* V3.3 — Botón Limpiar oculto a no-admin (BACKLOG #20 ampliado).
+                En la práctica trae más confusión que beneficio y fue el detonante
+                del incidente del 2026-05-21. Se mantiene en el código y visible
+                solo en modo admin por si se decide revertir. */}
+            {adminMode && (
+              <button onClick={cleanForm} className={`${buttonCls} bg-slate-100 text-slate-600 hover:bg-slate-200`}>
+                Limpiar
+              </button>
+            )}
             <button onClick={onSave} disabled={saving} className={`${buttonCls} bg-slate-800 text-white hover:bg-slate-700 px-5 disabled:opacity-50`}>
               <Save className="w-4 h-4" />Guardar reporte
             </button>
@@ -3351,7 +3465,12 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
         </div>
       </Card>
 
-      {/* MANTENIMIENTO PREVENTIVO — V2.1: bajado al final del formulario */}
+      {/* MANTENIMIENTO PREVENTIVO — V2.1: bajado al final del formulario.
+          V3.3 (BACKLOG #18): bloque de carga detallada oculto a no-admin.
+          El array `preventive` no se usa en ninguna vista (todo lo visible sale
+          de `preventivosResumen`). Se mantiene en el código y visible en admin
+          por si se decide revertir. No tocar `preventivosResumen` ni el export Excel. */}
+      {adminMode && (
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <SectionTitle icon={ListChecks} accent="emerald">Mantenimiento Preventivo</SectionTitle>
@@ -3423,6 +3542,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
           })}
         </div>
       </Card>
+      )}
     </div>
   );
 }
