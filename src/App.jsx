@@ -5527,4 +5527,3 @@ function downloadSingle(rows, sheetName, fileName) {
   addSheet(wb, rows, sheetName);
   XLSX.writeFile(wb, fileName);
 }
-// deploy-test 2026-05-23 — verificación webhook post-reinstall #24
