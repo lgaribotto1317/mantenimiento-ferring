@@ -14,7 +14,7 @@ Variables de entorno necesarias (configurar en el panel de Vercel):
 
 - React 18 + Vite
 - Tailwind CSS
-- Recharts (gráficos)
+- Recharts (graficos)
 - SheetJS (Excel)
 - Lucide React (iconos)
 - Supabase (base de datos compartida)
