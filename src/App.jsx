@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.4';
+const APP_VERSION = 'v3.5';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -339,7 +339,8 @@ const storage = {
       );
       if (!res.ok) throw new Error(`Supabase: ${res.status} ${await res.text()}`);
       const rows = await res.json();
-      return rows.map(r => r.data);
+      // V3.5 (#22) — exponemos updated_at junto al data para el chequeo de concurrencia (optimistic locking).
+      return rows.map(r => ({ ...r.data, _updatedAt: r.updated_at }));
     } else {
       // Fallback: browser localStorage (per-device, not shared)
       const all = [];
@@ -657,6 +658,8 @@ export default function App() {
   // y es distinto del reporte que se tenía abierto originalmente (originalReport).
   // Estructura: null | { reportToSave, existingN: número de correctivos del reporte existente }
   const [overwriteConfirm, setOverwriteConfirm] = useState(null);
+  // V3.5 (#22) — Modal de concurrencia (optimistic locking). null | { reportToSave, freshUpdatedAt, mineUpdatedAt }
+  const [concurrencyConflict, setConcurrencyConflict] = useState(null);
 
   // V2.4 — Override del Dashboard: cuando está seteado, el Dashboard muestra
   // ese reporte en lugar del activo. Se resetea automáticamente si el usuario
@@ -1008,7 +1011,7 @@ export default function App() {
     });
     return result;
   };
-  const doSaveReport = async (reportToSave, overwriteConfirmed = false) => {
+  const doSaveReport = async (reportToSave, overwriteConfirmed = false, concurrencyConfirmed = false) => {
     if (!reportToSave.date || !reportToSave.shift) { setSaveMsg('Falta fecha o turno'); return; }
     const validationError = validateReport(reportToSave);
     if (validationError) {
@@ -1028,6 +1031,31 @@ export default function App() {
       // un problema de red en la verificación; el guardado en sí puede funcionar).
       console.warn('No se pudo recargar history para verificar conflictos:', e);
       freshHistory = history;
+    }
+
+    // V3.5 (#22) — Chequeo de concurrencia (optimistic locking).
+    // Solo aplica al re-guardar un reporte que YA teníamos abierto (mismo date+shift que
+    // el snapshot original). Si el updated_at en la base cambió respecto al que cargamos,
+    // significa que otra sesión guardó en el medio → abrimos modal antes de pisar.
+    // No aplica si: es un reporte nuevo, cambiaste de turno (de eso se ocupa el guard #20),
+    // ya confirmaste sobreescribir la concurrencia, o no hay timestamp de referencia.
+    // Fail-open coherente con el resto: si freshHistory cayó al history viejo (catch de red),
+    // mineUpdatedAt/freshUpdatedAt pueden no ser confiables, pero como comparamos igualdad
+    // estricta y el caso de red ya no recargó, no genera falso positivo relevante.
+    if (!concurrencyConfirmed && originalReport) {
+      const destId = `${reportToSave.date}-${reportToSave.shift}`;
+      const originalId = `${originalReport.date}-${originalReport.shift}`;
+      if (destId === originalId) {
+        const mineUpdatedAt = originalReport._updatedAt || null;
+        const fresh = freshHistory.find(r => `${r.date}-${r.shift}` === destId);
+        const freshUpdatedAt = fresh ? (fresh._updatedAt || null) : null;
+        if (mineUpdatedAt && freshUpdatedAt && mineUpdatedAt !== freshUpdatedAt) {
+          setSaving(false);
+          setSaveMsg('');
+          setConcurrencyConflict({ reportToSave, freshUpdatedAt, mineUpdatedAt });
+          return;
+        }
+      }
     }
     // V3.3 — Guard de sobreescritura (BACKLOG #20).
     // Si el destino (date+shift) ya existe en freshHistory con datos, y NO es el mismo
@@ -2041,6 +2069,32 @@ export default function App() {
           onCancel={() => { setOverwriteConfirm(null); setSaveMsg(''); }}
         />
       )}
+
+      {concurrencyConflict && (
+        <ConcurrencyConflictDialog
+          date={concurrencyConflict.reportToSave.date}
+          shift={concurrencyConflict.reportToSave.shift}
+          onDiscard={async () => {
+            // Acción segura (default): descartar lo que tengo en pantalla y recargar el fresco de la base.
+            const { date, shift } = concurrencyConflict.reportToSave;
+            setConcurrencyConflict(null);
+            await refresh();
+            const fresh = (await storage.list()).map(hydrate).find(r => r.date === date && r.shift === shift);
+            if (fresh) {
+              setReport(fresh);
+              setOriginalReport(JSON.parse(JSON.stringify(fresh)));
+              setSaveMsg('Recargado desde la base. Revisá los datos antes de volver a guardar.');
+              setTimeout(() => setSaveMsg(''), 4000);
+            }
+          }}
+          onOverwrite={() => {
+            // Acción destructiva: pisar igual. Reintenta con el flag de concurrencia confirmada.
+            const rts = concurrencyConflict.reportToSave;
+            setConcurrencyConflict(null);
+            doSaveReport(rts, false, true);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2201,6 +2255,58 @@ function OverwriteConfirmDialog({ date, shift, existingN, onConfirm, onCancel })
             className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition inline-flex items-center gap-1.5">
             <Save className="w-4 h-4" />
             Sobreescribir
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V3.5 (#22) — MODAL DE CONCURRENCIA (optimistic locking)
+// Se muestra cuando otra sesión guardó el mismo reporte mientras lo editabas.
+// Default visual = acción segura (Descartar y recargar). Sobreescribir queda
+// como acción secundaria y consciente.
+// ═══════════════════════════════════════════════════════════════════
+function ConcurrencyConflictDialog({ date, shift, onDiscard, onOverwrite }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onDiscard(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onDiscard]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onDiscard}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="w-5 h-5 text-amber-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Modificado por otra sesión
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              El reporte de <strong>{date}</strong> turno <strong>{shift}</strong> fue
+              guardado por otra sesión mientras lo editabas. Si sobreescribís, vas a
+              pisar esos cambios.
+            </p>
+            <p className="text-sm text-amber-700 leading-relaxed mt-2 font-medium">
+              Lo recomendado es descartar lo tuyo y recargar la versión más reciente para no perder datos.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onOverwrite}
+            className="px-4 py-2 text-sm font-medium text-amber-700 bg-white border border-amber-300 hover:bg-amber-50 rounded-lg transition inline-flex items-center gap-1.5">
+            <Save className="w-4 h-4" />
+            Sobreescribir igual
+          </button>
+          <button onClick={onDiscard}
+            className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition">
+            Descartar y recargar
           </button>
         </div>
       </div>
