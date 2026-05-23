@@ -30,7 +30,23 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.3';
+const APP_VERSION = 'v3.4';
+
+// ═══════════════════════════════════════════════════════════════════
+// VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
+// La app lee `min_version` de la tabla app_config al arrancar y compara
+// contra APP_VERSION. Si la local es menor, bloquea la UI y redirige a la
+// URL de producción. Si el fetch falla (red, tabla inexistente) → fail-open
+// (no bloquea, loguea). Protege de v3.4 en adelante; el cliente v2.1 ya suelto
+// no tiene este código y se ataca del lado servidor (Punto 3).
+// Formato de versión: 'vMAJOR.MINOR' → entero MAJOR*100 + MINOR (v3.4 → 304).
+const PROD_URL = 'https://mantenimiento-ferring.vercel.app';
+const parseVersion = (v) => {
+  if (!v) return 0;
+  const m = String(v).replace(/^v/i, '').match(/(\d+)(?:\.(\d+))?/);
+  if (!m) return 0;
+  return parseInt(m[1], 10) * 100 + parseInt(m[2] || '0', 10);
+};
 // ═══════════════════════════════════════════════════════════════════
 // V2.9 — ID único para entradas del timeline
 // Formato: tl_xxxxxx (6 chars alfanuméricos random).
@@ -373,6 +389,19 @@ const storage = {
     } else {
       localStorage.removeItem(`rep:${id}`);
     }
+  },
+
+  // Punto 2 — Lee un valor de la tabla app_config. Devuelve null si no existe,
+  // no está configurado Supabase, o falla la consulta (el caller hace fail-open).
+  async getConfig(key) {
+    if (!supabaseConfigured) return null;
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/app_config?select=value&key=eq.${encodeURIComponent(key)}`,
+      { headers: sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase app_config: ${res.status} ${await res.text()}`);
+    const rows = await res.json();
+    return rows.length ? rows[0].value : null;
   }
 };
 
@@ -584,6 +613,8 @@ export default function App() {
   const [report, setReport] = useState(emptyReport());
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Punto 2 — Version gate. true = versión local desactualizada → bloquear UI.
+  const [versionBlocked, setVersionBlocked] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [saving, setSaving] = useState(false);
   const [connError, setConnError] = useState('');
@@ -651,7 +682,20 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { (async () => { await refresh(); setLoading(false); })(); }, [refresh]);
+  // Punto 2 — Chequeo de versión al arrancar. Fail-open: si no se puede
+  // verificar (red caída, tabla inexistente), NO bloquea y deja trabajar.
+  const checkVersion = useCallback(async () => {
+    try {
+      const min = await storage.getConfig('min_version');
+      if (min != null && parseVersion(APP_VERSION) < parseInt(min, 10)) {
+        setVersionBlocked(true);
+      }
+    } catch (e) {
+      console.warn('Version gate: no se pudo verificar la versión (fail-open):', e);
+    }
+  }, []);
+
+  useEffect(() => { (async () => { await checkVersion(); await refresh(); setLoading(false); })(); }, [checkVersion, refresh]);
 
   // Validaciones antes de guardar (V2.0)
   // Devuelve string con error o '' si todo OK
@@ -1730,6 +1774,39 @@ export default function App() {
       downloadSingle(rows, 'Proveedores', `Proveedores_${new Date().toISOString().slice(0, 10)}.xlsx`);
     }
   };
+
+  // Punto 2 — Pantalla de bloqueo por versión desactualizada (hard gate).
+  // Early-return: si la versión local es vieja, no se renderiza nada del árbol
+  // normal — no hay forma de cargar ni guardar. El link redirige a producción.
+  if (versionBlocked) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4"
+           style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-7 text-center">
+          <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4">
+            <AlertTriangle className="w-7 h-7 text-amber-600" />
+          </div>
+          <h1 className="text-lg font-bold text-slate-900 mb-2">
+            Versión desactualizada
+          </h1>
+          <p className="text-sm text-slate-600 leading-relaxed mb-1">
+            Estás usando una versión vieja de la app
+            (<span className="num font-semibold">{APP_VERSION}</span>) que ya no está habilitada para cargar reportes.
+          </p>
+          <p className="text-sm text-slate-600 leading-relaxed mb-5">
+            Abrí la versión actual desde el siguiente enlace y, si tenés un acceso directo viejo en el escritorio, reemplazalo por este:
+          </p>
+          <a href={PROD_URL}
+             className="inline-flex items-center justify-center w-full px-4 py-3 text-sm font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl transition mb-3">
+            Abrir la versión actual
+          </a>
+          <div className="text-xs text-slate-400 break-all select-all">
+            {PROD_URL}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
