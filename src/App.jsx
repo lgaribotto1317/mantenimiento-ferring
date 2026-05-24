@@ -5,7 +5,7 @@ import {
   HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
   CalendarDays, Clock, Image as ImageIcon, FileDown,
-  Lock, LogOut, Edit3, Shield
+  Lock, LogOut, Edit3, Shield, RotateCcw
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.5';
+const APP_VERSION = 'v3.6';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -407,6 +407,131 @@ const storage = {
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// DRAFT STORE — autoguardado local de borrador (BACKLOG #7, v3.6)
+// ═══════════════════════════════════════════════════════════════════
+// Red de seguridad LOCAL y POR DISPOSITIVO contra la pérdida de un borrador
+// en curso (refresh / cierre de pestaña / caída antes de apretar "Guardar").
+// NO reemplaza al guardado en Supabase ni al optimistic locking de #22:
+// - #22 previene que dos sesiones se pisen entre sí (server-side, por timestamp).
+// - #7 evita que UNA sesión pierda lo tipeado si se cae antes de guardar (local).
+// Es localStorage puro: no toca Supabase, no es registro auditable, es UX.
+// Una key por turno: `draft:YYYY-MM-DD-Turno`. Expira a 48h.
+// Todo fail-silent (try/catch): si localStorage no está disponible — modo
+// privado de iOS, cuota llena — no rompe el flujo de carga.
+const DRAFT_PREFIX = 'draft:';
+const DRAFT_TTL_MS = 48 * 60 * 60 * 1000; // 48 horas
+
+const draftStore = {
+  key(id) { return `${DRAFT_PREFIX}${id}`; },
+
+  // Guarda el borrador del reporte bajo su id (date-shift).
+  save(id, report) {
+    try {
+      localStorage.setItem(this.key(id), JSON.stringify({
+        report,
+        savedAt: new Date().toISOString(),
+        version: APP_VERSION
+      }));
+    } catch { /* fail-silent: sin localStorage, no hay red local pero la app sigue */ }
+  },
+
+  // Devuelve { report, savedAt, version } o null si no existe / está corrupto.
+  load(id) {
+    try {
+      const raw = localStorage.getItem(this.key(id));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.report) return null;
+      return parsed;
+    } catch { return null; }
+  },
+
+  // Borra el borrador de un turno. Se llama tras un save exitoso a Supabase.
+  clear(id) {
+    try { localStorage.removeItem(this.key(id)); } catch { /* fail-silent */ }
+  },
+
+  // Borra borradores de más de 48h. Se llama una vez al arrancar la app.
+  // Evita que se acumulen borradores viejos de turnos ya cerrados.
+  purgeOld() {
+    try {
+      const now = Date.now();
+      const toRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith(DRAFT_PREFIX)) continue;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(k));
+          const t = parsed?.savedAt ? Date.parse(parsed.savedAt) : NaN;
+          if (!Number.isFinite(t) || (now - t) > DRAFT_TTL_MS) toRemove.push(k);
+        } catch { toRemove.push(k); } // borrador corrupto → descartar
+      }
+      toRemove.forEach(k => localStorage.removeItem(k));
+    } catch { /* fail-silent */ }
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// hasUserWork — ¿el form tiene trabajo REAL del usuario? (BACKLOG #7, v3.6)
+// ═══════════════════════════════════════════════════════════════════
+// El form casi nunca está 100% vacío: el carry-over trae correctivos pendientes
+// automáticamente (decisión crítica #4). Necesitamos distinguir "form con
+// trabajo del usuario" de "form recién abierto solo con carry-over", para no
+// ofrecer recuperar un borrador que en realidad nadie tocó.
+//
+// Señal de trabajo real (cualquiera alcanza):
+//   - responsable / equipo del turno cargados
+//   - preventivos (array detallado) o comentarios cargados
+//   - resumen de preventivos con datos (asignados/realizados/porTecnico)
+//   - servicios tocados respecto del default (caldera, agua de pozo, proveedores)
+//   - algún correctivo TOCADO en este turno: lastModifiedInShift === date-shift
+//     (las pendientes intactas del carry-over NO marcan esto — misma señal que
+//     usa el Dashboard para mostrar solo lo del turno, V2.3), o con una entrada
+//     de timeline cuyo shiftKey sea el turno actual.
+const hasUserWork = (report) => {
+  if (!report) return false;
+  const id = `${report.date}-${report.shift}`;
+  const base = emptyReport();
+
+  if ((report.responsable || '').trim()) return true;
+  if ((report.team || []).length > 0) return true;
+  if ((report.preventive || []).length > 0) return true;
+  if ((report.comments || []).length > 0) return true;
+
+  const pr = report.preventivosResumen || {};
+  if ((pr.asignados ?? '') !== '' || (pr.realizados ?? '') !== '') return true;
+  if ((pr.porTecnico || []).length > 0) return true;
+
+  const s = report.servicios || {};
+  const pc = s.plantaCaldera || {};
+  const bpc = base.servicios.plantaCaldera;
+  // PTEL + caldera + ablandadores: cualquier medición cargada, foguistas, o estado != default
+  const calderaFields = ['caudal','vacio','deltaT','tk1','tk2','tk7',
+    'conductividadCaldera','pHCaldera','conductividadAblandador','pHAblandador'];
+  if (calderaFields.some(f => (pc[f] ?? '') !== '')) return true;
+  if ((pc.tecnicos || []).length > 0) return true;
+  if ((pc.estado ?? bpc.estado) !== bpc.estado) return true;
+  const ap = s.aguaPozo || {};
+  if ((ap.cloroPozo3 ?? '') !== '' || (ap.cloroPozo6 ?? '') !== '') return true;
+  if ((s.proveedores || []).length > 0) return true;
+  // Compresores / grupos / cisternas con estado distinto del default
+  if ((s.compresores || []).some(c => c.state && c.state !== 'Operativo')) return true;
+  if ((s.gruposElectrogenos || []).some(g => g.state && g.state !== 'Operativo')) return true;
+  const cis = s.cisternas || {};
+  if ((cis.nivel ?? base.servicios.cisternas.nivel) !== base.servicios.cisternas.nivel) return true;
+  if ((cis.estado ?? base.servicios.cisternas.estado) !== base.servicios.cisternas.estado) return true;
+
+  // Correctivos tocados en ESTE turno (no los del carry-over intactos)
+  const corrTouched = (report.corrective || []).some(c =>
+    c.lastModifiedInShift === id ||
+    (c.timeline || []).some(t => t.shiftKey === id)
+  );
+  if (corrTouched) return true;
+
+  return false;
+};
+
+// ═══════════════════════════════════════════════════════════════════
 // UI PRIMITIVES
 // ═══════════════════════════════════════════════════════════════════
 const Card = ({ children, className = '', ...rest }) => (
@@ -698,7 +823,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { (async () => { await checkVersion(); await refresh(); setLoading(false); })(); }, [checkVersion, refresh]);
+  useEffect(() => { (async () => { draftStore.purgeOld(); await checkVersion(); await refresh(); setLoading(false); })(); }, [checkVersion, refresh]);
 
   // Validaciones antes de guardar (V2.0)
   // Devuelve string con error o '' si todo OK
@@ -1182,6 +1307,7 @@ export default function App() {
       // así el usuario ve el form sin las filas vacías
       if (reportToSave !== report) setReport(reportToSave);
       setOriginalReport(JSON.parse(JSON.stringify(reportToSave)));  // V2.9 — actualizar snapshot al guardado nuevo
+      draftStore.clear(`${reportToSave.date}-${reportToSave.shift}`);  // #7 v3.6 — guardado OK: limpiar borrador local
       setSaveMsg('✓ Reporte guardado');
       setTimeout(() => setSaveMsg(''), 2500);
     } catch (e) {
@@ -1376,6 +1502,7 @@ export default function App() {
       await storage.save(fixedReport);
       await refresh();
       setOriginalReport(JSON.parse(JSON.stringify(fixedReport)));  // V2.9 — actualizar snapshot al guardado nuevo
+      draftStore.clear(`${fixedReport.date}-${fixedReport.shift}`);  // #7 v3.6 — guardado OK: limpiar borrador local
       setSaveMsg('✓ Reporte guardado');
       setTimeout(() => setSaveMsg(''), 2500);
     } catch (e) {
@@ -2263,6 +2390,76 @@ function OverwriteConfirmDialog({ date, shift, existingN, onConfirm, onCancel })
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// #7 (v3.6) — MODAL DE RECUPERACIÓN DE BORRADOR LOCAL
+// Se muestra al posicionarse en un turno para el que hay un borrador sin
+// guardar en localStorage (refresh/caída antes de guardar). Default visual =
+// recuperar (acción esperada). Si el turno ya tiene un reporte en el servidor,
+// se informa para que el usuario decida con contexto.
+// ═══════════════════════════════════════════════════════════════════
+function DraftRecoveryDialog({ date, shift, savedAt, serverUpdatedAt, onRecover, onDiscard }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onDiscard(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onDiscard]);
+
+  const fmt = (iso) => {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString('es-AR', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+      });
+    } catch { return null; }
+  };
+  const savedStr = fmt(savedAt);
+  const serverStr = fmt(serverUpdatedAt);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onDiscard}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center flex-shrink-0">
+            <RotateCcw className="w-5 h-5 text-sky-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Borrador sin guardar
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Hay un borrador sin guardar del turno <strong>{shift}</strong> del{' '}
+              <strong>{formatDateShort(date)}</strong>
+              {savedStr ? <> (guardado automáticamente el <strong>{savedStr}</strong>)</> : null}.
+              {' '}Probablemente quedó de una carga anterior que no llegaste a guardar.
+            </p>
+            {serverStr && (
+              <p className="text-sm text-amber-700 leading-relaxed mt-2">
+                Ojo: ya hay un reporte guardado en el servidor para este turno
+                (última actualización <strong>{serverStr}</strong>). Si recuperás el
+                borrador y guardás, vas a pisar esa versión. Revisá antes de guardar.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onDiscard}
+            className="px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition">
+            Descartar borrador
+          </button>
+          <button onClick={onRecover}
+            className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition inline-flex items-center gap-1.5">
+            <RotateCcw className="w-4 h-4" />
+            Recuperar borrador
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // V3.5 (#22) — MODAL DE CONCURRENCIA (optimistic locking)
 // Se muestra cuando otra sesión guardó el mismo reporte mientras lo editabas.
 // Default visual = acción segura (Descartar y recargar). Sobreescribir queda
@@ -2807,6 +3004,81 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   const [loadInfo, setLoadInfo] = useState('');
   const initialPendingApplied = useRef(false);
 
+  // ── BACKLOG #7 (v3.6) — Autoguardado local de borrador ──────────────
+  // State del modal de recuperación: null | { id, draft, serverUpdatedAt }
+  const [draftRecovery, setDraftRecovery] = useState(null);
+
+  // Autoguardado debounced (~1.5s) del borrador en curso a localStorage.
+  // Solo guarda si:
+  //   - estamos en carga de turno corriente (NO admin editando histórico), y
+  //   - el form tiene trabajo real del usuario (hasUserWork), no solo carry-over.
+  // El borrador se limpia tras un save OK (en doSaveReport) — no acá.
+  useEffect(() => {
+    // Excluir edición admin de histórico: el borrador es para carga de turno,
+    // no para ediciones retroactivas (que tienen su propio snapshot V2.9).
+    if (adminMode && originalReport) return;
+    // No autoguardar mientras el modal de recuperación está abierto: el usuario
+    // todavía no decidió si recupera o descarta.
+    if (draftRecovery) return;
+    if (!report.date || !report.shift) return;
+    if (!hasUserWork(report)) return;
+    const id = `${report.date}-${report.shift}`;
+    const t = setTimeout(() => draftStore.save(id, report), 1500);
+    return () => clearTimeout(t);
+  }, [report, adminMode, originalReport, draftRecovery]);
+
+  // Intenta ofrecer recuperación de borrador para un (date, shift).
+  // Devuelve true si abrió el modal de recuperación (el caller corta su flujo),
+  // false si no había borrador recuperable (el caller sigue su flujo normal).
+  const maybeOfferDraft = (date, shift) => {
+    if (adminMode && originalReport) return false;   // no en edición admin
+    const id = `${date}-${shift}`;
+    const draft = draftStore.load(id);
+    if (!draft || !hasUserWork(draft.report)) return false;
+    const serverMatch = history.find(r => r.date === date && r.shift === shift);
+    setDraftRecovery({
+      id,
+      draft,
+      serverUpdatedAt: serverMatch ? (serverMatch._updatedAt || null) : null
+    });
+    return true;
+  };
+
+  // Aplica el borrador recuperado al form.
+  const applyDraftRecovery = () => {
+    if (!draftRecovery) return;
+    const r = hydrate(draftRecovery.draft.report);
+    setReport(r);
+    // Si el turno ya existía en el servidor, el snapshot original es el del
+    // servidor (para que el guard de sobreescritura / concurrencia siga válido);
+    // si no existía, es reporte nuevo (sin snapshot).
+    const serverMatch = history.find(x => x.date === r.date && x.shift === r.shift);
+    setOriginalReport(serverMatch ? JSON.parse(JSON.stringify(hydrate(serverMatch))) : null);
+    setDraftRecovery(null);
+    setLoadInfo('↻ Borrador recuperado. Revisá los datos y guardá para confirmar.');
+    setTimeout(() => setLoadInfo(''), 5000);
+  };
+
+  // Descarta el borrador y sigue el flujo normal (server o nuevo con pendientes).
+  const discardDraftRecovery = () => {
+    if (!draftRecovery) return;
+    const { id } = draftRecovery;
+    const [date, shift] = [draftRecovery.draft.report.date, draftRecovery.draft.report.shift];
+    draftStore.clear(id);
+    setDraftRecovery(null);
+    // Reproducir el flujo normal de setDateShift sin volver a ofrecer el draft
+    const existing = history.find(r => r.date === date && r.shift === shift);
+    if (existing) {
+      setReport(hydrate(existing));
+      setOriginalReport(JSON.parse(JSON.stringify(hydrate(existing))));
+    } else {
+      const pending = computePending(date, shift);
+      setReport({ ...emptyReport(), date, shift, corrective: pending });
+      setOriginalReport(null);
+    }
+  };
+  // ────────────────────────────────────────────────────────────────────
+
   // V2.4 — Compute correctivos pendientes:
   //   - Recorre todos los reportes hasta (date, shift)
   //   - Mantiene la versión MÁS RECIENTE de cada OT (por número)
@@ -2839,6 +3111,9 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   //  - if a saved report exists for that date+shift -> load it as-is
   //  - otherwise, build a new empty report with pending correctivos pre-loaded
   const setDateShift = (newDate, newShift) => {
+      // #7 v3.6 — si hay borrador local recuperable para este turno, ofrecer
+      // recuperarlo antes de cargar del servidor o armar uno nuevo.
+      if (maybeOfferDraft(newDate, newShift)) return;
       const existing = history.find(r => r.date === newDate && r.shift === newShift);
       if (existing) {
       setReport(hydrate(existing));
@@ -2897,6 +3172,12 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
       report.corrective.length === 0 && report.preventive.length === 0 &&
       report.comments.length === 0;
     if (!isEmpty) { initialPendingApplied.current = true; return; }
+    // #7 v3.6 — al cargar la app sobre el turno por defecto, ofrecer recuperar
+    // borrador si existe para ese turno (antes de cargar server o pendientes).
+    if (maybeOfferDraft(report.date, report.shift)) {
+      initialPendingApplied.current = true;
+      return;
+    }
     const existing = history.find(r => r.date === report.date && r.shift === report.shift);
     if (existing) {
       setReport(hydrate(existing));
@@ -3023,6 +3304,17 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 
   return (
     <div className="space-y-5">
+      {/* #7 v3.6 — Modal de recuperación de borrador local sin guardar */}
+      {draftRecovery && (
+        <DraftRecoveryDialog
+          date={draftRecovery.draft.report.date}
+          shift={draftRecovery.draft.report.shift}
+          savedAt={draftRecovery.draft.savedAt}
+          serverUpdatedAt={draftRecovery.serverUpdatedAt}
+          onRecover={applyDraftRecovery}
+          onDiscard={discardDraftRecovery}
+        />
+      )}
       {/* V2.9 — Banner: admin editando reporte histórico (que ya está guardado). */}
       {adminMode && originalReport && (
         <div className="flex items-start gap-2 px-3 py-2.5 bg-sky-50 border border-sky-200 rounded-lg">
