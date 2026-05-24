@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.6';
+const APP_VERSION = 'v3.7';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -271,11 +271,88 @@ const emptyReport = () => ({
   }
 });
 
+// #26 (v3.7) — Deduplicación intra-reporte de OTs correctivas.
+// Un reporte NUNCA debería tener dos entradas con el mismo número de OT, pero
+// pasó (ver #25): el flujo permitió recargar una OT ya heredada por el carry-over
+// como si fuera nueva, dejando dos versiones (ej. una Realizada + una En Curso).
+// Eso rompía a TODOS los consumidores que dedup por número con "el último gana"
+// (computePending, stats, dashboard). En vez de parchear cada consumidor, saneamos
+// acá: como todo reporte pasa por hydrate al cargarse, los consumidores reciben
+// datos ya limpios desde un único punto.
+//
+// Regla de fusión cuando hay duplicados del mismo número:
+//   - Estado ganador: el más "cerrado" (Realizada > En Curso > Sin Iniciar).
+//     Ante empate de estado, gana la última posicional (suele ser la más nueva).
+//   - createdInShift: el MÁS ANTIGUO entre las versiones (primera aparición real).
+//   - lastModifiedInShift, equipoCodigo, task, technicians: los de la ganadora.
+//   - timeline: UNIÓN de todas las entradas (dedup por id), ordenadas por timestamp.
+//   - La entrada fusionada queda en la POSICIÓN de la primera aparición (no reordena).
+// IMPORTANTE: las OTs sin número (ot === '' o ausente) NO se deduplican — cada una
+// es una entrada legítima distinta. Esa basura (Clase 2 de #25) se limpia por SQL,
+// no acá. hydrate las deja pasar todas tal cual.
+const STATE_RANK = { 'Realizada': 3, 'En Curso': 2, 'Sin Iniciar': 1 };
+
+const dedupCorrective = (corrective) => {
+  const list = corrective || [];
+  const indexByOt = new Map();   // ot# -> índice en `result` donde vive la entrada fusionada
+  const result = [];
+  list.forEach(c => {
+    const key = (c.ot || '').trim();
+    const entry = { ...c, timeline: c.timeline || [] };
+    if (!key) { result.push(entry); return; }   // sin número: no se dedup
+    if (!indexByOt.has(key)) {
+      indexByOt.set(key, result.length);
+      result.push(entry);
+      return;
+    }
+    // Ya existe una entrada con este número: fusionar.
+    const idx = indexByOt.get(key);
+    const prev = result[idx];
+    const prevRank = STATE_RANK[prev.state] || 0;
+    const curRank = STATE_RANK[entry.state] || 0;
+    // Ganadora: mayor rank; ante empate, la actual (más nueva posicionalmente).
+    const winner = curRank >= prevRank ? entry : prev;
+    const loser  = winner === entry ? prev : entry;
+    // Timeline combinado: unión por id, ordenado por timestamp.
+    const seen = new Set();
+    const mergedTimeline = [...(prev.timeline || []), ...(entry.timeline || [])]
+      .filter(t => {
+        const tid = t && t.id ? t.id : JSON.stringify(t);
+        if (seen.has(tid)) return false;
+        seen.add(tid);
+        return true;
+      })
+      .sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    // createdInShift más antiguo entre las dos versiones (primera aparición real).
+    // OJO: el orden lexicográfico de "YYYY-MM-DD-Turno" NO es cronológico (el turno
+    // va como texto y "Mañana" < "Noche" alfabéticamente, pero Noche es anterior).
+    // Comparamos con shiftOrder: clave = fecha + shiftOrder(turno).
+    const sortKeyOfShiftId = (sid) => {
+      if (!sid) return '\uffff';   // sin valor: lo mandamos al final
+      const i = sid.lastIndexOf('-');
+      const fecha = i >= 0 ? sid.slice(0, i) : sid;
+      const turno = i >= 0 ? sid.slice(i + 1) : '';
+      return `${fecha}-${shiftOrder(turno)}`;
+    };
+    const createdCandidates = [prev.createdInShift, entry.createdInShift].filter(Boolean);
+    const createdInShift = createdCandidates.length
+      ? createdCandidates.sort((a, b) => sortKeyOfShiftId(a).localeCompare(sortKeyOfShiftId(b)))[0]
+      : winner.createdInShift;
+    result[idx] = {
+      ...winner,
+      createdInShift,
+      timeline: mergedTimeline
+    };
+  });
+  return result;
+};
+
 // V2.4 — Hidrata un reporte asegurando estructura completa.
 // Esto cubre reportes guardados con schemas anteriores (V1.0 a V2.3):
 //   - Correctivos sin `timeline` → se inicializa como []
 //   - Grupos del resumen con `tecnico` (singular) → se migran a `tecnicos: [...]`
 //   - Servicios y subobjetos faltantes se completan con defaults
+//   - #26 (v3.7): deduplica OTs correctivas con el mismo número (dato corrupto)
 const hydrate = (raw) => {
   const base = emptyReport();
   if (!raw) return base;
@@ -283,10 +360,8 @@ const hydrate = (raw) => {
     ...base,
     ...raw,
     // V2.4 — asegurar timeline en cada OT correctiva
-    corrective: (raw.corrective || []).map(c => ({
-      ...c,
-      timeline: c.timeline || []
-    })),
+    // #26 (v3.7) — y deduplicar OTs con el mismo número (dato corrupto intra-reporte)
+    corrective: dedupCorrective(raw.corrective || []),
     servicios: {
       ...base.servicios,
       ...(raw.servicios || {}),
