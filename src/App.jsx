@@ -531,6 +531,18 @@ const hasUserWork = (report) => {
   return false;
 };
 
+// reportsEqual — compara dos reportes por contenido, ignorando _updatedAt
+// (metadato de concurrencia que no es parte del reporte en sí). Se usa para
+// decidir si el form tiene cambios sin guardar respecto del último snapshot
+// guardado. (BACKLOG #7, v3.6)
+const reportsEqual = (a, b) => {
+  if (!a || !b) return false;
+  const strip = (r) => { const { _updatedAt, ...rest } = r; return rest; };
+  try {
+    return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+  } catch { return false; }
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // UI PRIMITIVES
 // ═══════════════════════════════════════════════════════════════════
@@ -3010,9 +3022,13 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 
   // Autoguardado debounced (~1.5s) del borrador en curso a localStorage.
   // Solo guarda si:
-  //   - estamos en carga de turno corriente (NO admin editando histórico), y
-  //   - el form tiene trabajo real del usuario (hasUserWork), no solo carry-over.
-  // El borrador se limpia tras un save OK (en doSaveReport) — no acá.
+  //   - estamos en carga de turno corriente (NO admin editando histórico),
+  //   - el form tiene trabajo real del usuario (hasUserWork), no solo carry-over, y
+  //   - el form difiere del último estado GUARDADO (originalReport). Si coinciden,
+  //     no hay nada sin guardar que respaldar (ya está en Supabase) — esto evita
+  //     que el autosave recree el borrador inmediatamente después de un save OK,
+  //     que ya lo limpió (la carrera clear-vs-debounce post-guardado).
+  // El borrador se limpia tras un save OK (en doSaveReport), no acá.
   useEffect(() => {
     // Excluir edición admin de histórico: el borrador es para carga de turno,
     // no para ediciones retroactivas (que tienen su propio snapshot V2.9).
@@ -3022,6 +3038,8 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     if (draftRecovery) return;
     if (!report.date || !report.shift) return;
     if (!hasUserWork(report)) return;
+    // Si el form coincide con el último reporte guardado, no hay borrador pendiente.
+    if (originalReport && reportsEqual(report, originalReport)) return;
     const id = `${report.date}-${report.shift}`;
     const t = setTimeout(() => draftStore.save(id, report), 1500);
     return () => clearTimeout(t);
