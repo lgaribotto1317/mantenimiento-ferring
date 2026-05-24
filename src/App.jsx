@@ -1028,10 +1028,27 @@ export default function App() {
       }
     }
 
+    // #26 (v3.7) — 6. Unicidad de número de OT dentro del reporte.
+    // Un reporte NO debe tener dos OTs correctivas con el mismo número. El caso
+    // típico: el carry-over trajo una OT En Curso y el usuario cargó OTRA con el
+    // mismo número en vez de editar la heredada (causa raíz de #25). La dedup de
+    // hydrate sanea esto en LECTURA, pero acá lo frenamos en ESCRITURA para que no
+    // se genere el dato corrupto y el usuario corrija en el momento.
+    // Solo cuenta OTs con número (las vacías son caso aparte, se ignoran).
+    const otCounts = {};
+    (r.corrective || []).forEach(c => {
+      const key = (c.ot || '').trim();
+      if (!key) return;
+      otCounts[key] = (otCounts[key] || 0) + 1;
+    });
+    const duplicadas = Object.keys(otCounts).filter(k => otCounts[k] > 1);
+    if (duplicadas.length > 0) {
+      const lista = duplicadas.slice(0, 3).join(', ') + (duplicadas.length > 3 ? '…' : '');
+      return `Hay ${duplicadas.length} número${duplicadas.length === 1 ? '' : 's'} de OT repetido${duplicadas.length === 1 ? '' : 's'} en el reporte (${lista}). Cada OT debe figurar una sola vez: si una vino del turno anterior, editá esa en vez de cargarla de nuevo.`;
+    }
+
     return '';
   };
-
-  // V2.5 — Detecta correctivos y preventivos "vacíos" (3 campos clave en blanco).
   //   Correctivo vacío: sin OT, sin task, sin técnicos.
   //   Preventivo vacío: sin equipoCodigo, sin task, sin técnicos.
   // Devuelve { emptyCorrIdx, emptyPrevIdx, cleanedReport } o null si no hay vacíos.
