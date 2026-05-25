@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.10';
+const APP_VERSION = 'v3.11';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -2092,7 +2092,7 @@ export default function App() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
         body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
-        .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
+        .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum', 'zero'; }
       `}</style>
 
       {/* HEADER — V2.6: sticky para acceso permanente a tabs y modo admin durante scroll */}
