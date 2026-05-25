@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.12';
+const APP_VERSION = 'v3.13';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -2245,6 +2245,25 @@ export default function App() {
               </div>
               <div className="hidden md:block text-slate-300"><span className="num">{history.length}</span> {history.length === 1 ? 'reporte' : 'reportes'}</div>
             </div>
+            {/* v3.13 (#12) — Guardar reporte en el header global, visible siempre (sin scroll)
+                solo cuando la tab activa es "Cargar Reporte". Botón grande, en línea a la
+                derecha (no fuerza 2da línea para no ensanchar el header). El saveMsg lo
+                acompaña a la izquierda. Limpiar y Eliminar NO suben acá: van al FAB admin
+                dentro de FormView (Limpiar fue el detonante del incidente 21/05). */}
+            {tab === 'form' && (
+              <div className="flex items-center gap-2 md:gap-3 pl-2 md:pl-4 md:border-l md:border-white/10">
+                {saveMsg && (
+                  <span className={`hidden md:inline text-xs font-medium max-w-[180px] truncate ${saveMsg.startsWith('Error') ? 'text-red-300' : saveMsg.startsWith('✓') ? 'text-emerald-300' : 'text-slate-300'}`}>
+                    {saveMsg}
+                  </span>
+                )}
+                <button onClick={saveReport} disabled={saving}
+                  className="inline-flex items-center gap-2 px-4 md:px-6 py-2 md:py-2.5 bg-sky-500 hover:bg-sky-400 text-white rounded-xl font-bold text-sm md:text-base transition disabled:opacity-50 shadow-md flex-shrink-0"
+                  title="Guardar reporte">
+                  <Save className="w-5 h-5" /><span className="hidden sm:inline">Guardar reporte</span><span className="sm:hidden">Guardar</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div className="max-w-[1600px] mx-auto px-6">
@@ -3535,70 +3554,50 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
           </div>
         </div>
       )}
-      {/* TOP ACTION BAR — sticky so the Save button is always visible */}
-      <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-slate-50/95 backdrop-blur border-b border-slate-200">
-        <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
-          <div className="flex items-center gap-2 text-sm text-slate-600 min-w-0">
-            <ClipboardList className="w-5 h-5 text-sky-600 flex-shrink-0" />
-            <span className="font-medium truncate">
-              {loadInfo || 'Cargá los datos del turno y guardá. Se almacenan automáticamente.'}
-            </span>
-          </div>
-          <div className="flex items-center gap-3 flex-shrink-0">
-            {saveMsg && <span className={`text-sm font-medium ${saveMsg.startsWith('Error') ? 'text-red-600' : saveMsg.startsWith('✓') ? 'text-emerald-600' : 'text-slate-500'}`}>{saveMsg}</span>}
-            {/* V2.6 — Botón eliminar reporte (solo modo admin y si el reporte ya está guardado) */}
-            {adminMode && history.some(r => r.date === report.date && r.shift === report.shift) && (
-              <button onClick={onDeleteReport}
-                className={`${buttonCls} bg-red-50 text-red-700 hover:bg-red-100 ring-1 ring-red-200`}
-                title="Eliminar este reporte completo">
-                <Trash2 className="w-4 h-4" />Eliminar reporte
-              </button>
-            )}
-            {/* V3.3 — Botón Limpiar oculto a no-admin (BACKLOG #20 ampliado).
-                En la práctica trae más confusión que beneficio y fue el detonante
-                del incidente del 2026-05-21. Se mantiene en el código y visible
-                solo en modo admin por si se decide revertir. */}
-            {adminMode && (
-              <button onClick={cleanForm} className={`${buttonCls} bg-slate-100 text-slate-600 hover:bg-slate-200`}>
-                Limpiar
-              </button>
-            )}
-            <button onClick={onSave} disabled={saving} className={`${buttonCls} bg-slate-800 text-white hover:bg-slate-700 px-5 disabled:opacity-50`}>
-              <Save className="w-4 h-4" />Guardar reporte
-            </button>
-          </div>
+      {/* v3.13 (#12) — La action bar sticky fue eliminada. Guardar + saveMsg viven
+          ahora en el header global (visibles siempre sin scroll). Limpiar + Eliminar
+          reporte pasaron al FAB flotante admin (abajo a la izquierda, ver más abajo).
+          Acá solo queda la línea informativa de loadInfo, que aparece cuando hay mensaje. */}
+      {loadInfo && (
+        <div className="flex items-center gap-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-xl px-3 py-2.5 shadow-sm">
+          <ClipboardList className="w-5 h-5 text-sky-600 flex-shrink-0" />
+          <span className="font-medium">{loadInfo}</span>
         </div>
+      )}
+
+      {/* v3.13 (#12) — Información del Turno + Equipo del Turno en línea, 50/50 en desktop,
+          apiladas en mobile. Antes eran dos Cards a ancho completo, una sobre otra. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* COMPACT TURNO HEADER */}
+        <Card className="p-5">
+          <SectionTitle icon={Calendar} accent="sky">Información del Turno</SectionTitle>
+          <div className="grid grid-cols-3 gap-2 md:gap-3">
+            <Field label="Fecha">
+              <input type="date" className={inputCls} value={report.date} onChange={e => setDateShift(e.target.value, report.shift)} />
+            </Field>
+            <Field label="Turno">
+              <select className={inputCls} value={report.shift} onChange={e => setDateShift(report.date, e.target.value)}>
+                {TURNOS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Responsable">
+              <select className={inputCls} value={report.responsable} onChange={e => update({ responsable: e.target.value })}>
+                <option value="">— Seleccionar —</option>
+                {RESPONSABLES.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+              </select>
+            </Field>
+          </div>
+        </Card>
+
+        {/* EQUIPO (only names) */}
+        <Card className="p-5">
+          <SectionTitle icon={Users} accent="sky">Equipo del Turno</SectionTitle>
+          <Field label="Técnicos del turno (selección múltiple)">
+            <MultiSelect options={TECNICO_NAMES} value={report.team} onChange={vals => update({ team: vals })}
+              placeholder="Seleccionar técnicos…" />
+          </Field>
+        </Card>
       </div>
-
-      {/* COMPACT TURNO HEADER (single line) */}
-      <Card className="p-5">
-        <SectionTitle icon={Calendar} accent="sky">Información del Turno</SectionTitle>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Field label="Fecha">
-            <input type="date" className={inputCls} value={report.date} onChange={e => setDateShift(e.target.value, report.shift)} />
-          </Field>
-          <Field label="Turno">
-            <select className={inputCls} value={report.shift} onChange={e => setDateShift(report.date, e.target.value)}>
-              {TURNOS.map(s => <option key={s}>{s}</option>)}
-            </select>
-          </Field>
-          <Field label="Responsable">
-            <select className={inputCls} value={report.responsable} onChange={e => update({ responsable: e.target.value })}>
-              <option value="">— Seleccionar —</option>
-              {RESPONSABLES.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
-            </select>
-          </Field>
-        </div>
-      </Card>
-
-      {/* EQUIPO (only names) */}
-      <Card className="p-5">
-        <SectionTitle icon={Users} accent="sky">Equipo del Turno</SectionTitle>
-        <Field label="Técnicos del turno (selección múltiple)">
-          <MultiSelect options={TECNICO_NAMES} value={report.team} onChange={vals => update({ team: vals })}
-            placeholder="Seleccionar técnicos…" />
-        </Field>
-      </Card>
 
       {/* CORRECTIVOS — V2.0: SIN botón eliminar; V2.5: técnico obligatorio siempre + banner */}
       <Card className="p-5">
@@ -4265,6 +4264,28 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
           })}
         </div>
       </Card>
+      )}
+
+      {/* v3.13 (#12) — FAB admin flotante abajo-izquierda con Limpiar + Eliminar reporte.
+          Solo admin (para no-admin no renderiza nada → sin franja ni hueco). Lejos del
+          Guardar (que está arriba en el header) para no reintroducir el clic accidental de
+          Limpiar que causó el incidente 21/05. Ambas acciones conservan su confirmación:
+          Eliminar pasa por onDeleteReport (modal en el padre); Limpiar por cleanForm. */}
+      {adminMode && (
+        <div className="fixed bottom-6 left-6 z-30 flex flex-col gap-2">
+          {history.some(r => r.date === report.date && r.shift === report.shift) && (
+            <button onClick={onDeleteReport}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-full font-medium text-sm shadow-lg ring-1 ring-red-700/30 transition"
+              title="Eliminar este reporte completo (admin)">
+              <Trash2 className="w-4 h-4" />Eliminar reporte
+            </button>
+          )}
+          <button onClick={cleanForm}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-600 hover:bg-slate-700 text-white rounded-full font-medium text-sm shadow-lg ring-1 ring-slate-700/30 transition"
+            title="Limpiar formulario (admin)">
+            <RefreshCw className="w-4 h-4" />Limpiar
+          </button>
+        </div>
       )}
     </div>
   );
