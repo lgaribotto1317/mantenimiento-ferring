@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.11';
+const APP_VERSION = 'v3.12';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -471,6 +471,35 @@ const storage = {
     } else {
       localStorage.setItem(`rep:${id}`, JSON.stringify(report));
     }
+  },
+
+  // BACKLOG #21 (v3.12) — Backup de la versión anterior antes de sobreescribir.
+  // Inserta en reportes_historial un snapshot del reporte VIEJO (el que se está
+  // por pisar), tal como estaba en la base. Se llama desde doSaveReport DESPUÉS
+  // del UPSERT, fail-open: si esto lanza, el caller loguea y sigue (el guardado
+  // normal ya ocurrió; el backup es red de seguridad, no debe bloquear la operación).
+  //   reporteId      — "YYYY-MM-DD-Turno" del reporte pisado
+  //   dataAnterior   — objeto reporte viejo completo (lo que había en la base)
+  //   updatedAtAnterior — updated_at que tenía esa versión (puede ser null)
+  //   motivo         — 'save_normal' | 'overwrite_turno' | 'concurrency'
+  // Solo escribe en Supabase. Si no está configurado (fallback localStorage), no hace
+  // historial: el modo local es per-device y no es el escenario que #21 protege.
+  async saveHistorial(reporteId, dataAnterior, updatedAtAnterior, motivo) {
+    if (!supabaseConfigured) return;
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/reportes_historial`,
+      {
+        method: 'POST',
+        headers: { ...sbHeaders(), Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          reporte_id: reporteId,
+          data_anterior: dataAnterior,
+          updated_at_anterior: updatedAtAnterior || null,
+          motivo
+        })
+      }
+    );
+    if (!res.ok) throw new Error(`Supabase historial: ${res.status} ${await res.text()}`);
   },
 
   // V2.6 — Eliminar reporte completo (modo admin)
@@ -1424,8 +1453,44 @@ export default function App() {
       }
     }
     setSaveMsg('Guardando…');
+    // BACKLOG #21 (v3.12) — Capturamos la versión vieja del destino ANTES de pisar,
+    // tomándola de freshHistory (lo que hay en la base ahora). Solo si existe CON datos:
+    // un destino vacío o inexistente no tiene nada que respaldar (primer guardado del turno).
+    // El INSERT al historial se hace DESPUÉS del UPSERT exitoso (más abajo), fail-open.
+    // El motivo se clasifica por el flag con el que entró doSaveReport (NO por si el guard
+    // saltó: en la 2da pasada confirmada el guard ya no dispara, ver #20/#22):
+    //   concurrencyConfirmed → 'concurrency' (confirmó pisar pese al conflicto de #22)
+    //   overwriteConfirmed   → 'overwrite_turno' (confirmó pisar turno con datos, #20)
+    //   ninguno              → 'save_normal' (re-guardado del propio turno que ya tenía datos)
+    let _histPrev = null;
+    {
+      const destId = `${reportToSave.date}-${reportToSave.shift}`;
+      const prev = freshHistory.find(r => `${r.date}-${r.shift}` === destId);
+      const prevHasData = prev && (
+        (prev.corrective || []).length > 0 ||
+        (prev.team || []).length > 0 ||
+        (prev.comments || []).length > 0
+      );
+      if (prevHasData) {
+        const motivo = concurrencyConfirmed ? 'concurrency'
+          : overwriteConfirmed ? 'overwrite_turno'
+          : 'save_normal';
+        // Snapshot del data crudo viejo, sin los campos internos de runtime (_updatedAt).
+        const { _updatedAt, ...dataAnterior } = prev;
+        _histPrev = { destId, dataAnterior, updatedAtAnterior: _updatedAt || null, motivo };
+      }
+    }
     try {
       await storage.save(reportToSave);
+      // BACKLOG #21 — Backup de la versión pisada. Fail-open: si el INSERT al historial
+      // falla, NO revierte ni bloquea el guardado (que ya ocurrió). Solo se loguea.
+      if (_histPrev) {
+        try {
+          await storage.saveHistorial(_histPrev.destId, _histPrev.dataAnterior, _histPrev.updatedAtAnterior, _histPrev.motivo);
+        } catch (eh) {
+          console.warn('No se pudo respaldar la versión anterior (historial #21):', eh);
+        }
+      }
       await refresh();
       // V2.5 — Si se limpiaron entradas vacías, persistir el cambio en el state local
       // así el usuario ve el form sin las filas vacías
