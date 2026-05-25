@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.13';
+const APP_VERSION = 'v3.14';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -228,6 +228,23 @@ const formatDateLong = (isoDate) => {
   return new Date(y, m - 1, d).toLocaleDateString('es-AR', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
   });
+};
+
+// #9 (v3.14) — Ventana de edición para no-admin: solo HOY o AYER (fecha calendario local).
+// Reportes más viejos que ayer son read-only para no-admin (corrección retroactiva = solo admin).
+// "Hoy + ayer" (no "hoy" literal) cubre el cruce de medianoche del turno Noche, que arranca
+// la víspera (~23h) y se etiqueta con el día en que termina. Admin no pasa por acá (siempre edita).
+const isWithinEditWindow = (isoDate) => {
+  if (!isoDate) return true; // sin fecha (reporte nuevo a medio armar): no bloquear
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return true;
+  const target = new Date(y, m - 1, d);
+  target.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((today - target) / 86400000);
+  // diffDays === 0 → hoy; === 1 → ayer; negativo → futuro (lo deja pasar, #11 se ocupa de futuras)
+  return diffDays <= 1;
 };
 
 // Day-of-week 0=Domingo, 1=Lunes, ..., 6=Sábado
@@ -1291,6 +1308,15 @@ export default function App() {
   };
   const doSaveReport = async (reportToSave, overwriteConfirmed = false, concurrencyConfirmed = false) => {
     if (!reportToSave.date || !reportToSave.shift) { setSaveMsg('Falta fecha o turno'); return; }
+    // #9 (v3.14) — Bloqueo duro: un no-admin NO puede guardar reportes anteriores a ayer.
+    // Editar hoy/ayer es operación normal del turno en curso; corregir el pasado es
+    // edición retroactiva → solo admin (donde la propagación V2.9 funciona). Red de
+    // seguridad real: aunque el form esté en read-only y el botón oculto, este guard
+    // impide el guardado por cualquier vía. Admin pasa siempre.
+    if (!adminMode && !isWithinEditWindow(reportToSave.date)) {
+      setSaveMsg('Error: solo se pueden editar reportes de hoy o ayer. Para corregir reportes anteriores, ingresá como admin.');
+      return;
+    }
     const validationError = validateReport(reportToSave);
     if (validationError) {
       setSaveMsg(`Error: ${validationError}`);
@@ -2257,11 +2283,15 @@ export default function App() {
                     {saveMsg}
                   </span>
                 )}
-                <button onClick={saveReport} disabled={saving}
-                  className="inline-flex items-center gap-2 px-4 md:px-6 py-2 md:py-2.5 bg-sky-500 hover:bg-sky-400 text-white rounded-xl font-bold text-sm md:text-base transition disabled:opacity-50 shadow-md flex-shrink-0"
-                  title="Guardar reporte">
-                  <Save className="w-5 h-5" /><span className="hidden sm:inline">Guardar reporte</span><span className="sm:hidden">Guardar</span>
-                </button>
+                {/* #9 (v3.14) — el botón Guardar se oculta si el reporte es read-only para
+                    no-admin (anterior a ayer). El banner del form explica por qué. */}
+                {!(!adminMode && !isWithinEditWindow(report.date)) && (
+                  <button onClick={saveReport} disabled={saving}
+                    className="inline-flex items-center gap-2 px-4 md:px-6 py-2 md:py-2.5 bg-sky-500 hover:bg-sky-400 text-white rounded-xl font-bold text-sm md:text-base transition disabled:opacity-50 shadow-md flex-shrink-0"
+                    title="Guardar reporte">
+                    <Save className="w-5 h-5" /><span className="hidden sm:inline">Guardar reporte</span><span className="sm:hidden">Guardar</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -3143,6 +3173,12 @@ function PropagationModal({ diffs, affectedReports, onConfirm, onCancel }) {
 //   - Resumen Preventivos del Turno al final del formulario
 // ═══════════════════════════════════════════════════════════════════
 function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history, adminMode, originalReport, setOriginalReport, onDeleteReport }) {
+  // #9 (v3.14) — read-only para no-admin si el reporte es anterior a ayer (corrección
+  // retroactiva del pasado = solo admin). Hoy/ayer editable (turno en curso, cruce de
+  // medianoche del Noche cubierto). Se aplica como fieldset disabled (deshabilita todos
+  // los controles hijos de una sola vez), banner de aviso, y botón Guardar oculto.
+  // El guard duro de verdad está en doSaveReport; esto es la capa de UI.
+  const isReadOnly = !adminMode && !isWithinEditWindow(report.date);
   const update = (patch) => setReport(r => ({ ...r, ...patch }));
   const updateList = (key, fn) => setReport(r => ({ ...r, [key]: fn(r[key]) }));
   const updateServicios = (patch) => setReport(r => ({ ...r, servicios: { ...r.servicios, ...patch } }));
@@ -3565,6 +3601,28 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
         </div>
       )}
 
+      {/* #9 (v3.14) — Banner read-only: no-admin viendo un reporte anterior a ayer.
+          No puede editar (corrección retroactiva = solo admin), pero sí mirarlo. El botón
+          lo devuelve al turno de hoy para que no quede atrapado (Fecha/Turno también se
+          deshabilitan dentro del fieldset). */}
+      {isReadOnly && (
+        <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+          <Lock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="text-[13px] text-amber-800 leading-snug flex-1">
+            <strong>Solo lectura</strong> — este reporte ({formatDateShort(report.date)} · {report.shift}) es de un día anterior. Para corregir reportes pasados se necesita acceso admin. Podés editar los reportes de hoy y de ayer.
+          </div>
+          <button
+            onClick={() => { const t = new Date(); const iso = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`; setDateShift(iso, report.shift); }}
+            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition">
+            Ir al reporte de hoy
+          </button>
+        </div>
+      )}
+
+      {/* #9 (v3.14) — fieldset disabled deshabilita TODOS los controles hijos cuando es
+          read-only (incluidos Fecha/Turno; por eso el botón "Ir al reporte de hoy" del banner
+          de arriba, que queda FUERA del fieldset, para no dejar al usuario atrapado). */}
+      <fieldset disabled={isReadOnly} className="space-y-5 min-w-0 border-0 p-0 m-0 disabled:opacity-60">
       {/* v3.13 (#12) — Información del Turno + Equipo del Turno en línea, 50/50 en desktop,
           apiladas en mobile. Antes eran dos Cards a ancho completo, una sobre otra. */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -4265,6 +4323,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
         </div>
       </Card>
       )}
+      </fieldset>
 
       {/* v3.13 (#12) — FAB admin flotante abajo-izquierda con Limpiar + Eliminar reporte.
           Solo admin (para no-admin no renderiza nada → sin franja ni hueco). Lejos del
