@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.10';
+const APP_VERSION = 'v3.11';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -2092,7 +2092,7 @@ export default function App() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
         body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
-        .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
+        .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum', 'zero'; }
       `}</style>
 
       {/* HEADER — V2.6: sticky para acceso permanente a tabs y modo admin durante scroll */}
@@ -2178,7 +2178,7 @@ export default function App() {
                   return `${dias[d.getDay()]} ${dd}/${mm}`;
                 })()}</span>
               </div>
-              <div className="hidden md:block text-slate-300">{history.length} {history.length === 1 ? 'reporte' : 'reportes'}</div>
+              <div className="hidden md:block text-slate-300"><span className="num">{history.length}</span> {history.length === 1 ? 'reporte' : 'reportes'}</div>
             </div>
           </div>
         </div>
@@ -4704,7 +4704,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
           </div>
           <div className="col-span-2 lg:col-span-4 pt-1">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold flex items-center gap-1 mb-1">
-              <Users className="w-3 h-3" />Equipo ({report.team.length})
+              <Users className="w-3 h-3" />Equipo (<span className="num">{report.team.length}</span>)
             </div>
             {/* V2.0: cambio de truncate a wrap con badges para que se vean TODOS los técnicos */}
             {report.team.length === 0 ? (
@@ -4732,7 +4732,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         {/* COL IZQ: CORRECTIVOS — V2.5: 4 sub-secciones (Del turno / Heredados, en cada columna) */}
         <Card className="lg:col-span-6 p-3 flex flex-col lg:overflow-hidden">
           <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <Wrench className="w-4 h-4" />Correctivos del turno ({correctiveActual.length})
+            <Wrench className="w-4 h-4" />Correctivos del turno (<span className="num">{correctiveActual.length}</span>)
           </h3>
           <div className="overflow-visible lg:overflow-auto flex-1 grid grid-cols-1 lg:grid-cols-2 gap-3 lg:max-h-[calc(100vh-280px)]">
 
@@ -4740,7 +4740,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             <div className="border-b lg:border-b-0 lg:border-r border-slate-200 pb-3 lg:pb-0 lg:pr-3 mb-3 lg:mb-0">
               <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <CheckCircle2 className="w-3 h-3" />
-                Realizadas ({correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length})
+                Realizadas (<span className="num">{correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length}</span>)
               </div>
               <CorrectiveSubsection
                 title="Del turno"
@@ -4768,7 +4768,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             <div>
               <div className="text-[10px] uppercase tracking-wide text-amber-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
                 <AlertTriangle className="w-3 h-3" />
-                Pendientes ({correctivePartitions.pendientesTurno.length + correctivePartitions.pendientesHeredados.length})
+                Pendientes (<span className="num">{correctivePartitions.pendientesTurno.length + correctivePartitions.pendientesHeredados.length}</span>)
               </div>
               <CorrectiveSubsection
                 title="Del turno"
