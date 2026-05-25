@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.7';
+const APP_VERSION = 'v3.8';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -5787,7 +5787,10 @@ function computeStats(history, range, customStart, customEnd) {
   filtered.forEach(r => {
     const { key, label } = bucketKeyAndLabel(r.date);
     if (!buckets[key]) buckets[key] = { key, label, correctivos: 0, preventivos: 0 };
-    buckets[key].preventivos += (r.preventive || []).length;
+    // #13 (v3.8) — preventivos del período: "realizados" declarados en el Resumen
+    // del turno (preventivosResumen.realizados), no el array `preventive` (que no se
+    // usa en producción y daba siempre 0). Vacío/no-numérico cuenta como 0.
+    buckets[key].preventivos += Number(r.preventivosResumen?.realizados) || 0;
   });
   const daily = Object.values(buckets).sort((a, b) => a.key.localeCompare(b.key));
 
@@ -5817,24 +5820,21 @@ function computeStats(history, range, customStart, customEnd) {
     if (shiftCount[c._firstShift]) shiftCount[c._firstShift].correctivos++;
   });
 
-  // Preventivos: NO se deduplican (cada turno hace su propio trabajo preventivo)
+  // #13 (v3.8) — Preventivos: fuente de verdad = "Resumen preventivos del turno".
+  //   - Total del período: suma de preventivosResumen.realizados (lo declara el encargado).
+  //   - Carga por técnico y distribución por turno: detalle preventivosResumen.porTecnico.
+  // El array `preventive` (bloque "Mantenimiento Preventivo") NO se usa para stats:
+  // está oculto a no-admin desde v3.3 (#18) y daba siempre 0. Preventivos NO se
+  // deduplican (cada turno declara su propio trabajo).
   let totalPreventives = 0, urgent = 0;
   filtered.forEach(r => {
-    (r.preventive || []).forEach(p => {
-      totalPreventives++;
-      (p.technicians || []).forEach(t => {
-        techCount[t] = techCount[t] || { correctivos: 0, preventivos: 0 };
-        techCount[t].preventivos++;
-      });
-      if (shiftCount[r.shift]) shiftCount[r.shift].preventivos++;
-    });
+    totalPreventives += Number(r.preventivosResumen?.realizados) || 0;
     (r.comments || []).forEach(c => { if (c.priority === 'Urgente') urgent++; });
 
-    // V2.4 — "Carga por técnico" suma también el detalle del Resumen Preventivos.
+    // Carga por técnico (preventivos) + distribución por turno: del detalle por técnico.
     // Opción C: cada grupo {tecnicos:[a,b,c], cantidad:N} suma N a cada técnico individual.
     // Ej: {tecnicos:['Juan','Pedro'], cantidad: 4} → Juan +4 y Pedro +4.
-    // (La cantidad para validación cruzada con "Realizados" sigue siendo N una sola vez,
-    // eso ya está cubierto en validateReport.)
+    // Para la distribución por turno se suma la cantidad del grupo una sola vez.
     (r.preventivosResumen?.porTecnico || []).forEach(grupo => {
       const tecnicos = grupo.tecnicos || (grupo.tecnico ? [grupo.tecnico] : []);
       const cantidad = Number(grupo.cantidad) || 0;
@@ -5843,6 +5843,7 @@ function computeStats(history, range, customStart, customEnd) {
           techCount[t] = techCount[t] || { correctivos: 0, preventivos: 0 };
           techCount[t].preventivos += cantidad;
         });
+        if (shiftCount[r.shift]) shiftCount[r.shift].preventivos += cantidad;
       }
     });
   });
@@ -5897,7 +5898,9 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
   const totals = useMemo(() => ({
     reports: history.length,
     correctives: history.reduce((s, r) => s + (r.corrective?.length || 0), 0),
-    preventives: history.reduce((s, r) => s + (r.preventive?.length || 0), 0),
+    // #13 (v3.8) — total de preventivos = suma de "realizados" del Resumen del turno
+    // (no el array `preventive`, que no se usa y daba 0).
+    preventives: history.reduce((s, r) => s + (Number(r.preventivosResumen?.realizados) || 0), 0),
     urgent: history.reduce((s, r) => s + (r.comments?.filter(c => c.priority === 'Urgente').length || 0), 0)
   }), [history]);
 
@@ -5965,7 +5968,7 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
           </div>
         </div>
         <p className="text-[11px] text-slate-400 -mt-2 mb-4">
-          Las columnas Correctivos y Preventivos muestran el total de tareas cargadas en cada reporte (realizadas + pendientes), no solo las realizadas.
+          Correctivos: total de OTs cargadas en el reporte (realizadas + pendientes). Preventivos: realizados / asignados declarados en el "Resumen preventivos del turno" (— si no se cargó el dato).
         </p>
         {filtered.length === 0 ? (
           <EmptyHint>{history.length === 0 ? 'No hay reportes guardados.' : 'Sin coincidencias para el filtro.'}</EmptyHint>
@@ -5979,7 +5982,7 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
                   <th className="pb-2 font-medium">Responsable</th>
                   <th className="pb-2 font-medium text-right">Equipo</th>
                   <th className="pb-2 font-medium text-right">Correctivos</th>
-                  <th className="pb-2 font-medium text-right">Preventivos</th>
+                  <th className="pb-2 font-medium text-right">Prev. (real/asig)</th>
                   <th className="pb-2 font-medium text-right">Urgentes</th>
                   {adminMode && <th className="pb-2 font-medium text-right">Acciones</th>}
                 </tr>
@@ -5992,7 +5995,15 @@ function HistoryView({ history, onExportCorrectives, onExportPreventives, onExpo
                     <td className="py-2 text-slate-600">{r.responsable || '—'}</td>
                     <td className="py-2 text-right num">{r.team?.length || 0}</td>
                     <td className="py-2 text-right num">{r.corrective?.length || 0}</td>
-                    <td className="py-2 text-right num">{r.preventive?.length || 0}</td>
+                    <td className="py-2 text-right num">
+                      {(() => {
+                        // #13 (v3.8) — Preventivos = realizados / asignados del Resumen del turno.
+                        // "—" cuando el campo está vacío/null (distingue "no cargado" de "0 hechos").
+                        const pr = r.preventivosResumen || {};
+                        const fmt = (v) => (v !== '' && v != null ? v : '—');
+                        return `${fmt(pr.realizados)} / ${fmt(pr.asignados)}`;
+                      })()}
+                    </td>
                     <td className="py-2 text-right num">
                       {r.comments?.filter(c => c.priority === 'Urgente').length || 0}
                     </td>
