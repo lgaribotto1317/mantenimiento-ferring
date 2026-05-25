@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.14';
+const APP_VERSION = 'v3.15';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -230,6 +230,33 @@ const formatDateLong = (isoDate) => {
   });
 };
 
+// #11 (v3.15) — Fecha de HOY en calendario LOCAL (no UTC). Reemplaza el viejo
+// new Date().toISOString().slice(0,10), que devolvía la fecha en UTC: en Argentina
+// (UTC−3) eso adelantaba el día a partir de las 21:00 hora local, proponiendo "mañana"
+// como fecha por defecto en cargas vespertinas (causa raíz de parte de #11) y rompiendo
+// el arranque del turno Noche (~23h). Usar SIEMPRE este helper para "hoy" como fecha.
+const todayLocalISO = () => {
+  const t = new Date();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
+// #11 (v3.15) — true si la fecha es POSTERIOR a hoy (calendario local). Complemento de
+// isWithinEditWindow: #9 acota quién edita el PASADO; #11 bloquea el FUTURO. Chequeo aparte
+// a propósito (no se mezcla en isWithinEditWindow, que deja pasar futuras por diseño —
+// reglas y sujetos distintos: el futuro no aplica a admin, que sí puede precargar).
+// Sin fecha o inválida → false (no bloquear reportes a medio armar). El turno Noche carga
+// con fecha = hoy local (nunca mañana), así que ">hoy" no le genera falso positivo.
+const isFutureDate = (isoDate) => {
+  if (!isoDate) return false;
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return false;
+  const target = new Date(y, m - 1, d);
+  target.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return target > today;
+};
+
 // #9 (v3.14) — Ventana de edición para no-admin: solo HOY o AYER (fecha calendario local).
 // Reportes más viejos que ayer son read-only para no-admin (corrección retroactiva = solo admin).
 // "Hoy + ayer" (no "hoy" literal) cubre el cruce de medianoche del turno Noche, que arranca
@@ -270,7 +297,7 @@ const reportSortKey = (r) => `${r.date}-${shiftOrder(r.shift)}`;
 //   - preventivosResumen: NUEVO (asignados, realizados, porTecnico)
 // ═══════════════════════════════════════════════════════════════════
 const emptyReport = () => ({
-  date: new Date().toISOString().slice(0, 10),
+  date: todayLocalISO(), // #11 (v3.15) — fecha local, no UTC (evita salto a "mañana" después de las 21h AR)
   shift: 'Mañana',
   responsable: '',
   team: [],                    // [string] tech names
@@ -1315,6 +1342,15 @@ export default function App() {
     // impide el guardado por cualquier vía. Admin pasa siempre.
     if (!adminMode && !isWithinEditWindow(reportToSave.date)) {
       setSaveMsg('Error: solo se pueden editar reportes de hoy o ayer. Para corregir reportes anteriores, ingresá como admin.');
+      return;
+    }
+    // #11 (v3.15) — Bloqueo duro: un no-admin NO puede guardar un reporte con fecha FUTURA.
+    // Una fecha posterior a hoy es siempre un error de carga (el reporte de un turno se
+    // carga durante o al cierre del turno, nunca antes de que ocurra). Evita data sucia
+    // que después se renombra por SQL. Admin pasa siempre (puede precargar, ej. una tarea
+    // preventiva para un día puntual). Chequeo independiente del de #9 (futuro ≠ pasado).
+    if (!adminMode && isFutureDate(reportToSave.date)) {
+      setSaveMsg('Error: no se puede guardar un reporte con fecha futura. Verificá la fecha del reporte.');
       return;
     }
     const validationError = validateReport(reportToSave);
@@ -3612,7 +3648,7 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             <strong>Solo lectura</strong> — este reporte ({formatDateShort(report.date)} · {report.shift}) es de un día anterior. Para corregir reportes pasados se necesita acceso admin. Podés editar los reportes de hoy y de ayer.
           </div>
           <button
-            onClick={() => { const t = new Date(); const iso = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`; setDateShift(iso, report.shift); }}
+            onClick={() => { setDateShift(todayLocalISO(), report.shift); }}
             className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition">
             Ir al reporte de hoy
           </button>
@@ -3631,7 +3667,9 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
           <SectionTitle icon={Calendar} accent="sky">Información del Turno</SectionTitle>
           <div className="grid grid-cols-3 gap-2 md:gap-3">
             <Field label="Fecha">
-              <input type="date" className={inputCls} value={report.date} onChange={e => setDateShift(e.target.value, report.shift)} />
+              <input type="date" className={inputCls} value={report.date}
+                max={adminMode ? undefined : todayLocalISO()}
+                onChange={e => setDateShift(e.target.value, report.shift)} />
             </Field>
             <Field label="Turno">
               <select className={inputCls} value={report.shift} onChange={e => setDateShift(report.date, e.target.value)}>
