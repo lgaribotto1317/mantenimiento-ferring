@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.9';
+const APP_VERSION = 'v3.10';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -62,6 +62,26 @@ const generateTimelineId = () => {
     id += chars[Math.floor(Math.random() * chars.length)];
   }
   return id;
+};
+
+
+// ═══════════════════════════════════════════════════════════════════
+// #19 (v3.10) — Último avance real de una OT
+// Devuelve la entrada de timeline más reciente que NO sea ruido, o null.
+// "Ruido": texto vacío o compuesto solo de puntos/espacios (ej. ".", "..",
+// "...  "). Es el ruido histórico que v3.9 dejó de generar pero no limpió
+// de la base (BACKLOG #27/#19). El timeline llega ordenado por timestamp
+// ascendente desde hydrate/dedupCorrective, así que recorremos de atrás
+// hacia adelante y devolvemos la primera entrada no-ruido.
+// ═══════════════════════════════════════════════════════════════════
+const isNoiseAdvance = (text) => /^[.\s]*$/.test((text || ''));
+
+const lastRealAdvance = (timeline) => {
+  const tl = timeline || [];
+  for (let k = tl.length - 1; k >= 0; k--) {
+    if (!isNoiseAdvance(tl[k].text)) return tl[k];
+  }
+  return null;
 };
 
 
@@ -4195,15 +4215,23 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 //     Sin badge "Avance hoy" — la línea verde es suficiente señal visual.
 // Cuando count === 0, muestra "Sin novedades" con el subtítulo igual.
 // ═══════════════════════════════════════════════════════════════════
-function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark, adminMode, onItemClick }) {
-  // V2.5 — Si showAvanceMark, ordenar items con avance del turno arriba.
-  // Mantiene el orden relativo dentro de cada grupo (con y sin avance).
+function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark, currentShiftKey, adminMode, onItemClick }) {
+  // #19 (v3.10) — Último avance real de cada OT (filtra ruido ".", "..", vacías).
+  // Una sola línea por OT: verde si la última entrada real es del turno actual,
+  // gris/heredada si es de un turno anterior. Si todas son ruido → no se muestra.
+  const withAdvance = items.map(c => {
+    const adv = lastRealAdvance(c.timeline);
+    return { ...c, _lastAdvance: adv, _advanceIsCurrent: !!adv && adv.shiftKey === currentShiftKey };
+  });
+
+  // V2.5 — Si showAvanceMark, ordenar items con avance del turno actual arriba.
+  // Mantiene el orden relativo dentro de cada grupo (con y sin avance del turno).
   const sortedItems = showAvanceMark
     ? [
-        ...items.filter(c => c._currentShiftEntry),
-        ...items.filter(c => !c._currentShiftEntry)
+        ...withAdvance.filter(c => c._advanceIsCurrent),
+        ...withAdvance.filter(c => !c._advanceIsCurrent)
       ]
-    : items;
+    : withAdvance;
 
   return (
     <div className="mb-3 last:mb-0">
@@ -4215,7 +4243,8 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
       ) : (
         <div className="divide-y-2 divide-slate-200">
           {sortedItems.map((c, i) => {
-            const hasAvance = showAvanceMark && c._currentShiftEntry;
+            const adv = c._lastAdvance;
+            const advIsCurrent = c._advanceIsCurrent;
             const clickable = adminMode && onItemClick;
             return (
               <div key={i}
@@ -4232,11 +4261,18 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
                   {showStateBadge && <StatePill state={c.state} />}
                 </div>
                 <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
-                {hasAvance && (
-                  <div className="mt-1 text-[11px] text-emerald-800 bg-emerald-50/60 border-l-2 border-emerald-300 pl-2 py-0.5 leading-snug whitespace-pre-wrap break-words">
-                    <span className="text-emerald-600 font-semibold mr-1">↳ Avance del turno:</span>
-                    {c._currentShiftEntry.text || '—'}
-                  </div>
+                {adv && (
+                  advIsCurrent ? (
+                    <div className="mt-1 text-[11px] text-emerald-800 bg-emerald-50/60 border-l-2 border-emerald-300 pl-2 py-0.5 leading-snug whitespace-pre-wrap break-words">
+                      <span className="text-emerald-600 font-semibold mr-1">↳ Avance del turno:</span>
+                      {adv.text || '—'}
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-[11px] text-slate-600 bg-slate-50 border-l-2 border-slate-300 pl-2 py-0.5 leading-snug whitespace-pre-wrap break-words">
+                      <span className="text-slate-500 font-semibold mr-1">↳ Último avance ({formatDateShort(adv.date)} · {adv.shift}):</span>
+                      {adv.text || '—'}
+                    </div>
+                  )
                 )}
                 {(c.technicians || []).length > 0 && (
                   <div className="mt-1 flex flex-wrap gap-1">
@@ -4712,6 +4748,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.realizadosTurno}
                 showStateBadge={false}
                 showAvanceMark={false}
+                currentShiftKey={currentShiftKey}
                 adminMode={adminMode}
                 onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
@@ -4721,6 +4758,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.realizadosHeredados}
                 showStateBadge={false}
                 showAvanceMark={false}
+                currentShiftKey={currentShiftKey}
                 adminMode={adminMode}
                 onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
@@ -4738,6 +4776,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.pendientesTurno}
                 showStateBadge={true}
                 showAvanceMark={false}
+                currentShiftKey={currentShiftKey}
                 adminMode={adminMode}
                 onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
@@ -4747,6 +4786,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 items={correctivePartitions.pendientesHeredados}
                 showStateBadge={true}
                 showAvanceMark={true}
+                currentShiftKey={currentShiftKey}
                 adminMode={adminMode}
                 onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
               />
