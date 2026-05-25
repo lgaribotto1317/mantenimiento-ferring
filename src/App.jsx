@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.8';
+const APP_VERSION = 'v3.9';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -3074,6 +3074,12 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // - V2.6 — En modo admin, las entradas son editables y eliminables
   // - timelineDraft mantiene el texto en redacción por índice de OT
   const [timelineDraft, setTimelineDraft] = useState({});
+  // #avance (v3.9) — Toggle "¿hubo avance este turno?" por OT (índice).
+  // Solo aplica a OTs heredadas que NO requieren avance obligatorio (En Curso → En Curso).
+  // true = sí hubo avance (habilita el campo de carga); ausente/false = no (default).
+  // Si la OT requiere avance obligatorio (cambio de estado / cierre), el toggle no
+  // aplica: el campo se muestra y se exige igual que antes.
+  const [avanceToggle, setAvanceToggle] = useState({});
   // V2.6 — Edición inline de entradas existentes (solo admin)
   // editingKey es del tipo "i-ei" (índice de OT - índice de entrada)
   const [timelineEditingKey, setTimelineEditingKey] = useState(null);
@@ -3104,6 +3110,15 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     }));
     setTimelineDraft(d => { const nd = { ...d }; delete nd[i]; return nd; });
   };
+
+  // #avance (v3.9) — Al cambiar de reporte (fecha/turno), resetear el toggle de
+  // avance y los borradores en redacción, para que no queden "pegados" por índice
+  // de OT entre un reporte y otro (los índices se reusan).
+  useEffect(() => {
+    setAvanceToggle({});
+    setTimelineDraft({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report.date, report.shift]);
 
   const [loadInfo, setLoadInfo] = useState('');
   const initialPendingApplied = useRef(false);
@@ -3597,6 +3612,22 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   const hasEntryFromCurrentShift = timeline.some(e => e.shiftKey === currentShiftKey);
                   // V2.5 — Solo requiere cuando hubo cambio de estado real en este turno
                   const requiresEntry = requiresAdvanceEntry(c) && !hasEntryFromCurrentShift;
+                  // #avance (v3.9) — ¿es una OT heredada En Curso que NO requiere avance?
+                  // (En Curso → En Curso, no nueva). Para esas mostramos el toggle
+                  // "¿hubo avance?" en vez de un campo abierto que invita a poner ".".
+                  const prevState = c.ot ? previousStateMap.get(c.ot) : null;
+                  const esHeredadaSinCambio = c.state === 'En Curso'
+                    && !requiresAdvanceEntry(c)
+                    && prevState != null;  // existía antes (heredada), no es nueva
+                  // Default del toggle: No, salvo que YA exista una entrada del turno
+                  // actual (ej. editar un reporte donde sí se cargó avance) → Sí.
+                  const toggleVal = avanceToggle[i] !== undefined
+                    ? avanceToggle[i]
+                    : hasEntryFromCurrentShift;
+                  // El campo de carga se muestra si: requiere avance obligatorio (cierre/
+                  // cambio de estado, como antes), o el usuario tildó "sí hubo avance".
+                  const mostrarCampoCarga = requiresEntry
+                    || (c.state === 'En Curso' && (!esHeredadaSinCambio || toggleVal));
                   return (
                     <div className={`mt-2 border rounded-lg p-3 ${requiresEntry && timelineDraft[i] === undefined ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-slate-50/30'}`}>
                       <div className="flex items-center justify-between mb-2">
@@ -3611,6 +3642,26 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                           </span>
                         )}
                       </div>
+
+                      {/* #avance (v3.9) — Toggle "¿hubo avance este turno?" para OTs
+                          heredadas En Curso sin cambio de estado. Default No. Evita el
+                          ruido de poner "." cuando el turno no trabajó esa OT. */}
+                      {esHeredadaSinCambio && !hasEntryFromCurrentShift && (
+                        <label className="flex items-center gap-2 mb-2 text-[12px] text-slate-600 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                            checked={toggleVal}
+                            onChange={e => {
+                              const val = e.target.checked;
+                              setAvanceToggle(t => ({ ...t, [i]: val }));
+                              // Al pasar a "No", limpiar el texto en redacción (no se guarda).
+                              if (!val) setTimelineDraft(d => { const n = { ...d }; delete n[i]; return n; });
+                            }}
+                          />
+                          ¿Hubo avance en este turno? <span className="text-slate-400">(si no, queda sin novedad)</span>
+                        </label>
+                      )}
 
                       {/* Entradas previas (read-only para usuarios normales, editables en modo admin) */}
                       {timeline.length > 0 && (
@@ -3701,8 +3752,10 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                       )}
 
                       {/* V2.5 — Campo de carga: visible si está En Curso (carga opcional)
-                          o si está Realizada y requiere avance (cierre obligatorio del trabajo). */}
-                      {(c.state === 'En Curso' || (c.state === 'Realizada' && requiresEntry)) && (
+                          o si está Realizada y requiere avance (cierre obligatorio del trabajo).
+                          #avance (v3.9) — en OTs heredadas En Curso sin cambio, solo si el
+                          usuario tildó "¿hubo avance?" (mostrarCampoCarga). */}
+                      {mostrarCampoCarga && (
                         <div className="flex items-start gap-2">
                           <textarea
                             rows={2}
