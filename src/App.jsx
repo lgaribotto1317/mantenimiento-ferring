@@ -1410,6 +1410,14 @@ export default function App() {
           const el = document.getElementById(elementId);
           if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 80);
+      } else if (validationResult.message.startsWith('Resumen de preventivos')) {
+        // v3.16 (A) — Error del Resumen de Preventivos (regla 5). No tiene índice de
+        // OT; el bloque ya tiene feedback visual propio (borde rojo + cartel), solo
+        // le faltaba que la pantalla llevara al usuario hasta ahí.
+        setTimeout(() => {
+          const el = document.getElementById('form-preventivos');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 80);
       }
       return;
     }
