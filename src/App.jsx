@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.15';
+const APP_VERSION = 'v3.16';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -951,6 +951,14 @@ export default function App() {
   // Estructura: null | { conflicts: [...], onResolve: (decisions) => void }
   const [closedConflicts, setClosedConflicts] = useState(null);
 
+  // v3.16 — Índices de OTs con error de validación. Se setean cuando validateReport
+  // falla, se usan en FormView para resaltar las tarjetas problemáticas en rojo.
+  // Se limpian al guardar exitosamente o cuando el usuario edita cualquier OT.
+  const [otErrorIndices, setOtErrorIndices] = useState(new Set());
+  // Tipo de error: 'avance' | 'otro'. Cuando es 'avance', se resalta además la
+  // sección de Estado de avance dentro de cada tarjeta afectada.
+  const [otErrorType, setOtErrorType] = useState('');
+
   // V2.9 — Modal de propagación admin.
   // Estructura: null | { diffs, affectedReports, fixedReport }
   //   - diffs: salida de detectChangesForPropagation
@@ -1006,22 +1014,29 @@ export default function App() {
   useEffect(() => { (async () => { draftStore.purgeOld(); await checkVersion(); await refresh(); setLoading(false); })(); }, [checkVersion, refresh]);
 
   // Validaciones antes de guardar (V2.0)
-  // Devuelve string con error o '' si todo OK
+  // v3.16 — Devuelve { message: string, errorIndices: Set<number> }
+  // message: '' si todo OK, string descriptivo si hay error
+  // errorIndices: índices (en r.corrective) de las OTs con problemas
   const validateReport = (r) => {
+    const ok = { message: '', errorIndices: new Set() };
     // V2.9 — Si admin está editando un reporte histórico (tiene snapshot original),
     // saltar todas las validaciones contextuales. Admin asume responsabilidad de
     // lo que guarda. Esto evita que reglas retroactivas (técnico obligatorio,
     // avance de turno cuando hay cambio de estado, formato XXX-YYYYY, etc.) bloqueen
     // la edición de reportes pre-V2.5 / pre-V2.4 / etc.
-    if (adminMode && originalReport) return '';
+    if (adminMode && originalReport) return ok;
     const currentShiftKey = `${r.date}-${r.shift}`;
 
     // V2.4 — 1. OTs nuevas (creadas en este turno) deben tener formato XXX-YYYYY válido
-    const otsNuevasInvalidas = (r.corrective || []).filter(
-      c => c.createdInShift === currentShiftKey && !isValidOT(c.ot)
-    );
-    if (otsNuevasInvalidas.length > 0) {
-      return `${otsNuevasInvalidas.length} OT nueva con formato inválido. Formato requerido: XXX-YYYYY (sector + 5 dígitos). Ej: FOA1-01395`;
+    const indicesInvalidas = [];
+    (r.corrective || []).forEach((c, i) => {
+      if (c.createdInShift === currentShiftKey && !isValidOT(c.ot)) indicesInvalidas.push(i);
+    });
+    if (indicesInvalidas.length > 0) {
+      return {
+        message: `${indicesInvalidas.length} OT nueva con formato inválido. Formato requerido: XXX-YYYYY (sector + 5 dígitos). Ej: FOA1-01395`,
+        errorIndices: new Set(indicesInvalidas)
+      };
     }
 
     // V2.5 — 2. Avance del turno obligatorio SOLO cuando hay cambio de estado en este turno.
@@ -1074,23 +1089,31 @@ export default function App() {
       return false;
     };
 
-    const otsSinAvance = (r.corrective || []).filter(c => {
-      if (!requiresAdvance(c)) return false;
+    const indicesSinAvance = [];
+    (r.corrective || []).forEach((c, i) => {
+      if (!requiresAdvance(c)) return;
       const tl = c.timeline || [];
       const hasFromCurrent = tl.some(e => e.shiftKey === currentShiftKey);
-      return !hasFromCurrent;
+      if (!hasFromCurrent) indicesSinAvance.push(i);
     });
-    if (otsSinAvance.length > 0) {
-      return `${otsSinAvance.length} OT con cambio de estado en este turno sin entrada de Estado de avance. Cargá el avance antes de guardar.`;
+    if (indicesSinAvance.length > 0) {
+      return {
+        message: `${indicesSinAvance.length} OT con cambio de estado en este turno sin entrada de Estado de avance. Cargá el avance antes de guardar.`,
+        errorIndices: new Set(indicesSinAvance)
+      };
     }
 
     // V2.5 — 3. TODAS las OTs correctivas deben tener al menos un técnico, sin importar estado.
     // (Antes era sólo para "Realizada"; ahora aplica también a "Sin Iniciar" y "En Curso".)
-    const correctivasSinTecnico = (r.corrective || []).filter(
-      c => !c.technicians || c.technicians.length === 0
-    );
-    if (correctivasSinTecnico.length > 0) {
-      return `${correctivasSinTecnico.length} OT correctiva sin técnico asignado. Asigná técnicos antes de guardar.`;
+    const indicesSinTecnico = [];
+    (r.corrective || []).forEach((c, i) => {
+      if (!c.technicians || c.technicians.length === 0) indicesSinTecnico.push(i);
+    });
+    if (indicesSinTecnico.length > 0) {
+      return {
+        message: `${indicesSinTecnico.length} OT correctiva sin técnico asignado. Asigná técnicos antes de guardar.`,
+        errorIndices: new Set(indicesSinTecnico)
+      };
     }
 
     // V2.5 — 4. TODOS los preventivos cargados deben tener al menos un técnico.
@@ -1098,7 +1121,10 @@ export default function App() {
       p => !p.technicians || p.technicians.length === 0
     );
     if (preventivosSinTecnico.length > 0) {
-      return `${preventivosSinTecnico.length} preventivo sin técnico asignado. Asigná técnicos antes de guardar.`;
+      return {
+        message: `${preventivosSinTecnico.length} preventivo sin técnico asignado. Asigná técnicos antes de guardar.`,
+        errorIndices: new Set()
+      };
     }
 
     // 5. Resumen de preventivos: si hay realizados > 0, la suma del detalle por técnico debe coincidir
@@ -1109,7 +1135,10 @@ export default function App() {
       const sumaPorGrupo = (r.preventivosResumen?.porTecnico || [])
         .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
       if (sumaPorGrupo !== realizados) {
-        return `Resumen de preventivos: la suma del detalle (${sumaPorGrupo}) no coincide con "Preventivos realizados" (${realizados}).`;
+        return {
+          message: `Resumen de preventivos: la suma del detalle (${sumaPorGrupo}) no coincide con "Preventivos realizados" (${realizados}).`,
+          errorIndices: new Set()
+        };
       }
       // Validar que no haya filas sin técnicos o con cantidad <= 0
       const filasMalas = (r.preventivosResumen?.porTecnico || []).filter(t => {
@@ -1117,7 +1146,10 @@ export default function App() {
         return tecnicos.length === 0 || !t.cantidad || Number(t.cantidad) <= 0;
       });
       if (filasMalas.length > 0) {
-        return `Resumen de preventivos: hay filas sin técnicos o con cantidad inválida.`;
+        return {
+          message: `Resumen de preventivos: hay filas sin técnicos o con cantidad inválida.`,
+          errorIndices: new Set()
+        };
       }
     }
 
@@ -1129,18 +1161,23 @@ export default function App() {
     // se genere el dato corrupto y el usuario corrija en el momento.
     // Solo cuenta OTs con número (las vacías son caso aparte, se ignoran).
     const otCounts = {};
-    (r.corrective || []).forEach(c => {
+    (r.corrective || []).forEach((c, i) => {
       const key = (c.ot || '').trim();
       if (!key) return;
-      otCounts[key] = (otCounts[key] || 0) + 1;
+      if (!otCounts[key]) otCounts[key] = [];
+      otCounts[key].push(i);
     });
-    const duplicadas = Object.keys(otCounts).filter(k => otCounts[k] > 1);
+    const duplicadas = Object.keys(otCounts).filter(k => otCounts[k].length > 1);
     if (duplicadas.length > 0) {
       const lista = duplicadas.slice(0, 3).join(', ') + (duplicadas.length > 3 ? '…' : '');
-      return `Hay ${duplicadas.length} número${duplicadas.length === 1 ? '' : 's'} de OT repetido${duplicadas.length === 1 ? '' : 's'} en el reporte (${lista}). Cada OT debe figurar una sola vez: si una vino del turno anterior, editá esa en vez de cargarla de nuevo.`;
+      const indicesDup = new Set(duplicadas.flatMap(k => otCounts[k]));
+      return {
+        message: `Hay ${duplicadas.length} número${duplicadas.length === 1 ? '' : 's'} de OT repetido${duplicadas.length === 1 ? '' : 's'} en el reporte (${lista}). Cada OT debe figurar una sola vez: si una vino del turno anterior, editá esa en vez de cargarla de nuevo.`,
+        errorIndices: indicesDup
+      };
     }
 
-    return '';
+    return ok;
   };
   //   Correctivo vacío: sin OT, sin task, sin técnicos.
   //   Preventivo vacío: sin equipoCodigo, sin task, sin técnicos.
@@ -1353,11 +1390,32 @@ export default function App() {
       setSaveMsg('Error: no se puede guardar un reporte con fecha futura. Verificá la fecha del reporte.');
       return;
     }
-    const validationError = validateReport(reportToSave);
-    if (validationError) {
-      setSaveMsg(`Error: ${validationError}`);
+    const validationResult = validateReport(reportToSave);
+    if (validationResult.message) {
+      setSaveMsg(`Error: ${validationResult.message}`);
+      // v3.16 — Marcar OTs con error y determinar tipo para resaltar sección de avance
+      setOtErrorIndices(validationResult.errorIndices);
+      const isAvanceError = validationResult.message.includes('Estado de avance');
+      const isTecnicoError = validationResult.message.includes('sin técnico');
+      setOtErrorType(isAvanceError ? 'avance' : isTecnicoError ? 'tecnico' : 'otro');
+      // v3.16 — Scroll a la primera OT con error (si hay alguna)
+      if (validationResult.errorIndices.size > 0) {
+        const firstIdx = Math.min(...validationResult.errorIndices);
+        const corrective = reportToSave.corrective || [];
+        const firstOt = corrective[firstIdx];
+        const elementId = firstOt
+          ? `form-ot-${firstOt.ot || `idx-${firstIdx}`}`
+          : `form-ot-idx-${firstIdx}`;
+        setTimeout(() => {
+          const el = document.getElementById(elementId);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 80);
+      }
       return;
     }
+    // Validación OK: limpiar errores previos
+    setOtErrorIndices(new Set());
+    setOtErrorType('');
     setSaving(true);
     setSaveMsg('Verificando…');
 
@@ -1559,6 +1617,9 @@ export default function App() {
       if (reportToSave !== report) setReport(reportToSave);
       setOriginalReport(JSON.parse(JSON.stringify(reportToSave)));  // V2.9 — actualizar snapshot al guardado nuevo
       draftStore.clear(`${reportToSave.date}-${reportToSave.shift}`);  // #7 v3.6 — guardado OK: limpiar borrador local
+      // v3.16 — Limpiar marcas de error al guardar exitosamente
+      setOtErrorIndices(new Set());
+      setOtErrorType('');
       setSaveMsg('✓ Reporte guardado');
       setTimeout(() => setSaveMsg(''), 2500);
     } catch (e) {
@@ -1769,6 +1830,9 @@ export default function App() {
 
   const saveReport = async () => {
     if (!report.date || !report.shift) { setSaveMsg('Falta fecha o turno'); return; }
+    // v3.16 — Limpiar errores anteriores al iniciar un nuevo intento de guardado
+    setOtErrorIndices(new Set());
+    setOtErrorType('');
     // V2.5 — Antes de validar, detectar entradas vacías y abrir modal si las hay
     const detection = detectEmptyEntries(report);
     if (detection) {
@@ -2376,6 +2440,9 @@ export default function App() {
           originalReport={originalReport}
           setOriginalReport={setOriginalReport}                                
           onDeleteReport={() => requestDeleteReport(report.date, report.shift, 'form')}
+          otErrorIndices={otErrorIndices}
+          otErrorType={otErrorType}
+          onClearOtErrors={() => { setOtErrorIndices(new Set()); setOtErrorType(''); }}
         />}
         {!loading && tab === 'dashboard' && <DashboardView
           report={dashboardOverride || report}
@@ -3208,7 +3275,7 @@ function PropagationModal({ diffs, affectedReports, onConfirm, onCancel }) {
 //   - Planta de Efluentes y Caldera con schema nuevo (PTEL + Caldera + Ablandadores)
 //   - Resumen Preventivos del Turno al final del formulario
 // ═══════════════════════════════════════════════════════════════════
-function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history, adminMode, originalReport, setOriginalReport, onDeleteReport }) {
+function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, history, adminMode, originalReport, setOriginalReport, onDeleteReport, otErrorIndices = new Set(), otErrorType = '', onClearOtErrors }) {
   // #9 (v3.14) — read-only para no-admin si el reporte es anterior a ayer (corrección
   // retroactiva del pasado = solo admin). Hoy/ayer editable (turno en curso, cruce de
   // medianoche del Noche cubierto). Se aplica como fieldset disabled (deshabilita todos
@@ -3226,20 +3293,24 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // carry-over que nadie modificó (no visibles).
   // V2.6 — En modo admin, las modificaciones NO marcan lastModifiedInShift
   // (porque pueden ser correcciones retroactivas, no trabajo del turno).
-  const updateCorrectiveItem = (i, patch) => setReport(r => ({
-    ...r,
-    corrective: r.corrective.map((x, j) => {
-      if (j !== i) return x;
-      // si la patch no cambia nada efectivo, no actualizamos lastModifiedInShift
-      const changed = Object.keys(patch).some(k => x[k] !== patch[k]);
-      if (!changed) return x;
-      if (adminMode) {
-        // V2.6 — admin: aplicar patch sin tocar lastModifiedInShift
-        return { ...x, ...patch };
-      }
-      return { ...x, ...patch, lastModifiedInShift: `${r.date}-${r.shift}` };
-    })
-  }));
+  const updateCorrectiveItem = (i, patch) => {
+    // v3.16 — Al editar cualquier OT, limpiar las marcas de error de validación
+    if (otErrorIndices.size > 0 && onClearOtErrors) onClearOtErrors();
+    setReport(r => ({
+      ...r,
+      corrective: r.corrective.map((x, j) => {
+        if (j !== i) return x;
+        // si la patch no cambia nada efectivo, no actualizamos lastModifiedInShift
+        const changed = Object.keys(patch).some(k => x[k] !== patch[k]);
+        if (!changed) return x;
+        if (adminMode) {
+          // V2.6 — admin: aplicar patch sin tocar lastModifiedInShift
+          return { ...x, ...patch };
+        }
+        return { ...x, ...patch, lastModifiedInShift: `${r.date}-${r.shift}` };
+      })
+    }));
+  };
 
   // V2.4 — Timeline de Estado de Avance
   // Cada OT correctiva tiene un array timeline:
@@ -3724,8 +3795,27 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             const isNewOT = c.createdInShift === currentShiftKey;
             const isLegacyFormat = !isValidOT(c.ot) && !isNewOT;
             const otHasError = isNewOT && !isValidOT(c.ot);
+            // v3.16 — OT marcada como error por la validación al intentar guardar
+            const hasValidationError = otErrorIndices.has(i);
+            // Borde rojo: preexistente (missingTech / otHasError) o nuevo (validación)
+            const cardHasError = missingTech || otHasError || hasValidationError;
+            // Para errores de avance faltante: resaltar extra la sección de avance
+            const highlightAvance = hasValidationError && otErrorType === 'avance';
             return (
-              <div key={i} id={`form-ot-${c.ot || `idx-${i}`}`} className={`border rounded-lg p-3 relative scroll-mt-32 ${missingTech || otHasError ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-slate-50/40'}`}>
+              <div key={i} id={`form-ot-${c.ot || `idx-${i}`}`} className={`border rounded-lg p-3 relative scroll-mt-32 transition-colors ${
+                hasValidationError
+                  ? 'border-red-500 bg-red-50/60 ring-2 ring-red-300/60'
+                  : cardHasError
+                  ? 'border-red-300 bg-red-50/40'
+                  : 'border-slate-200 bg-slate-50/40'
+              }`}>
+                {/* v3.16 — Badge de error de validación: visible en el ángulo sup. izquierdo */}
+                {hasValidationError && (
+                  <div className="absolute top-2 left-2 z-10 inline-flex items-center gap-1 px-1.5 py-0.5 bg-red-600 text-white rounded text-[10px] font-bold">
+                    <AlertTriangle className="w-3 h-3" />
+                    {otErrorType === 'avance' ? 'Falta avance' : otErrorType === 'tecnico' ? 'Sin técnico' : 'Error'}
+                  </div>
+                )}
                 {/* V2.6 — Botón eliminar OT (solo modo admin) */}
                 {adminMode && (
                   <button
@@ -3735,7 +3825,8 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
-                <div className="grid grid-cols-12 gap-2 mb-2">
+                {/* v3.16 — Si hay badge de error, agregar padding arriba para que no tape el N° OT */}
+                <div className={`grid grid-cols-12 gap-2 mb-2 ${hasValidationError ? 'mt-6' : ''}`}>
                   <Field label="N° OT *" className="col-span-7 lg:col-span-3">
                     <OTNumberInput
                       value={c.ot}
@@ -3809,13 +3900,25 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                   const mostrarCampoCarga = requiresEntry
                     || (c.state === 'En Curso' && (!esHeredadaSinCambio || toggleVal));
                   return (
-                    <div className={`mt-2 border rounded-lg p-3 ${requiresEntry && timelineDraft[i] === undefined ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-slate-50/30'}`}>
+                    <div className={`mt-2 border rounded-lg p-3 ${
+                      highlightAvance
+                        ? 'border-red-500 bg-red-50/60 ring-2 ring-red-300/60'
+                        : requiresEntry && timelineDraft[i] === undefined
+                        ? 'border-amber-300 bg-amber-50/40'
+                        : 'border-slate-200 bg-slate-50/30'
+                    }`}>
                       <div className="flex items-center justify-between mb-2">
                         <div className="text-[11px] font-semibold text-slate-700 uppercase tracking-wide inline-flex items-center gap-1.5">
-                          <Activity className="w-3.5 h-3.5 text-amber-500" />
-                          Estado de avance {requiresEntry && <span className="text-red-600">*</span>}
+                          <Activity className={`w-3.5 h-3.5 ${highlightAvance ? 'text-red-500' : 'text-amber-500'}`} />
+                          Estado de avance {(requiresEntry || highlightAvance) && <span className="text-red-600">*</span>}
                         </div>
-                        {requiresEntry && (
+                        {highlightAvance && !requiresEntry && (
+                          <span className="text-[10px] text-red-700 font-medium inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" />
+                            Cargá el avance antes de guardar
+                          </span>
+                        )}
+                        {requiresEntry && !highlightAvance && (
                           <span className="text-[10px] text-amber-700 font-medium inline-flex items-center gap-1">
                             <AlertTriangle className="w-3 h-3" />
                             Requiere entrada del turno actual
