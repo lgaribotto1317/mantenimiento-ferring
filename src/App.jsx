@@ -145,6 +145,7 @@ const SECTORES_OT = [
   { code: 'EHS',  label: 'Sector EHS' },
   { code: 'MAN',  label: 'Mantenimiento' },
   { code: 'FAC',  label: 'Facilities' }
+  { code: 'PTEL', label: 'Planta de Tratamiento de Efluentes Líquidos' },
 ];
 const SECTORES_CODES = SECTORES_OT.map(s => s.code);
 
