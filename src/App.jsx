@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.17';
+const APP_VERSION = 'v3.18';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -4594,6 +4594,18 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
 // V2.5 — Correctivos en 4 categorías: Realizados del turno / Heredados realizados /
 //        Pendientes del turno / Pendientes heredados
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// DASHBOARD VIEW — v3.18 (BACKLOG #36)
+//   Rediseño compacto para export por mail (aplica a pantalla y export):
+//   - Comentarios URGENTES en banner rojo arriba (solo si los hay)
+//   - Correctivos en columna ancha (7/12) con contadores Realizadas/Pendientes
+//   - Preventivos y Servicios compactos en la columna angosta (5/12)
+//   - Servicios: solo estado planta + caudal m³/h + cisternas + cloro pozo 3
+//     + compresores/grupos como chips (No Operativo resaltado) + proveedores 1 línea
+//   - Comentarios NO urgentes en lista compacta al final
+//   Mantiene: selector de turnos guardados + export PNG/PDF (fuera del área capturada),
+//   filtro de OTs del turno (V2.3/V2.4), particiones V2.5, click-to-edit admin (V2.6).
+// ═══════════════════════════════════════════════════════════════════
 function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride, adminMode, onEditFromDashboard }) {
   const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
   const dateShort = useMemo(() => formatDateShort(report.date), [report.date]);
@@ -4601,7 +4613,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   const pr = report.preventivosResumen || { asignados: '', realizados: '', porTecnico: [] };
 
   // V2.4 — Listado de turnos guardados disponibles para el selector.
-  // Orden cronológico descendente (más nuevos primero).
   const savedShifts = useMemo(() => {
     return [...history]
       .filter(r => r.date && r.shift)
@@ -4620,14 +4631,10 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       }));
   }, [history]);
 
-  // V2.4 — Modo visor (cuando hay override). Sirve para no permitir edición y
-  // mostrar banner informativo.
   const isViewerMode = !!dashboardOverride;
   const currentKey = `${report.date}|${report.shift}`;
   const currentIdx = savedShifts.findIndex(s => s.key === currentKey);
 
-  // V2.4 — Navegación con flechas (cronológica). savedShifts está orden desc,
-  // entonces "anterior" cronológico = índice +1, "siguiente" = índice -1.
   const goToPrev = () => {
     if (currentIdx < 0) return;
     const next = savedShifts[currentIdx + 1];
@@ -4645,15 +4652,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     if (found) setDashboardOverride(found.report);
   };
 
-  // V2.4 — Filtro de OTs (opción B):
-  // - Si el reporte está GUARDADO (existe en history con misma fecha+turno),
-  //   mostramos TODAS las OTs (representan lo que pasó realmente ese turno).
-  // - Si el reporte es NUEVO (no guardado todavía), filtramos:
-  //     · OTs creadas en este turno (createdInShift coincide) → SÍ
-  //     · OTs modificadas en este turno (lastModifiedInShift coincide) → SÍ
-  //     · OTs heredadas del carry-over sin tocar → NO
-  // Esto evita que en un turno nuevo aparezcan en el Dashboard todas las
-  // OTs heredadas del carry-over sin que el responsable haya hecho nada.
+  // V2.4 — Filtro de OTs (opción B): reporte guardado → todas; nuevo → solo del turno.
   const currentShiftKey = `${report.date}-${report.shift}`;
   const isExistingReport = useMemo(
     () => history.some(r => r.date === report.date && r.shift === report.shift),
@@ -4661,10 +4660,8 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   );
   const correctiveActual = useMemo(() => {
     if (isExistingReport) {
-      // Reporte guardado → mostrar todo
       return report.corrective || [];
     }
-    // Reporte nuevo → solo OTs del turno actual
     return (report.corrective || []).filter(c => {
       if (c.createdInShift === currentShiftKey) return true;
       if (c.lastModifiedInShift === currentShiftKey) return true;
@@ -4672,32 +4669,20 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     });
   }, [report.corrective, currentShiftKey, isExistingReport]);
 
-  // V2.5 — Particiones de correctivos en 4 categorías para el Dashboard:
-  //  - Realizados del turno      → creados en este turno (createdInShift === currentShiftKey) y estado "Realizada"
-  //  - Realizados heredados      → creados en turno previo y ahora en "Realizada"
-  //  - Pendientes del turno      → creados en este turno y no "Realizada"
-  //  - Pendientes heredados      → creados en turno previo y no "Realizada"
-  // El criterio es por CREACIÓN de la OT (createdInShift), no por trabajo realizado.
-  // Si una OT vieja recibió un avance en este turno, sigue siendo "heredada"
-  // pero se marca con badge "Avance hoy" y se muestra el texto del último avance.
+  // V2.5 — Particiones de correctivos en 4 categorías.
   const correctivePartitions = useMemo(() => {
     const isCreatedHere = (c) => c.createdInShift === currentShiftKey;
     const isDone = (c) => c.state === 'Realizada';
-
-    // Para el avance del turno actual: buscar entrada de timeline cuyo shiftKey === currentShiftKey
     const findCurrentShiftEntry = (c) => {
       const tl = c.timeline || [];
-      // Si hay varias entradas del turno, tomar la última (más reciente)
       const entries = tl.filter(e => e.shiftKey === currentShiftKey);
       return entries.length > 0 ? entries[entries.length - 1] : null;
     };
-
     const enriched = correctiveActual.map(c => ({
       ...c,
       _createdHere: isCreatedHere(c),
       _currentShiftEntry: findCurrentShiftEntry(c)
     }));
-
     return {
       realizadosTurno:     enriched.filter(c => isDone(c) && c._createdHere),
       realizadosHeredados: enriched.filter(c => isDone(c) && !c._createdHere),
@@ -4706,13 +4691,19 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     };
   }, [correctiveActual, currentShiftKey]);
 
+  // #36 (v3.18) — contadores agregados Realizadas / Pendientes (sobre las del turno mostradas)
+  const realizadasCount = correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length;
+  const pendientesCount = correctivePartitions.pendientesTurno.length + correctivePartitions.pendientesHeredados.length;
+
+  // #36 (v3.18) — separar comentarios urgentes (banner arriba) de normales (lista abajo)
+  const urgentComments = (report.comments || []).filter(c => c.priority === 'Urgente' && (c.text || '').trim());
+  const normalComments = (report.comments || []).filter(c => c.priority !== 'Urgente' && (c.text || '').trim());
+
   // V2.2 — Export del Dashboard a PNG/PDF
   const dashboardRef = useRef(null);
   const [exporting, setExporting] = useState('');
   const [exportMsg, setExportMsg] = useState('');
 
-  // Carga dinámica de las librerías de export desde CDN.
-  // Se hace lazy (solo al hacer click) para no agrandar el bundle inicial.
   const loadScript = (src) => new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) return resolve();
     const s = document.createElement('script');
@@ -4722,9 +4713,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     document.head.appendChild(s);
   });
 
-  // Captura el dashboard expandiendo todos los scrolls internos para que se vea completo.
-  // V2.5 — también des-trunca los textos para que no se corten en el export.
-  // Devuelve el canvas resultado.
   const captureDashboard = async () => {
     if (!window.html2canvas) {
       await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
@@ -4732,8 +4720,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     const node = dashboardRef.current;
     if (!node) throw new Error('Dashboard no encontrado');
 
-    // Antes de capturar: forzar a que TODOS los contenedores con overflow:auto/scroll
-    // muestren todo el contenido. Guardar los estilos originales para restaurarlos después.
     const scrollables = node.querySelectorAll('*');
     const originalStyles = [];
     scrollables.forEach(el => {
@@ -4756,9 +4742,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       }
     });
 
-    // V2.5 — Des-truncar textos para que no se corten en el export.
-    // Tailwind `truncate` aplica white-space:nowrap + overflow:hidden + text-overflow:ellipsis.
-    // Sobreescribimos esos estilos en línea para que el texto fluya y se envuelva normal.
     const truncatedEls = node.querySelectorAll('.truncate');
     const originalTextStyles = [];
     truncatedEls.forEach(el => {
@@ -4775,29 +4758,26 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       el.style.wordBreak = 'break-word';
     });
 
-    // Esperar un frame para que se aplique
     await new Promise(r => requestAnimationFrame(r));
     await new Promise(r => setTimeout(r, 50));
 
     let canvas;
     try {
       canvas = await window.html2canvas(node, {
-        backgroundColor: '#f8fafc',  // bg-slate-50
-        scale: 2,                     // alta resolución
+        backgroundColor: '#f8fafc',
+        scale: 2,
         useCORS: true,
         logging: false,
         windowWidth: node.scrollWidth,
         windowHeight: node.scrollHeight
       });
     } finally {
-      // Restaurar estilos originales pase lo que pase
       originalStyles.forEach(({ el, overflow, overflowY, maxHeight, height }) => {
         el.style.overflow = overflow;
         el.style.overflowY = overflowY;
         el.style.maxHeight = maxHeight;
         el.style.height = height;
       });
-      // V2.5 — restaurar también los estilos de truncate
       originalTextStyles.forEach(({ el, whiteSpace, overflow, textOverflow, wordBreak }) => {
         el.style.whiteSpace = whiteSpace;
         el.style.overflow = overflow;
@@ -4845,7 +4825,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       const canvas = await captureDashboard();
       const imgData = canvas.toDataURL('image/png');
 
-      // A4 horizontal: 297mm x 210mm
       const pdf = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const pageW = pdf.internal.pageSize.getWidth();
       const pageH = pdf.internal.pageSize.getHeight();
@@ -4853,16 +4832,13 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
       const availW = pageW - margin * 2;
       const availH = pageH - margin * 2;
 
-      // Escalar la imagen para que entre en la página manteniendo proporción
       const imgAspect = canvas.width / canvas.height;
       const availAspect = availW / availH;
       let drawW, drawH;
       if (imgAspect > availAspect) {
-        // imagen más ancha que el área disponible: limitar por ancho
         drawW = availW;
         drawH = drawW / imgAspect;
       } else {
-        // imagen más alta: limitar por alto
         drawH = availH;
         drawW = drawH * imgAspect;
       }
@@ -4881,11 +4857,26 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     setExporting('');
   };
 
+  // Helper render de una subsección de correctivos solo si tiene items (#36 — compacto)
+  const renderSub = (title, items, showStateBadge, showAvanceMark) => {
+    if (!items || items.length === 0) return null;
+    return (
+      <CorrectiveSubsection
+        title={title}
+        count={items.length}
+        items={items}
+        showStateBadge={showStateBadge}
+        showAvanceMark={showAvanceMark}
+        currentShiftKey={currentShiftKey}
+        adminMode={adminMode}
+        onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
+      />
+    );
+  };
+
   return (
     <div className="space-y-3">
-      {/* V2.4 — Selector de turno guardado (modo visor de turnos pasados).
-          Si hay override, mostramos banner indicador y permitimos volver al turno actual.
-          Si no hay override, mostramos selector con dropdown + flechas anterior/siguiente. */}
+      {/* V2.4 — Selector de turno guardado + export (FUERA del área capturada) */}
       <div className={`rounded-xl border p-3 ${isViewerMode ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
@@ -4893,8 +4884,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
               <Calendar className="w-3.5 h-3.5" />
               {isViewerMode ? 'Viendo turno guardado · solo lectura' : 'Turno actual'}
             </span>
-
-            {/* Botones flechas — habilitados solo si hay turnos guardados */}
             <button
               onClick={goToPrev}
               disabled={currentIdx < 0 || currentIdx >= savedShifts.length - 1}
@@ -4903,8 +4892,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             >
               ◄
             </button>
-
-            {/* Dropdown de turnos guardados */}
             <select
               value={isViewerMode ? currentKey : ''}
               onChange={e => {
@@ -4924,7 +4911,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 </option>
               ))}
             </select>
-
             <button
               onClick={goToNext}
               disabled={currentIdx <= 0}
@@ -4933,7 +4919,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             >
               ►
             </button>
-
             {isViewerMode && (
               <button
                 onClick={goToCurrent}
@@ -4944,7 +4929,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             )}
           </div>
 
-          {/* Botones de export (V2.2) */}
           <div className="flex items-center gap-2">
             {exportMsg && (
               <span className={`text-xs font-medium ${exportMsg.startsWith('Error') ? 'text-red-600' : exportMsg.startsWith('✓') ? 'text-emerald-600' : 'text-slate-500'}`}>
@@ -4965,7 +4949,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         </div>
       </div>
 
-      {/* V2.6 — Banner de modo admin para indicar que se puede editar haciendo click */}
+      {/* V2.6 — Banner de modo admin */}
       {adminMode && (
         <div className="flex items-center gap-2 px-3 py-2 bg-sky-50 border border-sky-200 rounded-lg text-[12px] text-sky-800">
           <Shield className="w-4 h-4 text-sky-600 flex-shrink-0" />
@@ -4975,34 +4959,31 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         </div>
       )}
 
-      {/* Wrapper que va a ser capturado por html2canvas */}
+      {/* Wrapper capturado por html2canvas */}
       <div ref={dashboardRef} className="space-y-3">
-      {/* HEADER — V2.0: equipo con wrap multi-línea */}
-      <Card className="p-3">
-        <div className="grid grid-cols-2 lg:grid-cols-12 gap-3 items-start">
-          <div className="col-span-2 lg:col-span-3 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-sky-100 ring-1 ring-sky-200 flex items-center justify-center flex-shrink-0">
-              <Wrench className="w-5 h-5 text-sky-600" />
+
+        {/* HEADER — fecha, turno, responsable + equipo completo en chips */}
+        <Card className="p-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-sky-100 ring-1 ring-sky-200 flex items-center justify-center flex-shrink-0">
+                <Wrench className="w-5 h-5 text-sky-600" />
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Reporte Diario</div>
+                <div className="text-sm font-bold text-slate-900 capitalize num">{dateLabel || '—'} · {report.shift}</div>
+                <div className="text-[10px] text-slate-400 num">{dateShort}</div>
+              </div>
             </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Reporte Diario</div>
-              <div className="text-sm font-bold text-slate-900 capitalize num">{dateLabel || '—'}</div>
-              <div className="text-[10px] text-slate-400 num">{dateShort}</div>
+            <div className="text-sm">
+              <span className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Responsable </span>
+              <span className="font-medium text-slate-800">{report.responsable || '—'}</span>
             </div>
           </div>
-          <div className="col-span-1 lg:col-span-2 pt-1">
-            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Turno</div>
-            <div className="text-sm font-medium">{report.shift}</div>
-          </div>
-          <div className="col-span-1 lg:col-span-3 pt-1">
-            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Responsable</div>
-            <div className="text-sm font-medium text-slate-800">{report.responsable || '—'}</div>
-          </div>
-          <div className="col-span-2 lg:col-span-4 pt-1">
+          <div className="border-t border-slate-100 pt-2">
             <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold flex items-center gap-1 mb-1">
               <Users className="w-3 h-3" />Equipo (<span className="num">{report.team.length}</span>)
             </div>
-            {/* V2.0: cambio de truncate a wrap con badges para que se vean TODOS los técnicos */}
             {report.team.length === 0 ? (
               <div className="text-xs text-slate-400 italic">—</div>
             ) : (
@@ -5015,115 +4996,73 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
               </div>
             )}
           </div>
-        </div>
-      </Card>
-
-      {/* V2.1 LAYOUT OPCIÓN A:
-          - Correctivos a 50% izq (a 2 sub-columnas: Realizadas | Pendientes)
-          - Preventivos del Turno arriba derecha
-          - Servicios abajo derecha
-      */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3" style={{ minHeight: '500px' }}>
-
-        {/* COL IZQ: CORRECTIVOS — V2.5: 4 sub-secciones (Del turno / Heredados, en cada columna) */}
-        <Card className="lg:col-span-6 p-3 flex flex-col lg:overflow-hidden">
-          <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-            <Wrench className="w-4 h-4" />Correctivos del turno (<span className="num">{correctiveActual.length}</span>)
-          </h3>
-          <div className="overflow-visible lg:overflow-auto flex-1 grid grid-cols-1 lg:grid-cols-2 gap-3 lg:max-h-[calc(100vh-280px)]">
-
-            {/* SUB-COL: REALIZADAS — V2.5: dividida en "Del turno" y "Heredados" */}
-            <div className="border-b lg:border-b-0 lg:border-r border-slate-200 pb-3 lg:pb-0 lg:pr-3 mb-3 lg:mb-0">
-              <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
-                <CheckCircle2 className="w-3 h-3" />
-                Realizadas (<span className="num">{correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length}</span>)
-              </div>
-              <CorrectiveSubsection
-                title="Del turno"
-                count={correctivePartitions.realizadosTurno.length}
-                items={correctivePartitions.realizadosTurno}
-                showStateBadge={false}
-                showAvanceMark={false}
-                currentShiftKey={currentShiftKey}
-                adminMode={adminMode}
-                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
-              />
-              <CorrectiveSubsection
-                title="Heredados realizados"
-                count={correctivePartitions.realizadosHeredados.length}
-                items={correctivePartitions.realizadosHeredados}
-                showStateBadge={false}
-                showAvanceMark={false}
-                currentShiftKey={currentShiftKey}
-                adminMode={adminMode}
-                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
-              />
-            </div>
-
-            {/* SUB-COL: PENDIENTES — V2.5: dividida en "Del turno" y "Heredados" */}
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-amber-700 font-bold mb-2 inline-flex items-center gap-1 sticky top-0 bg-white z-10 pb-1">
-                <AlertTriangle className="w-3 h-3" />
-                Pendientes (<span className="num">{correctivePartitions.pendientesTurno.length + correctivePartitions.pendientesHeredados.length}</span>)
-              </div>
-              <CorrectiveSubsection
-                title="Del turno"
-                count={correctivePartitions.pendientesTurno.length}
-                items={correctivePartitions.pendientesTurno}
-                showStateBadge={true}
-                showAvanceMark={false}
-                currentShiftKey={currentShiftKey}
-                adminMode={adminMode}
-                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
-              />
-              <CorrectiveSubsection
-                title="Heredados"
-                count={correctivePartitions.pendientesHeredados.length}
-                items={correctivePartitions.pendientesHeredados}
-                showStateBadge={true}
-                showAvanceMark={true}
-                currentShiftKey={currentShiftKey}
-                adminMode={adminMode}
-                onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
-              />
-            </div>
-          </div>
         </Card>
 
-        {/* COL DER: STACK con PREVENTIVOS arriba y SERVICIOS abajo */}
-        <div className="lg:col-span-6 flex flex-col gap-3 lg:max-h-[calc(100vh-220px)]">
-          {/* PREVENTIVOS DEL TURNO — V2.6: Card entera clickeable en modo admin */}
-          <Card
-            className={`p-3 flex flex-col lg:overflow-hidden flex-shrink-0 ${
-              adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''
-            }`}
-            onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
-            title={adminMode ? 'Click para editar preventivos del turno' : undefined}
-          >
-            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-              <ListChecks className="w-4 h-4" />Preventivos del Turno
-            </h3>
-            <div className="lg:overflow-auto lg:max-h-[250px]">
-              {/* Asignados / Realizados */}
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <div className="bg-slate-50 rounded p-2 text-center">
-                  <div className="text-[10px] text-slate-500 uppercase tracking-wide">Asignados</div>
-                  <div className="text-2xl font-bold num text-slate-800">
-                    {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'}
-                  </div>
-                </div>
-                <div className="bg-emerald-50 rounded p-2 text-center">
-                  <div className="text-[10px] text-emerald-600 uppercase tracking-wide">Realizados</div>
-                  <div className="text-2xl font-bold num text-emerald-700">
-                    {pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}
-                  </div>
-                </div>
-              </div>
+        {/* #36 — Banner de comentarios URGENTES (solo si los hay) */}
+        {urgentComments.length > 0 && (
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl">
+            <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="text-[12px] text-red-700 leading-snug">
+              <span className="font-bold">{urgentComments.length} comentario{urgentComments.length === 1 ? '' : 's'} urgente{urgentComments.length === 1 ? '' : 's'}:</span>
+              <ul className="mt-1 space-y-0.5">
+                {urgentComments.map((c, i) => (
+                  <li key={i} className="leading-snug">• {c.text}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
 
-              {/* Detalle por técnico — V2.4: muestra grupos multi-técnicos.
-                  Si el grupo tiene varios técnicos, muestra "A · B · C → 4". */}
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                <Users className="w-3 h-3" />Por técnico
+        {/* GRID PRINCIPAL — Correctivos (7/12) + stack Preventivos/Servicios (5/12) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3" style={{ minHeight: '400px' }}>
+
+          {/* CORRECTIVOS */}
+          <Card className="lg:col-span-7 p-3 flex flex-col">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
+              <Wrench className="w-4 h-4" />Correctivos del turno (<span className="num">{correctiveActual.length}</span>)
+            </h3>
+
+            {/* #36 — Contadores Realizadas / Pendientes */}
+            <div className="flex gap-2 mb-3">
+              <div className="flex-1 bg-emerald-50 rounded-lg p-2 text-center">
+                <div className="text-xl font-bold num text-emerald-700">{realizadasCount}</div>
+                <div className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Realizadas</div>
+              </div>
+              <div className="flex-1 bg-amber-50 rounded-lg p-2 text-center">
+                <div className="text-xl font-bold num text-amber-700">{pendientesCount}</div>
+                <div className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold">Pendientes</div>
+              </div>
+            </div>
+
+            {correctiveActual.length === 0 ? (
+              <EmptyHint>Sin correctivos en este turno.</EmptyHint>
+            ) : (
+              <div className="space-y-1">
+                {renderSub('Realizadas del turno', correctivePartitions.realizadosTurno, false, false)}
+                {renderSub('Realizadas heredadas', correctivePartitions.realizadosHeredados, false, false)}
+                {renderSub('Pendientes del turno', correctivePartitions.pendientesTurno, true, false)}
+                {renderSub('Pendientes heredadas', correctivePartitions.pendientesHeredados, true, true)}
+              </div>
+            )}
+          </Card>
+
+          {/* STACK DERECHO: Preventivos + Servicios */}
+          <div className="lg:col-span-5 flex flex-col gap-3">
+
+            {/* PREVENTIVOS compacto */}
+            <Card
+              className={`p-3 flex-shrink-0 ${adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''}`}
+              onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
+              title={adminMode ? 'Click para editar preventivos del turno' : undefined}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sky-600 font-bold text-sm inline-flex items-center gap-2">
+                  <ListChecks className="w-4 h-4" />Preventivos
+                </h3>
+                <div className="text-sm">
+                  <span className="num font-bold text-emerald-700">{pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}</span>
+                  <span className="text-slate-400 text-xs"> / {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'} asign.</span>
+                </div>
               </div>
               {(() => {
                 const grupos = (pr.porTecnico || []).filter(t => {
@@ -5131,195 +5070,99 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                   return tecnicos.length > 0;
                 });
                 if (grupos.length === 0) {
-                  return <div className="text-[10px] text-slate-400 italic py-1">Sin detalle por técnico</div>;
+                  return <div className="text-[11px] text-slate-400 italic">Sin detalle por técnico</div>;
                 }
                 return (
-                  <div className="grid grid-cols-2 gap-1">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
                     {grupos.map((t, i) => {
                       const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
-                      const labelGrupo = tecnicos.join(' · ');
                       return (
-                        <div key={i} className="flex items-center justify-between bg-slate-50 rounded px-1.5 py-0.5 min-w-0">
-                          <span className="text-[10px] text-slate-700 truncate" title={labelGrupo}>{labelGrupo}</span>
-                          <span className="num text-[11px] font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded ring-1 ring-slate-200 flex-shrink-0 ml-1">
-                            {t.cantidad || 0}
-                          </span>
-                        </div>
+                        <span key={i}>
+                          {tecnicos.join(' · ')} <span className="num font-bold text-slate-800">{t.cantidad || 0}</span>
+                        </span>
                       );
                     })}
                   </div>
                 );
               })()}
-            </div>
-          </Card>
+            </Card>
 
-          {/* SERVICIOS */}
-          <Card className="p-3 flex flex-col lg:overflow-hidden lg:flex-1 min-h-0">
-            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-              <Activity className="w-4 h-4" />Servicios
-            </h3>
-            <div className="lg:overflow-auto lg:flex-1 space-y-3">
-              {/* Planta de Efluentes y Caldera */}
-              <div className="pb-3 border-b border-slate-100">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold inline-flex items-center gap-1">
-                    <Flame className="w-3 h-3 text-orange-500" />Planta de Efluentes y Caldera
-                  </div>
+            {/* SERVICIOS compacto */}
+            <Card className="p-3 flex flex-col flex-1 min-h-0">
+              <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
+                <Activity className="w-4 h-4" />Servicios
+              </h3>
+
+              {/* Valores clave: estado planta, caudal, cisternas, cloro pozo 3 */}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] mb-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 inline-flex items-center gap-1"><Flame className="w-3 h-3 text-orange-500" />Planta efluentes</span>
                   <StatePill state={p.estado} />
                 </div>
-                <div className="text-xs text-slate-700 mb-2">
-                  {(p.tecnicos && p.tecnicos.length > 0) ? p.tecnicos.join(' · ') : '—'}
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">Caudal m³/h</span>
+                  <span className="num font-bold text-slate-800">{p.caudal !== '' && p.caudal != null ? p.caudal : '—'}</span>
                 </div>
-
-                {/* PTEL */}
-                <div className="text-[9px] font-bold text-orange-700 uppercase tracking-wider mb-1">PTEL</div>
-                <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
-                  {[
-                    ['Caudal m³/h', p.caudal],
-                    ['Vacío', p.vacio],
-                    ['ΔT °C', p.deltaT],
-                    ['% TK1', p.tk1],
-                    ['% TK2', p.tk2],
-                    ['% TK7', p.tk7]
-                  ].map(([l, v]) => (
-                    <div key={l} className="bg-orange-50/50 rounded p-1 text-center">
-                      <div className="text-slate-500 uppercase">{l}</div>
-                      <div className="font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
-                    </div>
-                  ))}
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 inline-flex items-center gap-1"><Beaker className="w-3 h-3 text-cyan-500" />Cisternas</span>
+                  <StatePill state={report.servicios.cisternas.estado} />
                 </div>
-
-                {/* CALDERA + ABLANDADORES */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-red-50/50 rounded p-1.5">
-                    <div className="text-[9px] font-bold text-red-700 uppercase tracking-wider mb-1">Caldera</div>
-                    <div className="grid grid-cols-2 gap-1 text-[10px]">
-                      <div className="text-center">
-                        <div className="text-slate-500 uppercase">Cond. mS</div>
-                        <div className="font-bold num">{p.conductividadCaldera !== '' && p.conductividadCaldera != null ? p.conductividadCaldera : '—'}</div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-slate-500 uppercase">pH</div>
-                        <div className="font-bold num">{p.pHCaldera !== '' && p.pHCaldera != null ? p.pHCaldera : '—'}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="bg-blue-50/50 rounded p-1.5">
-                    <div className="text-[9px] font-bold text-blue-700 uppercase tracking-wider mb-1">Ablandadores</div>
-                    <div className="grid grid-cols-2 gap-1 text-[10px]">
-                      <div className="text-center">
-                        <div className="text-slate-500 uppercase">Cond. mS</div>
-                        <div className="font-bold num">{p.conductividadAblandador !== '' && p.conductividadAblandador != null ? p.conductividadAblandador : '—'}</div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-slate-500 uppercase">pH</div>
-                        <div className="font-bold num">{p.pHAblandador !== '' && p.pHAblandador != null ? p.pHAblandador : '—'}</div>
-                      </div>
-                    </div>
-                  </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">Cloro pozo 3</span>
+                  <span className="num font-bold text-slate-800">{report.servicios.aguaPozo?.cloroPozo3 !== '' && report.servicios.aguaPozo?.cloroPozo3 != null ? report.servicios.aguaPozo.cloroPozo3 : '—'}</span>
                 </div>
               </div>
 
-              {/* Compresores y Grupos */}
-              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                    <Cog className="w-3 h-3" />Compresores
-                  </div>
-                  <div className="space-y-0.5">
-                    {report.servicios.compresores.map(c => (
-                      <div key={c.code} className="flex justify-between items-center text-[10px]">
-                        <span className="num text-slate-700">{c.code}</span>
-                        <StatePill state={c.state} />
-                      </div>
-                    ))}
-                  </div>
+              {/* Compresores + Grupos como chips (No Operativo resaltado) */}
+              <div className="border-t border-slate-100 pt-2 mb-2">
+                <div className="text-[9px] uppercase tracking-wide text-slate-500 font-semibold mb-1 inline-flex items-center gap-1">
+                  <Cog className="w-3 h-3" />Compresores · <Zap className="w-3 h-3" />G. Electrógenos
                 </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                    <Zap className="w-3 h-3" />G. Electrógenos
-                  </div>
-                  <div className="space-y-0.5">
-                    {report.servicios.gruposElectrogenos.map(g => (
-                      <div key={g.code} className="flex justify-between items-center text-[10px]">
-                        <span className="num text-slate-700">{g.code}</span>
-                        <StatePill state={g.state} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cisternas */}
-              <div className="pb-3 border-b border-slate-100">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Beaker className="w-3 h-3" />Cisternas
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="text-slate-500 text-[10px]">Nivel:</span>
-                    <span className="font-medium text-slate-800">{report.servicios.cisternas.nivel || '—'}</span>
-                  </div>
-                  <div className="flex items-center justify-end gap-2">
-                    <StatePill state={report.servicios.cisternas.estado} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Agua de Pozo */}
-              <div className="pb-3 border-b border-slate-100">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <Beaker className="w-3 h-3 text-blue-500" />Agua de Pozo
-                </div>
-                <div className="grid grid-cols-2 gap-1 text-[10px]">
-                  {[
-                    ['Cloro Pozo 3', report.servicios.aguaPozo?.cloroPozo3],
-                    ['Cloro Pozo 6', report.servicios.aguaPozo?.cloroPozo6]
-                  ].map(([l, v]) => (
-                    <div key={l} className="bg-slate-50 rounded p-1.5 text-center">
-                      <div className="text-slate-500 uppercase">{l}</div>
-                      <div className="text-sm font-bold num text-slate-800">{v !== '' && v != null ? v : '—'}</div>
-                    </div>
+                <div className="flex flex-wrap gap-1">
+                  {[...(report.servicios.compresores || []), ...(report.servicios.gruposElectrogenos || [])].map(x => (
+                    <span key={x.code}
+                      className={`text-[10px] px-1.5 py-0.5 rounded num ${x.state === 'Operativo' ? 'bg-slate-100 text-slate-600' : 'bg-red-100 text-red-700 font-semibold'}`}>
+                      {x.code} {x.state === 'Operativo' ? '✓' : '✕'}
+                    </span>
                   ))}
                 </div>
               </div>
 
-              {/* Proveedores */}
-              {report.servicios.proveedores.length > 0 && (
-                <div className="pb-3 border-b border-slate-100">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+              {/* Proveedores — línea compacta (solo si hay) */}
+              {(report.servicios.proveedores || []).length > 0 && (
+                <div className="border-t border-slate-100 pt-2">
+                  <div className="text-[9px] uppercase tracking-wide text-slate-500 font-semibold mb-1 inline-flex items-center gap-1">
                     <Building2 className="w-3 h-3" />Proveedores
                   </div>
                   <div className="space-y-0.5">
                     {report.servicios.proveedores.map((pv, i) => (
-                      <div key={i} className="grid grid-cols-3 gap-1 text-[11px]">
-                        <div className="font-medium text-slate-700">{pv.provider}</div>
-                        <div className="col-span-2 text-slate-600">{pv.task}</div>
+                      <div key={i} className="text-[11px] text-slate-600">
+                        <span className="font-medium text-slate-700">{pv.provider}</span>{pv.task ? <span> · {pv.task}</span> : null}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
+            </Card>
+          </div>
+        </div>
 
-              {/* Comentarios */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-                  <FileText className="w-3 h-3" />Comentarios
+        {/* #36 — Comentarios NO urgentes en lista compacta al final */}
+        {normalComments.length > 0 && (
+          <Card className="p-3">
+            <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+              <FileText className="w-3 h-3" />Comentarios
+            </div>
+            <div className="space-y-1">
+              {normalComments.map((c, i) => (
+                <div key={i} className="text-[11px] text-slate-700 bg-slate-50 rounded px-2 py-1 leading-snug">
+                  {c.text}
                 </div>
-                {report.comments.length === 0 ? <div className="text-[10px] text-slate-400 italic">Sin comentarios</div> :
-                  <div className="space-y-1">
-                    {report.comments.map((c, i) => (
-                      <div key={i} className={`text-[11px] p-1.5 rounded ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : 'bg-slate-50'}`}>
-                        <span className="text-slate-700">{c.text}</span>
-                        {c.priority === 'Urgente' && <span className="ml-1.5 text-[9px] font-bold text-red-700 uppercase">Urgente</span>}
-                      </div>
-                    ))}
-                  </div>}
-              </div>
+              ))}
             </div>
           </Card>
-        </div>
-      </div>
+        )}
+
       </div>
     </div>
   );
