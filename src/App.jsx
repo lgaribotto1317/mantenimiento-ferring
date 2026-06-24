@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.16';
+const APP_VERSION = 'v3.17';
 
 // ═══════════════════════════════════════════════════════════════════
 // VERSION GATE (Punto 2 — bloqueo de versiones desactualizadas)
@@ -1020,12 +1020,6 @@ export default function App() {
   // errorIndices: índices (en r.corrective) de las OTs con problemas
   const validateReport = (r) => {
     const ok = { message: '', errorIndices: new Set() };
-    // V2.9 — Si admin está editando un reporte histórico (tiene snapshot original),
-    // saltar todas las validaciones contextuales. Admin asume responsabilidad de
-    // lo que guarda. Esto evita que reglas retroactivas (técnico obligatorio,
-    // avance de turno cuando hay cambio de estado, formato XXX-YYYYY, etc.) bloqueen
-    // la edición de reportes pre-V2.5 / pre-V2.4 / etc.
-    if (adminMode && originalReport) return ok;
     const currentShiftKey = `${r.date}-${r.shift}`;
 
     // V2.4 — 1. OTs nuevas (creadas en este turno) deben tener formato XXX-YYYYY válido
@@ -1104,15 +1098,22 @@ export default function App() {
       };
     }
 
-    // V2.5 — 3. TODAS las OTs correctivas deben tener al menos un técnico, sin importar estado.
-    // (Antes era sólo para "Realizada"; ahora aplica también a "Sin Iniciar" y "En Curso".)
+   // #10 (v3.17) — Bypass admin: se aplica DESPUÉS de las reglas críticas (2 y 3).
+    // Técnico en En Curso/Realizada y avance al cambiar estado son no-bypasseables incluso en admin.
+    // Las reglas contextuales (formato OT, preventivos, duplicadas) sí se bypasean.
+    if (adminMode && originalReport) return ok;
+
+    // V2.5 — 3. Técnico obligatorio en OTs "En Curso" y "Realizada".
+    // #35 (v3.17) — "Sin Iniciar" ya no bloquea: la OT todavía no fue tomada por nadie,
+    // el técnico se asigna cuando arranca el trabajo.
     const indicesSinTecnico = [];
     (r.corrective || []).forEach((c, i) => {
+      if (c.state === 'Sin Iniciar') return;
       if (!c.technicians || c.technicians.length === 0) indicesSinTecnico.push(i);
     });
     if (indicesSinTecnico.length > 0) {
       return {
-        message: `${indicesSinTecnico.length} OT correctiva sin técnico asignado. Asigná técnicos antes de guardar.`,
+        message: `${indicesSinTecnico.length} OT correctiva sin técnico asignado. Las OTs "En Curso" y "Realizada" deben tener técnico antes de guardar.`,
         errorIndices: new Set(indicesSinTecnico)
       };
     }
