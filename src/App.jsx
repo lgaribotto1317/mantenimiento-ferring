@@ -4511,7 +4511,20 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
 //     Sin badge "Avance hoy" — la línea verde es suficiente señal visual.
 // Cuando count === 0, muestra "Sin novedades" con el subtítulo igual.
 // ═══════════════════════════════════════════════════════════════════
-function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark, currentShiftKey, adminMode, onItemClick }) {
+// ═══════════════════════════════════════════════════════════════════
+// V2.5 — SUB-COMPONENTE: SECCIÓN DE CORRECTIVOS EN DASHBOARD
+// Renderiza una sub-sección titulada con N OTs. Soporta:
+//   - showStateBadge: muestra el StatePill (Sin Iniciar / En Curso)
+//   - showAvanceMark: cuando es true, las OTs con avance del turno actual:
+//        · van ordenadas primero (arriba)
+//        · muestran la línea destacada en verde "↳ Avance del turno: ..."
+//     Sin badge "Avance hoy" — la línea verde es suficiente señal visual.
+//   - hideAdvance (v3.18 / #36): suprime la línea de "último avance" (#19)
+//        para ahorrar espacio en el export. Se usa en la columna de Pendientes.
+//        El avance sigue en el timeline de la OT y en la app; solo no se exhibe acá.
+// Cuando count === 0, muestra "Sin novedades" con el subtítulo igual.
+// ═══════════════════════════════════════════════════════════════════
+function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceMark, currentShiftKey, adminMode, onItemClick, hideAdvance = false }) {
   // #19 (v3.10) — Último avance real de cada OT (filtra ruido ".", "..", vacías).
   // Una sola línea por OT: verde si la última entrada real es del turno actual,
   // gris/heredada si es de un turno anterior. Si todas son ruido → no se muestra.
@@ -4557,7 +4570,7 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
                   {showStateBadge && <StatePill state={c.state} />}
                 </div>
                 <div className="text-[12px] text-slate-700 leading-snug whitespace-pre-wrap break-words">{c.task || '—'}</div>
-                {adv && (
+                {!hideAdvance && adv && (
                   advIsCurrent ? (
                     <div className="mt-1 text-[11px] text-emerald-800 bg-emerald-50/60 border-l-2 border-emerald-300 pl-2 py-0.5 leading-snug whitespace-pre-wrap break-words">
                       <span className="text-emerald-600 font-semibold mr-1">↳ Avance del turno:</span>
@@ -4587,21 +4600,17 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// DASHBOARD VIEW — V2.3
-//   - Solo muestra OTs del turno actual (creadas o modificadas en este turno)
-//   - Las del carry-over que nadie tocó NO aparecen acá (sí en Cargar Reporte)
-//   - Detalle por técnico de preventivos en grid 2-col compacto
-// V2.5 — Correctivos en 4 categorías: Realizados del turno / Heredados realizados /
-//        Pendientes del turno / Pendientes heredados
-// ═══════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════
 // DASHBOARD VIEW — v3.18 (BACKLOG #36)
 //   Rediseño compacto para export por mail (aplica a pantalla y export):
 //   - Comentarios URGENTES en banner rojo arriba (solo si los hay)
-//   - Correctivos en columna ancha (7/12) con contadores Realizadas/Pendientes
-//   - Preventivos y Servicios compactos en la columna angosta (5/12)
-//   - Servicios: solo estado planta + caudal m³/h + cisternas + cloro pozo 3
-//     + compresores/grupos como chips (No Operativo resaltado) + proveedores 1 línea
+//   - Correctivos a todo el ancho con contadores Realizadas/Pendientes,
+//     y debajo DOS columnas en paralelo: Realizadas | Pendientes
+//     (cada una junta las del turno + las heredadas)
+//   - En Pendientes se oculta la línea de avance (#19) para ahorrar alto:
+//     solo N° OT + equipo + estado + descripción (hideAdvance)
+//   - Preventivos · Servicios · Proveedores en una fila de 3 columnas abajo
+//   - Servicios: estado planta + caudal m³/h + cisternas + cloro pozo 3
+//     + compresores/grupos como chips (No Operativo resaltado)
 //   - Comentarios NO urgentes en lista compacta al final
 //   Mantiene: selector de turnos guardados + export PNG/PDF (fuera del área capturada),
 //   filtro de OTs del turno (V2.3/V2.4), particiones V2.5, click-to-edit admin (V2.6).
@@ -4691,9 +4700,9 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     };
   }, [correctiveActual, currentShiftKey]);
 
-  // #36 (v3.18) — contadores agregados Realizadas / Pendientes (sobre las del turno mostradas)
-  const realizadasCount = correctivePartitions.realizadosTurno.length + correctivePartitions.realizadosHeredados.length;
-  const pendientesCount = correctivePartitions.pendientesTurno.length + correctivePartitions.pendientesHeredados.length;
+  // #36 (v3.18) — columnas en paralelo: todas las Realizadas | todas las Pendientes
+  const realizadas = [...correctivePartitions.realizadosTurno, ...correctivePartitions.realizadosHeredados];
+  const pendientes = [...correctivePartitions.pendientesTurno, ...correctivePartitions.pendientesHeredados];
 
   // #36 (v3.18) — separar comentarios urgentes (banner arriba) de normales (lista abajo)
   const urgentComments = (report.comments || []).filter(c => c.priority === 'Urgente' && (c.text || '').trim());
@@ -4857,23 +4866,6 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     setExporting('');
   };
 
-  // Helper render de una subsección de correctivos solo si tiene items (#36 — compacto)
-  const renderSub = (title, items, showStateBadge, showAvanceMark) => {
-    if (!items || items.length === 0) return null;
-    return (
-      <CorrectiveSubsection
-        title={title}
-        count={items.length}
-        items={items}
-        showStateBadge={showStateBadge}
-        showAvanceMark={showAvanceMark}
-        currentShiftKey={currentShiftKey}
-        adminMode={adminMode}
-        onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
-      />
-    );
-  };
-
   return (
     <div className="space-y-3">
       {/* V2.4 — Selector de turno guardado + export (FUERA del área capturada) */}
@@ -5013,138 +5005,155 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
           </div>
         )}
 
-        {/* GRID PRINCIPAL — Correctivos (7/12) + stack Preventivos/Servicios (5/12) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3" style={{ minHeight: '400px' }}>
+        {/* CORRECTIVOS — a todo el ancho: contadores + 2 columnas (Realizadas | Pendientes) */}
+        <Card className="p-3">
+          <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2">
+            <Wrench className="w-4 h-4" />Correctivos del turno (<span className="num">{correctiveActual.length}</span>)
+          </h3>
 
-          {/* CORRECTIVOS */}
-          <Card className="lg:col-span-7 p-3 flex flex-col">
-            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-              <Wrench className="w-4 h-4" />Correctivos del turno (<span className="num">{correctiveActual.length}</span>)
-            </h3>
+          {/* Contadores Realizadas / Pendientes */}
+          <div className="flex gap-2 mb-3">
+            <div className="flex-1 bg-emerald-50 rounded-lg p-2 text-center">
+              <div className="text-xl font-bold num text-emerald-700">{realizadas.length}</div>
+              <div className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Realizadas</div>
+            </div>
+            <div className="flex-1 bg-amber-50 rounded-lg p-2 text-center">
+              <div className="text-xl font-bold num text-amber-700">{pendientes.length}</div>
+              <div className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold">Pendientes</div>
+            </div>
+          </div>
 
-            {/* #36 — Contadores Realizadas / Pendientes */}
-            <div className="flex gap-2 mb-3">
-              <div className="flex-1 bg-emerald-50 rounded-lg p-2 text-center">
-                <div className="text-xl font-bold num text-emerald-700">{realizadasCount}</div>
-                <div className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Realizadas</div>
+          {correctiveActual.length === 0 ? (
+            <EmptyHint>Sin correctivos en este turno.</EmptyHint>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2">
+              {/* Columna izquierda: todas las Realizadas (con su "qué se hizo") */}
+              <div>
+                <CorrectiveSubsection
+                  title="Realizadas"
+                  count={realizadas.length}
+                  items={realizadas}
+                  showStateBadge={false}
+                  showAvanceMark={false}
+                  currentShiftKey={currentShiftKey}
+                  adminMode={adminMode}
+                  onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
+                />
               </div>
-              <div className="flex-1 bg-amber-50 rounded-lg p-2 text-center">
-                <div className="text-xl font-bold num text-amber-700">{pendientesCount}</div>
-                <div className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold">Pendientes</div>
+              {/* Columna derecha: todas las Pendientes (solo descripción, sin línea de avance) */}
+              <div>
+                <CorrectiveSubsection
+                  title="Pendientes"
+                  count={pendientes.length}
+                  items={pendientes}
+                  showStateBadge={true}
+                  showAvanceMark={false}
+                  hideAdvance={true}
+                  currentShiftKey={currentShiftKey}
+                  adminMode={adminMode}
+                  onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
+                />
               </div>
             </div>
+          )}
+        </Card>
 
-            {correctiveActual.length === 0 ? (
-              <EmptyHint>Sin correctivos en este turno.</EmptyHint>
+        {/* FILA INFERIOR — Preventivos · Servicios · Proveedores (3 columnas) */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+
+          {/* PREVENTIVOS */}
+          <Card
+            className={`p-3 ${adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''}`}
+            onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
+            title={adminMode ? 'Click para editar preventivos del turno' : undefined}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sky-600 font-bold text-sm inline-flex items-center gap-2">
+                <ListChecks className="w-4 h-4" />Preventivos
+              </h3>
+              <div className="text-sm">
+                <span className="num font-bold text-emerald-700">{pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}</span>
+                <span className="text-slate-400 text-xs"> / {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'} asign.</span>
+              </div>
+            </div>
+            {(() => {
+              const grupos = (pr.porTecnico || []).filter(t => {
+                const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+                return tecnicos.length > 0;
+              });
+              if (grupos.length === 0) {
+                return <div className="text-[11px] text-slate-400 italic">Sin detalle por técnico</div>;
+              }
+              return (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
+                  {grupos.map((t, i) => {
+                    const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
+                    return (
+                      <span key={i}>
+                        {tecnicos.join(' · ')} <span className="num font-bold text-slate-800">{t.cantidad || 0}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </Card>
+
+          {/* SERVICIOS */}
+          <Card className="p-3">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2">
+              <Activity className="w-4 h-4" />Servicios
+            </h3>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] mb-2">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 inline-flex items-center gap-1"><Flame className="w-3 h-3 text-orange-500" />Planta</span>
+                <StatePill state={p.estado} />
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Caudal m³/h</span>
+                <span className="num font-bold text-slate-800">{p.caudal !== '' && p.caudal != null ? p.caudal : '—'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 inline-flex items-center gap-1"><Beaker className="w-3 h-3 text-cyan-500" />Cisternas</span>
+                <StatePill state={report.servicios.cisternas.estado} />
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Cloro pozo 3</span>
+                <span className="num font-bold text-slate-800">{report.servicios.aguaPozo?.cloroPozo3 !== '' && report.servicios.aguaPozo?.cloroPozo3 != null ? report.servicios.aguaPozo.cloroPozo3 : '—'}</span>
+              </div>
+            </div>
+            <div className="border-t border-slate-100 pt-2">
+              <div className="text-[9px] uppercase tracking-wide text-slate-500 font-semibold mb-1 inline-flex items-center gap-1">
+                <Cog className="w-3 h-3" />Compresores · <Zap className="w-3 h-3" />G. Electrógenos
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {[...(report.servicios.compresores || []), ...(report.servicios.gruposElectrogenos || [])].map(x => (
+                  <span key={x.code}
+                    className={`text-[10px] px-1.5 py-0.5 rounded num ${x.state === 'Operativo' ? 'bg-slate-100 text-slate-600' : 'bg-red-100 text-red-700 font-semibold'}`}>
+                    {x.code} {x.state === 'Operativo' ? '✓' : '✕'}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </Card>
+
+          {/* PROVEEDORES */}
+          <Card className="p-3">
+            <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2">
+              <Building2 className="w-4 h-4" />Proveedores
+            </h3>
+            {(report.servicios.proveedores || []).length === 0 ? (
+              <div className="text-[11px] text-slate-400 italic">Sin proveedores en el turno</div>
             ) : (
               <div className="space-y-1">
-                {renderSub('Realizadas del turno', correctivePartitions.realizadosTurno, false, false)}
-                {renderSub('Realizadas heredadas', correctivePartitions.realizadosHeredados, false, false)}
-                {renderSub('Pendientes del turno', correctivePartitions.pendientesTurno, true, false)}
-                {renderSub('Pendientes heredadas', correctivePartitions.pendientesHeredados, true, true)}
+                {report.servicios.proveedores.map((pv, i) => (
+                  <div key={i} className="text-[11px] text-slate-600 leading-snug">
+                    <span className="font-medium text-slate-700">{pv.provider}</span>{pv.task ? <span> · {pv.task}</span> : null}
+                  </div>
+                ))}
               </div>
             )}
           </Card>
-
-          {/* STACK DERECHO: Preventivos + Servicios */}
-          <div className="lg:col-span-5 flex flex-col gap-3">
-
-            {/* PREVENTIVOS compacto */}
-            <Card
-              className={`p-3 flex-shrink-0 ${adminMode ? 'cursor-pointer hover:bg-sky-50/60 hover:ring-2 hover:ring-sky-200 transition' : ''}`}
-              onClick={adminMode ? () => onEditFromDashboard(report, 'preventivos') : undefined}
-              title={adminMode ? 'Click para editar preventivos del turno' : undefined}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sky-600 font-bold text-sm inline-flex items-center gap-2">
-                  <ListChecks className="w-4 h-4" />Preventivos
-                </h3>
-                <div className="text-sm">
-                  <span className="num font-bold text-emerald-700">{pr.realizados !== '' && pr.realizados != null ? pr.realizados : '—'}</span>
-                  <span className="text-slate-400 text-xs"> / {pr.asignados !== '' && pr.asignados != null ? pr.asignados : '—'} asign.</span>
-                </div>
-              </div>
-              {(() => {
-                const grupos = (pr.porTecnico || []).filter(t => {
-                  const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
-                  return tecnicos.length > 0;
-                });
-                if (grupos.length === 0) {
-                  return <div className="text-[11px] text-slate-400 italic">Sin detalle por técnico</div>;
-                }
-                return (
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
-                    {grupos.map((t, i) => {
-                      const tecnicos = t.tecnicos || (t.tecnico ? [t.tecnico] : []);
-                      return (
-                        <span key={i}>
-                          {tecnicos.join(' · ')} <span className="num font-bold text-slate-800">{t.cantidad || 0}</span>
-                        </span>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </Card>
-
-            {/* SERVICIOS compacto */}
-            <Card className="p-3 flex flex-col flex-1 min-h-0">
-              <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2 flex-shrink-0">
-                <Activity className="w-4 h-4" />Servicios
-              </h3>
-
-              {/* Valores clave: estado planta, caudal, cisternas, cloro pozo 3 */}
-              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] mb-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 inline-flex items-center gap-1"><Flame className="w-3 h-3 text-orange-500" />Planta efluentes</span>
-                  <StatePill state={p.estado} />
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Caudal m³/h</span>
-                  <span className="num font-bold text-slate-800">{p.caudal !== '' && p.caudal != null ? p.caudal : '—'}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 inline-flex items-center gap-1"><Beaker className="w-3 h-3 text-cyan-500" />Cisternas</span>
-                  <StatePill state={report.servicios.cisternas.estado} />
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Cloro pozo 3</span>
-                  <span className="num font-bold text-slate-800">{report.servicios.aguaPozo?.cloroPozo3 !== '' && report.servicios.aguaPozo?.cloroPozo3 != null ? report.servicios.aguaPozo.cloroPozo3 : '—'}</span>
-                </div>
-              </div>
-
-              {/* Compresores + Grupos como chips (No Operativo resaltado) */}
-              <div className="border-t border-slate-100 pt-2 mb-2">
-                <div className="text-[9px] uppercase tracking-wide text-slate-500 font-semibold mb-1 inline-flex items-center gap-1">
-                  <Cog className="w-3 h-3" />Compresores · <Zap className="w-3 h-3" />G. Electrógenos
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {[...(report.servicios.compresores || []), ...(report.servicios.gruposElectrogenos || [])].map(x => (
-                    <span key={x.code}
-                      className={`text-[10px] px-1.5 py-0.5 rounded num ${x.state === 'Operativo' ? 'bg-slate-100 text-slate-600' : 'bg-red-100 text-red-700 font-semibold'}`}>
-                      {x.code} {x.state === 'Operativo' ? '✓' : '✕'}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* Proveedores — línea compacta (solo si hay) */}
-              {(report.servicios.proveedores || []).length > 0 && (
-                <div className="border-t border-slate-100 pt-2">
-                  <div className="text-[9px] uppercase tracking-wide text-slate-500 font-semibold mb-1 inline-flex items-center gap-1">
-                    <Building2 className="w-3 h-3" />Proveedores
-                  </div>
-                  <div className="space-y-0.5">
-                    {report.servicios.proveedores.map((pv, i) => (
-                      <div key={i} className="text-[11px] text-slate-600">
-                        <span className="font-medium text-slate-700">{pv.provider}</span>{pv.task ? <span> · {pv.task}</span> : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </Card>
-          </div>
         </div>
 
         {/* #36 — Comentarios NO urgentes en lista compacta al final */}
