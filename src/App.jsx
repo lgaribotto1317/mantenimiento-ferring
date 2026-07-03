@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.19';
+const APP_VERSION = 'v3.20';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -3388,6 +3388,8 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   // Si la OT requiere avance obligatorio (cambio de estado / cierre), el toggle no
   // aplica: el campo se muestra y se exige igual que antes.
   const [avanceToggle, setAvanceToggle] = useState({});
+  // PR-2 (v3.20) — breakpoint desktop (lg=1024px) para el layout emparejado.
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
   // V2.6 — Edición inline de entradas existentes (solo admin)
   // editingKey es del tipo "i-ei" (índice de OT - índice de entrada)
   const [timelineEditingKey, setTimelineEditingKey] = useState(null);
@@ -3735,119 +3737,12 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   const realizadosNum = Number(report.preventivosResumen?.realizados) || 0;
   const validacionCruzadaOK = realizadosNum === 0 || sumaPorTecnico === realizadosNum;
 
-  return (
-    <div className="space-y-5">
-      {/* #7 v3.6 — Modal de recuperación de borrador local sin guardar */}
-      {draftRecovery && (
-        <DraftRecoveryDialog
-          date={draftRecovery.draft.report.date}
-          shift={draftRecovery.draft.report.shift}
-          savedAt={draftRecovery.draft.savedAt}
-          serverUpdatedAt={draftRecovery.serverUpdatedAt}
-          onRecover={applyDraftRecovery}
-          onDiscard={discardDraftRecovery}
-        />
-      )}
-      {/* V2.9 — Banner: admin editando reporte histórico (que ya está guardado). */}
-      {adminMode && originalReport && (
-        <div className="flex items-start gap-2 px-3 py-2.5 bg-sky-50 border border-sky-200 rounded-lg">
-          <Shield className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
-          <div className="text-[13px] text-sky-800 leading-snug">
-            <strong>Estás editando un reporte histórico</strong> ({formatDateShort(report.date)} · {report.shift}).
-            {' '}Los cambios que hagas sobre OTs (estado o entradas del timeline) pueden propagarse a reportes posteriores que tengan las mismas OTs. Vas a poder revisar antes de confirmar.
-          </div>
-        </div>
-      )}
-      {/* v3.13 (#12) — La action bar sticky fue eliminada. Guardar + saveMsg viven
-          ahora en el header global (visibles siempre sin scroll). Limpiar + Eliminar
-          reporte pasaron al FAB flotante admin (abajo a la izquierda, ver más abajo).
-          Acá solo queda la línea informativa de loadInfo, que aparece cuando hay mensaje. */}
-      {loadInfo && (
-        <div className="flex items-center gap-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-xl px-3 py-2.5 shadow-sm">
-          <ClipboardList className="w-5 h-5 text-sky-600 flex-shrink-0" />
-          <span className="font-medium">{loadInfo}</span>
-        </div>
-      )}
 
-      {/* #9 (v3.14) — Banner read-only: no-admin viendo un reporte anterior a ayer.
-          No puede editar (corrección retroactiva = solo admin), pero sí mirarlo. El botón
-          lo devuelve al turno de hoy para que no quede atrapado (Fecha/Turno también se
-          deshabilitan dentro del fieldset). */}
-      {isReadOnly && (
-        <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-lg">
-          <Lock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-          <div className="text-[13px] text-amber-800 leading-snug flex-1">
-            <strong>Solo lectura</strong> — este reporte ({formatDateShort(report.date)} · {report.shift}) es de un día anterior. Para corregir reportes pasados se necesita acceso admin. Podés editar los reportes de hoy y de ayer.
-          </div>
-          <button
-            onClick={() => { setDateShift(todayLocalISO(), report.shift); }}
-            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition">
-            Ir al reporte de hoy
-          </button>
-        </div>
-      )}
-
-      {/* #9 (v3.14) — fieldset disabled deshabilita TODOS los controles hijos cuando es
-          read-only (incluidos Fecha/Turno; por eso el botón "Ir al reporte de hoy" del banner
-          de arriba, que queda FUERA del fieldset, para no dejar al usuario atrapado). */}
-      <fieldset disabled={isReadOnly} className="space-y-5 min-w-0 border-0 p-0 m-0 disabled:opacity-60">
-      {/* v3.13 (#12) — Información del Turno + Equipo del Turno en línea, 50/50 en desktop,
-          apiladas en mobile. Antes eran dos Cards a ancho completo, una sobre otra. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* COMPACT TURNO HEADER */}
-        <Card className="p-5">
-          <SectionTitle icon={Calendar} accent="sky">Información del Turno</SectionTitle>
-          <div className="grid grid-cols-3 gap-2 md:gap-3">
-            <Field label="Fecha">
-              <input type="date" className={inputCls} value={report.date}
-                max={adminMode ? undefined : todayLocalISO()}
-                onChange={e => setDateShift(e.target.value, report.shift)} />
-            </Field>
-            <Field label="Turno">
-              <select className={inputCls} value={report.shift} onChange={e => setDateShift(report.date, e.target.value)}>
-                {TURNOS.map(s => <option key={s}>{s}</option>)}
-              </select>
-            </Field>
-            <Field label="Responsable">
-              <select className={inputCls} value={report.responsable} onChange={e => update({ responsable: e.target.value })}>
-                <option value="">— Seleccionar —</option>
-                {RESPONSABLES.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
-              </select>
-            </Field>
-          </div>
-        </Card>
-
-        {/* EQUIPO (only names) */}
-        <Card className="p-5">
-          <SectionTitle icon={Users} accent="sky">Equipo del Turno</SectionTitle>
-          <Field label="Técnicos del turno (selección múltiple)">
-            <MultiSelect options={TECNICO_NAMES} value={report.team} onChange={vals => update({ team: vals })}
-              placeholder="Seleccionar técnicos…" />
-          </Field>
-        </Card>
-      </div>
-
-      {/* CORRECTIVOS — V2.0: SIN botón eliminar; V2.5: técnico obligatorio siempre + banner */}
-      <Card className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <SectionTitle icon={Wrench} accent="orange">Mantenimiento Correctivo</SectionTitle>
-          <button onClick={() => updateList('corrective', l => [{ ot: '', equipoCodigo: '', task: '', technicians: [], state: 'Sin Iniciar', createdInShift: `${report.date}-${report.shift}`, timeline: [] }, ...l])}
-            className={`${buttonCls} bg-orange-50 text-orange-700 hover:bg-orange-100`}>
-            <Plus className="w-4 h-4" />Agregar OT
-          </button>
-        </div>
-
-        {/* V2.5 — Banner permanente sobre OTs heredadas */}
-        <div className="mb-4 flex items-start gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-lg">
-          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-          <div className="text-[13px] text-red-700 leading-snug">
-            Para las OTs de turnos previos que aún no están cerradas, actualizá el "Estado de avance" sólo si hay novedades.
-          </div>
-        </div>
-
-        {report.corrective.length === 0 && <EmptyHint>Sin órdenes de trabajo correctivas.</EmptyHint>}
-        <div className="space-y-3">
-          {report.corrective.map((c, i) => {
+  // PR-2 (v3.20) — Tarjeta de OT correctiva extraída a función para renderarla
+  // en 2 columnas (Del turno | Heredadas) preservando el índice original i de
+  // report.corrective (updateCorrectiveItem, otErrorIndices, timelineDraft,
+  // avanceToggle, addTimelineEntry, id form-ot-* siguen usando ese índice).
+  const renderOTCard = (c, i) => {
             // V2.5 — Técnico obligatorio en cualquier estado (no solo "Realizada")
             const missingTech = (!c.technicians || c.technicians.length === 0);
             // V2.4 — Determinar si la OT es nueva (creada en este turno) o legacy
@@ -4122,11 +4017,155 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                 })()}
               </div>
             );
-          })}
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* #7 v3.6 — Modal de recuperación de borrador local sin guardar */}
+      {draftRecovery && (
+        <DraftRecoveryDialog
+          date={draftRecovery.draft.report.date}
+          shift={draftRecovery.draft.report.shift}
+          savedAt={draftRecovery.draft.savedAt}
+          serverUpdatedAt={draftRecovery.serverUpdatedAt}
+          onRecover={applyDraftRecovery}
+          onDiscard={discardDraftRecovery}
+        />
+      )}
+      {/* V2.9 — Banner: admin editando reporte histórico (que ya está guardado). */}
+      {adminMode && originalReport && (
+        <div className="flex items-start gap-2 px-3 py-2.5 bg-sky-50 border border-sky-200 rounded-lg">
+          <Shield className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
+          <div className="text-[13px] text-sky-800 leading-snug">
+            <strong>Estás editando un reporte histórico</strong> ({formatDateShort(report.date)} · {report.shift}).
+            {' '}Los cambios que hagas sobre OTs (estado o entradas del timeline) pueden propagarse a reportes posteriores que tengan las mismas OTs. Vas a poder revisar antes de confirmar.
+          </div>
+        </div>
+      )}
+      {/* v3.13 (#12) — La action bar sticky fue eliminada. Guardar + saveMsg viven
+          ahora en el header global (visibles siempre sin scroll). Limpiar + Eliminar
+          reporte pasaron al FAB flotante admin (abajo a la izquierda, ver más abajo).
+          Acá solo queda la línea informativa de loadInfo, que aparece cuando hay mensaje. */}
+      {loadInfo && (
+        <div className="flex items-center gap-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-xl px-3 py-2.5 shadow-sm">
+          <ClipboardList className="w-5 h-5 text-sky-600 flex-shrink-0" />
+          <span className="font-medium">{loadInfo}</span>
+        </div>
+      )}
+
+      {/* #9 (v3.14) — Banner read-only: no-admin viendo un reporte anterior a ayer.
+          No puede editar (corrección retroactiva = solo admin), pero sí mirarlo. El botón
+          lo devuelve al turno de hoy para que no quede atrapado (Fecha/Turno también se
+          deshabilitan dentro del fieldset). */}
+      {isReadOnly && (
+        <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+          <Lock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="text-[13px] text-amber-800 leading-snug flex-1">
+            <strong>Solo lectura</strong> — este reporte ({formatDateShort(report.date)} · {report.shift}) es de un día anterior. Para corregir reportes pasados se necesita acceso admin. Podés editar los reportes de hoy y de ayer.
+          </div>
+          <button
+            onClick={() => { setDateShift(todayLocalISO(), report.shift); }}
+            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition">
+            Ir al reporte de hoy
+          </button>
+        </div>
+      )}
+
+      {/* #9 (v3.14) — fieldset disabled deshabilita TODOS los controles hijos cuando es
+          read-only (incluidos Fecha/Turno; por eso el botón "Ir al reporte de hoy" del banner
+          de arriba, que queda FUERA del fieldset, para no dejar al usuario atrapado). */}
+      <fieldset disabled={isReadOnly} className="space-y-5 min-w-0 border-0 p-0 m-0 disabled:opacity-60">
+      {/* v3.13 (#12) — Información del Turno + Equipo del Turno en línea, 50/50 en desktop,
+          apiladas en mobile. Antes eran dos Cards a ancho completo, una sobre otra. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+        {/* COMPACT TURNO HEADER */}
+        <Card className="p-5">
+          <SectionTitle icon={Calendar} accent="sky">Información del Turno</SectionTitle>
+          <div className="grid grid-cols-3 gap-2 md:gap-3">
+            <Field label="Fecha">
+              <input type="date" className={inputCls} value={report.date}
+                max={adminMode ? undefined : todayLocalISO()}
+                onChange={e => setDateShift(e.target.value, report.shift)} />
+            </Field>
+            <Field label="Turno">
+              <select className={inputCls} value={report.shift} onChange={e => setDateShift(report.date, e.target.value)}>
+                {TURNOS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Responsable">
+              <select className={inputCls} value={report.responsable} onChange={e => update({ responsable: e.target.value })}>
+                <option value="">— Seleccionar —</option>
+                {RESPONSABLES.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+              </select>
+            </Field>
+          </div>
+        </Card>
+
+        {/* EQUIPO (only names) */}
+        <Card className="p-5">
+          <SectionTitle icon={Users} accent="sky">Equipo del Turno</SectionTitle>
+          <Field label="Técnicos del turno (selección múltiple)">
+            <MultiSelect options={TECNICO_NAMES} value={report.team} onChange={vals => update({ team: vals })}
+              placeholder="Seleccionar técnicos…" />
+          </Field>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <SectionTitle icon={FileText} accent="amber">Comentarios</SectionTitle>
+          <button onClick={() => updateList('comments', l => [...l, { text: '', priority: 'Normal' }])}
+            className={`${buttonCls} bg-amber-50 text-amber-700 hover:bg-amber-100`}>
+            <Plus className="w-4 h-4" />Agregar comentario
+          </button>
+        </div>
+        {report.comments.length === 0 && <EmptyHint>Sin comentarios.</EmptyHint>}
+        <div className="space-y-2">
+          {report.comments.map((c, i) => (
+            <div key={i} className={`grid grid-cols-12 gap-2 items-start p-2 rounded-lg ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : ''}`}>
+              <textarea rows={2} className={`${inputCls} col-span-9 ${c.priority === 'Urgente' ? 'border-red-300 focus:ring-red-300' : ''}`}
+                placeholder="Comentario…" value={c.text}
+                onChange={e => updateList('comments', l => l.map((x, j) => j === i ? { ...x, text: e.target.value } : x))} />
+              <select className={`${inputCls} col-span-2 font-semibold ${c.priority === 'Urgente' ? 'text-red-600 border-red-300' : 'text-slate-600'}`}
+                value={c.priority}
+                onChange={e => updateList('comments', l => l.map((x, j) => j === i ? { ...x, priority: e.target.value } : x))}>
+                {PRIORIDADES.map(p => <option key={p}>{p}</option>)}
+              </select>
+              <button onClick={() => updateList('comments', l => l.filter((_, j) => j !== i))}
+                className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition self-center">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
         </div>
       </Card>
+        <Card className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <SectionTitle icon={Building2} accent="indigo">Proveedores</SectionTitle>
+            <button onClick={() => updateServicios({ proveedores: [...report.servicios.proveedores, { provider: '', task: '' }] })}
+              className={`${buttonCls} bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}>
+              <Plus className="w-4 h-4" />Agregar
+            </button>
+          </div>
+          {report.servicios.proveedores.length === 0 && <EmptyHint>Sin tareas de proveedores.</EmptyHint>}
+          <div className="space-y-2">
+            {report.servicios.proveedores.map((p, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2">
+                <input className={`${inputCls} col-span-3`} placeholder="Proveedor" value={p.provider}
+                  onChange={e => updateServicios({ proveedores: report.servicios.proveedores.map((x, j) => j === i ? { ...x, provider: e.target.value } : x) })} />
+                <input className={`${inputCls} col-span-8`} placeholder="Tarea realizada" value={p.task}
+                  onChange={e => updateServicios({ proveedores: report.servicios.proveedores.map((x, j) => j === i ? { ...x, task: e.target.value } : x) })} />
+                <button onClick={() => updateServicios({ proveedores: report.servicios.proveedores.filter((_, j) => j !== i) })}
+                  className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
 
-      {/* RESUMEN PREVENTIVOS DEL TURNO — V2.1: subido a la 4ta posición (antes de Servicios) */}
       <Card className="p-5 scroll-mt-32" id="form-preventivos">
         <SectionTitle icon={ListChecks} accent="emerald">Resumen Preventivos del Turno</SectionTitle>
         <p className="text-xs text-slate-500 mb-4">
@@ -4228,7 +4267,6 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
         )}
       </Card>
 
-      {/* SERVICIOS */}
       <Card className="p-5">
         <SectionTitle icon={Activity} accent="violet">Servicios</SectionTitle>
 
@@ -4387,71 +4425,71 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
             </Field>
           </div>
         </div>
-
-        {/* SERVICIOS EXTERNOS */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-slate-700 inline-flex items-center gap-2">
-              <Building2 className="w-4 h-4 text-indigo-500" />Servicios externos / Proveedores
-            </h3>
-            <button onClick={() => updateServicios({ proveedores: [...report.servicios.proveedores, { provider: '', task: '' }] })}
-              className={`${buttonCls} bg-indigo-50 text-indigo-700 hover:bg-indigo-100`}>
-              <Plus className="w-4 h-4" />Agregar
-            </button>
-          </div>
-          {report.servicios.proveedores.length === 0 && <EmptyHint>Sin tareas de proveedores.</EmptyHint>}
-          <div className="space-y-2">
-            {report.servicios.proveedores.map((p, i) => (
-              <div key={i} className="grid grid-cols-12 gap-2">
-                <input className={`${inputCls} col-span-3`} placeholder="Proveedor" value={p.provider}
-                  onChange={e => updateServicios({ proveedores: report.servicios.proveedores.map((x, j) => j === i ? { ...x, provider: e.target.value } : x) })} />
-                <input className={`${inputCls} col-span-8`} placeholder="Tarea realizada" value={p.task}
-                  onChange={e => updateServicios({ proveedores: report.servicios.proveedores.map((x, j) => j === i ? { ...x, task: e.target.value } : x) })} />
-                <button onClick={() => updateServicios({ proveedores: report.servicios.proveedores.filter((_, j) => j !== i) })}
-                  className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
       </Card>
 
-      {/* COMENTARIOS */}
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
-          <SectionTitle icon={FileText} accent="amber">Comentarios</SectionTitle>
-          <button onClick={() => updateList('comments', l => [...l, { text: '', priority: 'Normal' }])}
-            className={`${buttonCls} bg-amber-50 text-amber-700 hover:bg-amber-100`}>
-            <Plus className="w-4 h-4" />Agregar comentario
+          <SectionTitle icon={Wrench} accent="orange">Mantenimiento Correctivo</SectionTitle>
+          <button onClick={() => updateList('corrective', l => [{ ot: '', equipoCodigo: '', task: '', technicians: [], state: 'Sin Iniciar', createdInShift: `${report.date}-${report.shift}`, timeline: [] }, ...l])}
+            className={`${buttonCls} bg-orange-50 text-orange-700 hover:bg-orange-100`}>
+            <Plus className="w-4 h-4" />Agregar OT
           </button>
         </div>
-        {report.comments.length === 0 && <EmptyHint>Sin comentarios.</EmptyHint>}
-        <div className="space-y-2">
-          {report.comments.map((c, i) => (
-            <div key={i} className={`grid grid-cols-12 gap-2 items-start p-2 rounded-lg ${c.priority === 'Urgente' ? 'bg-red-50 border border-red-200' : ''}`}>
-              <textarea rows={2} className={`${inputCls} col-span-9 ${c.priority === 'Urgente' ? 'border-red-300 focus:ring-red-300' : ''}`}
-                placeholder="Comentario…" value={c.text}
-                onChange={e => updateList('comments', l => l.map((x, j) => j === i ? { ...x, text: e.target.value } : x))} />
-              <select className={`${inputCls} col-span-2 font-semibold ${c.priority === 'Urgente' ? 'text-red-600 border-red-300' : 'text-slate-600'}`}
-                value={c.priority}
-                onChange={e => updateList('comments', l => l.map((x, j) => j === i ? { ...x, priority: e.target.value } : x))}>
-                {PRIORIDADES.map(p => <option key={p}>{p}</option>)}
-              </select>
-              <button onClick={() => updateList('comments', l => l.filter((_, j) => j !== i))}
-                className="col-span-1 inline-flex items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-2 transition self-center">
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ))}
+
+        {/* V2.5 — Banner permanente sobre OTs heredadas */}
+        <div className="mb-4 flex items-start gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="text-[13px] text-red-700 leading-snug">
+            Para las OTs de turnos previos que aún no están cerradas, actualizá el "Estado de avance" sólo si hay novedades.
+          </div>
         </div>
+
+        {(() => {
+          // PR-2 (v3.20) — Partición turno / heredadas para las 2 columnas (solo desktop).
+          // "Del turno": OT creada en este turno, o heredada con novedad este turno
+          // (avance de timeline cargado, o cambio de estado). Reactiva a report.corrective.
+          const currentShiftKey = `${report.date}-${report.shift}`;
+          const esDelTurno = (c) => {
+            if (c.createdInShift === currentShiftKey) return true;
+            const tuvoAvance = (c.timeline || []).some(e => e.shiftKey === currentShiftKey);
+            if (tuvoAvance) return true;
+            const prev = c.ot ? previousStateMap.get(c.ot) : null;
+            if (prev != null && prev !== c.state) return true;
+            return false;
+          };
+          const items = report.corrective.map((c, i) => ({ c, i }));
+          if (report.corrective.length === 0) {
+            return <EmptyHint>Sin órdenes de trabajo correctivas.</EmptyHint>;
+          }
+          if (!isDesktop) {
+            return <div className="space-y-3">{items.map(({ c, i }) => renderOTCard(c, i))}</div>;
+          }
+          const colTurno = items.filter(({ c }) => esDelTurno(c));
+          const colHeredadas = items.filter(({ c }) => !esDelTurno(c));
+          const colHeader = (txt, n) => (
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2 pb-1 border-b border-slate-200">
+              {txt} ({n})
+            </div>
+          );
+          return (
+            <div className="grid grid-cols-2 gap-4 items-start">
+              <div>
+                {colHeader('Correctivos del turno', colTurno.length)}
+                {colTurno.length === 0
+                  ? <EmptyHint>Sin OTs cargadas en este turno.</EmptyHint>
+                  : <div className="space-y-3">{colTurno.map(({ c, i }) => renderOTCard(c, i))}</div>}
+              </div>
+              <div>
+                {colHeader('Correctivos heredados', colHeredadas.length)}
+                {colHeredadas.length === 0
+                  ? <EmptyHint>Sin OTs heredadas pendientes.</EmptyHint>
+                  : <div className="space-y-3">{colHeredadas.map(({ c, i }) => renderOTCard(c, i))}</div>}
+              </div>
+            </div>
+          );
+        })()}
       </Card>
 
-      {/* MANTENIMIENTO PREVENTIVO — V2.1: bajado al final del formulario.
-          V3.3 (BACKLOG #18): bloque de carga detallada oculto a no-admin.
-          El array `preventive` no se usa en ninguna vista (todo lo visible sale
-          de `preventivosResumen`). Se mantiene en el código y visible en admin
-          por si se decide revertir. No tocar `preventivosResumen` ni el export Excel. */}
       {adminMode && (
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
