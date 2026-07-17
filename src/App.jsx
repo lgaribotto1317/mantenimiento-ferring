@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.20';
+const APP_VERSION = 'v3.21';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -137,7 +137,6 @@ const RESPONSABLES = [
 
 const TECNICOS = [
   { id: 1, name: 'OLIVARES, Victor' },
-  { id: 22, name: 'BAGGIO, Christian' },
   { id: 2, name: 'BARRIOS, Martin' },
   { id: 3, name: 'TERAN, Cesar' },
   { id: 4, name: 'VILLASANTE, Eduardo' },
@@ -3737,8 +3736,6 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
     .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
   const realizadosNum = Number(report.preventivosResumen?.realizados) || 0;
   const validacionCruzadaOK = realizadosNum === 0 || sumaPorTecnico === realizadosNum;
-
-
   // PR-2 (v3.20) — Tarjeta de OT correctiva extraída a función para renderarla
   // en 2 columnas (Del turno | Heredadas) preservando el índice original i de
   // report.corrective (updateCorrectiveItem, otErrorIndices, timelineDraft,
@@ -4793,9 +4790,20 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
     };
   }, [correctiveActual, currentShiftKey]);
 
-  // #36 (v3.18) — columnas en paralelo: todas las Realizadas | todas las Pendientes
+  // #36 (v3.18) — columna de Realizadas: junta las del turno + las heredadas cerradas acá.
+  // (v3.21 — la contraparte `pendientes` se eliminó: ahora se muestran separadas, ver abajo.)
   const realizadas = [...correctivePartitions.realizadosTurno, ...correctivePartitions.realizadosHeredados];
-  const pendientes = [...correctivePartitions.pendientesTurno, ...correctivePartitions.pendientesHeredados];
+
+  // v3.21 — Contadores separados: pendientes DEL TURNO vs. HEREDADAS (y estas
+  // últimas desagregadas por estado). El criterio turno/heredada es el mismo que
+  // usa correctivePartitions: `createdInShift === currentShiftKey` (OT creada en
+  // este turno). Una heredada cerrada en este turno cuenta como Realizada, no acá.
+  // ESTADOS_OT solo tiene 3 valores, así que toda pendiente heredada cae en
+  // "En Curso" o "Sin Iniciar": las dos cajas siempre suman el total de heredadas.
+  const pendientesTurno = correctivePartitions.pendientesTurno;
+  const pendientesHeredadas = correctivePartitions.pendientesHeredados;
+  const heredadasEnCurso = pendientesHeredadas.filter(c => c.state === 'En Curso');
+  const heredadasSinIniciar = pendientesHeredadas.filter(c => c.state === 'Sin Iniciar');
 
   // #36 (v3.18) — separar comentarios urgentes (banner arriba) de normales (lista abajo)
   const urgentComments = (report.comments || []).filter(c => c.priority === 'Urgente' && (c.text || '').trim());
@@ -5105,28 +5113,28 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         {(() => {
           const correctivosCard = (
             <Card className="p-3">
+              {/* v3.21 — Sin sumatoria en el título: el total mezclaba OTs del turno con
+                  heredadas y se leía como "carga del turno", que no es. */}
               <h3 className="text-sky-600 font-bold text-sm mb-2 inline-flex items-center gap-2">
-                <Wrench className="w-4 h-4" />Correctivos del turno (<span className="num">{correctiveActual.length}</span>)
+                <Wrench className="w-4 h-4" />Correctivos del turno
               </h3>
-
-              {/* Contadores Realizadas / Pendientes */}
-              <div className="flex gap-2 mb-3">
-                <div className="flex-1 bg-emerald-50 rounded-lg p-2 text-center">
-                  <div className="text-xl font-bold num text-emerald-700">{realizadas.length}</div>
-                  <div className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Realizadas</div>
-                </div>
-                <div className="flex-1 bg-amber-50 rounded-lg p-2 text-center">
-                  <div className="text-xl font-bold num text-amber-700">{pendientes.length}</div>
-                  <div className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold">Pendientes</div>
-                </div>
-              </div>
 
               {correctiveActual.length === 0 ? (
                 <EmptyHint>Sin correctivos en este turno.</EmptyHint>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2">
-                  {/* Columna izquierda: todas las Realizadas (con su "qué se hizo") */}
+                // v3.21 — Dos columnas simétricas. Cada una: su(s) contador(es) arriba
+                // + su detalle de OTs debajo.
+                //   Izquierda: Realizadas (contador) + lista de realizadas (con "qué se hizo").
+                //   Derecha:   Pendientes del turno (contador) + Heredadas en curso / sin iniciar
+                //              (solo números, slate) + lista de pendientes del turno (con estado).
+                //   Heredadas: solo número, sin detalle de OTs (decisión de diseño).
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-3 items-start">
+                  {/* COLUMNA IZQUIERDA — REALIZADAS */}
                   <div>
+                    <div className="bg-emerald-50 rounded-lg p-2 text-center mb-3">
+                      <div className="text-xl font-bold num text-emerald-700">{realizadas.length}</div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Realizadas</div>
+                    </div>
                     <CorrectiveSubsection
                       title="Realizadas"
                       count={realizadas.length}
@@ -5138,12 +5146,30 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                       onItemClick={adminMode ? (c) => onEditFromDashboard(report, `ot:${c.ot || ""}`) : undefined}
                     />
                   </div>
-                  {/* Columna derecha: todas las Pendientes (solo descripción, sin línea de avance) */}
+
+                  {/* COLUMNA DERECHA — PENDIENTES DEL TURNO + HEREDADAS */}
                   <div>
+                    {/* Contador ancho completo: Pendientes del turno */}
+                    <div className="bg-amber-50 rounded-lg p-2 text-center mb-2">
+                      <div className="text-xl font-bold num text-amber-700">{pendientesTurno.length}</div>
+                      <div className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold">Pendientes del turno</div>
+                    </div>
+                    {/* Dos cajas de heredadas (solo número, slate) */}
+                    <div className="flex gap-2 mb-3">
+                      <div className="flex-1 bg-slate-100 rounded-lg p-2 text-center">
+                        <div className="text-xl font-bold num text-slate-700">{heredadasEnCurso.length}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Heredadas en curso</div>
+                      </div>
+                      <div className="flex-1 bg-slate-100 rounded-lg p-2 text-center">
+                        <div className="text-xl font-bold num text-slate-700">{heredadasSinIniciar.length}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Heredadas sin iniciar</div>
+                      </div>
+                    </div>
+                    {/* Detalle: solo las Pendientes del turno (heredadas quedan solo como número) */}
                     <CorrectiveSubsection
-                      title="Pendientes"
-                      count={pendientes.length}
-                      items={pendientes}
+                      title="Pendientes del turno"
+                      count={pendientesTurno.length}
+                      items={pendientesTurno}
                       showStateBadge={true}
                       showAvanceMark={false}
                       hideAdvance={true}
