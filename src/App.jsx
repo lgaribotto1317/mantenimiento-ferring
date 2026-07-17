@@ -5280,45 +5280,52 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
             </Card>
           );
 
+          const comentariosCard = normalComments.length > 0 ? (
+            <Card className="p-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
+                <FileText className="w-3 h-3" />Comentarios
+              </div>
+              <div className="space-y-1">
+                {normalComments.map((c, i) => (
+                  <div key={i} className="text-[11px] text-slate-700 bg-slate-50 rounded px-2 py-1 leading-snug">
+                    {c.text}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ) : null;
+
           if (isMobile) {
+            // Móvil (viewport < 768px): intacto respecto de PR-1 —
+            // Servicios → Proveedores → Correctivos → Preventivos.
+            // Comentarios normales quedan al final (fuera de este bloque, ver abajo).
             return (
               <>
                 {serviciosCard}
                 {proveedoresCard}
                 {correctivosCard}
                 {preventivosCard}
+                {comentariosCard}
               </>
             );
           }
 
+          // v3.21 — Desktop: primero el contexto del turno (Preventivos · Servicios ·
+          // Proveedores + Comentarios), y ABAJO de todo los Correctivos (que es la
+          // sección más alta). Antes Correctivos iba arriba.
           return (
             <>
-              {correctivosCard}
-              {/* FILA INFERIOR — Preventivos · Servicios · Proveedores (3 columnas) */}
+              {/* FILA SUPERIOR — Preventivos · Servicios · Proveedores (3 columnas) */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                 {preventivosCard}
                 {serviciosCard}
                 {proveedoresCard}
               </div>
+              {comentariosCard}
+              {correctivosCard}
             </>
           );
         })()}
-
-        {/* #36 — Comentarios NO urgentes en lista compacta al final */}
-        {normalComments.length > 0 && (
-          <Card className="p-3">
-            <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5 inline-flex items-center gap-1">
-              <FileText className="w-3 h-3" />Comentarios
-            </div>
-            <div className="space-y-1">
-              {normalComments.map((c, i) => (
-                <div key={i} className="text-[11px] text-slate-700 bg-slate-50 rounded px-2 py-1 leading-snug">
-                  {c.text}
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
 
       </div>
     </div>
