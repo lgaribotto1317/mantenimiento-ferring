@@ -137,6 +137,7 @@ const RESPONSABLES = [
 
 const TECNICOS = [
   { id: 1, name: 'OLIVARES, Victor' },
+  { id: 22, name: 'BAGGIO, Christian' },
   { id: 2, name: 'BARRIOS, Martin' },
   { id: 3, name: 'TERAN, Cesar' },
   { id: 4, name: 'VILLASANTE, Eduardo' },
