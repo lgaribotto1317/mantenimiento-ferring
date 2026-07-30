@@ -5,7 +5,7 @@ import {
   HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
   CalendarDays, Clock, Image as ImageIcon, FileDown,
-  Lock, LogOut, Edit3, Shield, RotateCcw
+  Lock, LogOut, Edit3, Shield, RotateCcw, Inbox, Ban
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.22';
+const APP_VERSION = 'v3.23';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -125,6 +125,12 @@ const lastRealAdvance = (timeline) => {
 // acceso real (el password queda visible en GitHub).
 // ═══════════════════════════════════════════════════════════════════
 const ADMIN_PASSWORD = 'FerringBiomas2026';
+
+// BACKLOG #42 (Fase 1) — Password del rol PLANIFICADOR (pool de OTs).
+// MISMO nivel que ADMIN_PASSWORD: está en el repo, NO es control de acceso real,
+// es una barrera anti-clicks accidentales. Deliberadamente SEPARADA de la de admin:
+// el planificador no debe pasar por una pantalla que puede borrar reportes.
+const POOL_PASSWORD = 'Planificador2026';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -321,6 +327,18 @@ const formatDateLong = (isoDate) => {
 const todayLocalISO = () => {
   const t = new Date();
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
+// BACKLOG #42 (Fase 1) — Turno sugerido segun la hora local, con los horarios de
+// corte acordados: Noche 23:00-06:00 / Manana 06:00-15:00 / Tarde 15:00-23:00.
+// Es solo un DEFAULT editable del alta al pool: el turno_origen lo elige el
+// planificador a mano, porque la OT puede haberse emitido en otro momento.
+// NO se usa en el flujo de reportes; ahi la fecha/turno siguen viniendo del form.
+const currentShiftFromClock = () => {
+  const h = new Date().getHours();
+  if (h >= 23 || h < 6) return 'Noche';
+  if (h < 15) return 'Mañana';
+  return 'Tarde';
 };
 
 // #11 (v3.15) — true si la fecha es POSTERIOR a hoy (calendario local). Complemento de
@@ -657,6 +675,69 @@ const storage = {
     if (!res.ok) throw new Error(`Supabase app_config: ${res.status} ${await res.text()}`);
     const rows = await res.json();
     return rows.length ? rows[0].value : null;
+  },
+
+  // ─────────────────────────────────────────────────────────────────
+  // BACKLOG #42 (Fase 1) — POOL DE OTs (tabla `ordenes_pool`)
+  // ─────────────────────────────────────────────────────────────────
+  // Arquitectura (i), decidida el 2026-07-30: `ordenes_pool` guarda SOLO las
+  // altas del planificador. NO se importan las OTs que entran por los reportes.
+  // El denominador completo se deriva al vuelo (pool ∪ OTs de `reportes`), asi
+  // que no hay sincronizacion posible de romper ni duplicados que reconciliar.
+  // NO hay fallback a localStorage a proposito: el pool es inherentemente
+  // compartido entre personas y dispositivos; un pool per-device no significa nada.
+  async listPool(limit = 200) {
+    if (!supabaseConfigured) return [];
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/ordenes_pool?select=*&order=created_at.desc&limit=${limit}`,
+      { headers: sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase pool: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  // Alta. El unique parcial `ordenes_pool_ot_activa_uniq` (ot WHERE anulada_at IS NULL)
+  // rebota un numero ya activo con 409/23505; se traduce a un error con code
+  // 'DUPLICADA' para que la UI muestre un mensaje util en vez del texto de Postgres.
+  async insertPool(row) {
+    if (!supabaseConfigured) throw new Error('El pool requiere Supabase configurado');
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/ordenes_pool`,
+      {
+        method: 'POST',
+        headers: { ...sbHeaders(), Prefer: 'return=representation' },
+        body: JSON.stringify(row)
+      }
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      if (res.status === 409 || txt.includes('ordenes_pool_ot_activa_uniq') || txt.includes('23505')) {
+        const e = new Error('DUPLICADA');
+        e.code = 'DUPLICADA';
+        throw e;
+      }
+      throw new Error(`Supabase pool: ${res.status} ${txt}`);
+    }
+    const rows = await res.json();
+    return rows[0];
+  },
+
+  // Anulacion = soft-delete con motivo obligatorio. NUNCA DELETE: el CHECK
+  // `ordenes_pool_anulacion` de la tabla ya impide anular sin motivo, pero se
+  // valida tambien en la UI para dar el mensaje antes del round-trip.
+  async anularPool(id, motivo) {
+    if (!supabaseConfigured) throw new Error('El pool requiere Supabase configurado');
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/ordenes_pool?id=eq.${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { ...sbHeaders(), Prefer: 'return=representation' },
+        body: JSON.stringify({ anulada_at: new Date().toISOString(), anulada_motivo: motivo })
+      }
+    );
+    if (!res.ok) throw new Error(`Supabase pool: ${res.status} ${await res.text()}`);
+    const rows = await res.json();
+    return rows[0];
   }
 };
 
@@ -1036,6 +1117,14 @@ export default function App() {
   // a reportes posteriores. null = no hay snapshot (reporte nuevo o ya limpio).
   const [originalReport, setOriginalReport] = useState(null);
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+
+  // BACKLOG #42 (Fase 1) — Rol planificador y pool de OTs.
+  // poolMode es independiente de adminMode: son dos roles distintos y no se implican.
+  const [poolMode, setPoolMode] = useState(false);
+  const [poolLoginOpen, setPoolLoginOpen] = useState(false);
+  const [pool, setPool] = useState([]);
+  const [poolLoading, setPoolLoading] = useState(false);
+  const [poolError, setPoolError] = useState('');
   // V2.6 — Confirmación de eliminación de reporte completo
   const [deleteReportConfirm, setDeleteReportConfirm] = useState(null); // null | { date, shift, source }
 
@@ -1977,6 +2066,50 @@ export default function App() {
   const handleCancelEmpty = () => setEmptyConfirm(null);
 
   // V2.6 — Handlers de modo administrador
+  // BACKLOG #42 (Fase 1) — carga del pool. Se dispara al entrar como planificador.
+  const loadPool = useCallback(async () => {
+    if (!supabaseConfigured) { setPool([]); return; }
+    setPoolLoading(true);
+    setPoolError('');
+    try {
+      setPool(await storage.listPool());
+    } catch (e) {
+      setPoolError(e.message || 'No se pudo cargar el pool');
+    } finally {
+      setPoolLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (poolMode) loadPool(); }, [poolMode, loadPool]);
+
+  const handlePoolLogin = (passwordTry) => {
+    if (passwordTry === POOL_PASSWORD) {
+      setPoolMode(true);
+      setPoolLoginOpen(false);
+      return true;
+    }
+    return false;
+  };
+
+  const handlePoolLogout = () => {
+    setPoolMode(false);
+    setPool([]);
+    // Si estaba parado en la pestaña del pool, vuelve a Carga: la tab deja de existir.
+    setTab(t => (t === 'pool' ? 'form' : t));
+  };
+
+  const handlePoolAdd = async (row) => {
+    const created = await storage.insertPool(row);
+    setPool(prev => [created, ...prev]);
+    return created;
+  };
+
+  const handlePoolAnular = async (id, motivo) => {
+    const updated = await storage.anularPool(id, motivo);
+    setPool(prev => prev.map(r => (r.id === id ? updated : r)));
+    return updated;
+  };
+
   const handleAdminLogin = (passwordTry) => {
     if (passwordTry === ADMIN_PASSWORD) {
       setAdminMode(true);
@@ -2482,6 +2615,24 @@ export default function App() {
                   <Lock className="w-3.5 h-3.5" />Admin
                 </button>
               )}
+              {/* #42 (Fase 1) — Rol planificador, separado de admin */}
+              {poolMode ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-violet-500/30 text-violet-100 rounded ring-1 ring-violet-400/50 font-semibold">
+                    <Inbox className="w-3.5 h-3.5" /><span className="md:hidden">PLANIF</span><span className="hidden md:inline">PLANIFICADOR</span>
+                  </span>
+                  <button onClick={handlePoolLogout}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded transition text-[10px]"
+                    title="Salir del rol planificador">
+                    <LogOut className="w-3 h-3" /><span className="hidden md:inline">Salir</span>
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => setPoolLoginOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-slate-300 rounded ring-1 ring-white/10 transition">
+                  <Inbox className="w-3.5 h-3.5" />Planificador
+                </button>
+              )}
             </div>
             <div className="text-right">
               <div className="num text-sm font-semibold text-white capitalize">
@@ -2527,7 +2678,9 @@ export default function App() {
               { id: 'form', label: 'Cargar Reporte', icon: ClipboardList },
               { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
               { id: 'stats', label: 'Estadísticas', icon: TrendingUp },
-              { id: 'history', label: 'Histórico & Excel', icon: FileSpreadsheet }
+              { id: 'history', label: 'Histórico & Excel', icon: FileSpreadsheet },
+              // #42 (Fase 1) — la pestaña del pool solo existe con el rol activo
+              ...(poolMode ? [{ id: 'pool', label: 'Pool de OTs', icon: Inbox }] : [])
             ].map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
                 className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition whitespace-nowrap ${tab === t.id ? 'border-sky-400 text-white' : 'border-transparent text-slate-300 hover:text-white'}`}>
@@ -2588,6 +2741,14 @@ export default function App() {
           adminMode={adminMode}
           onDeleteReport={(date, shift) => requestDeleteReport(date, shift, 'history')}
         />}
+        {!loading && tab === 'pool' && poolMode && <PoolView
+          pool={pool}
+          poolLoading={poolLoading}
+          poolError={poolError}
+          onAdd={handlePoolAdd}
+          onAnular={handlePoolAnular}
+          onRefresh={loadPool}
+        />}
       </main>
 
       {/* V2.5 — Modal de confirmación cuando se quiere guardar con entradas vacías */}
@@ -2605,6 +2766,14 @@ export default function App() {
         <AdminLoginDialog
           onConfirm={handleAdminLogin}
           onCancel={() => setAdminLoginOpen(false)}
+        />
+      )}
+
+      {/* #42 (Fase 1) — Modal de login del rol planificador */}
+      {poolLoginOpen && (
+        <PoolLoginDialog
+          onConfirm={handlePoolLogin}
+          onCancel={() => setPoolLoginOpen(false)}
         />
       )}
 
@@ -2696,6 +2865,392 @@ export default function App() {
 // V2.6 — MODAL DE LOGIN ADMIN
 // Pide el password de administrador antes de activar el modo admin.
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// #42 (Fase 1) — POOL DE OTs
+// ═══════════════════════════════════════════════════════════════════
+// Registro paralelo de las solicitudes de trabajo correctivas. Existe porque
+// las OTs nacen FUERA de la app (papel preimpreso emitido por los sectores) y
+// la app solo conoce las que alguien cargó en el reporte de un turno: las que
+// nadie carga no existen en ningún lado del sistema. El pool es el DENOMINADOR.
+//
+// Arquitectura (i): el pool guarda SOLO altas del planificador. Las OTs que
+// entran por los reportes NO se importan acá; el universo se deriva al vuelo
+// como pool ∪ OTs de `reportes`. Por eso no hay duplicados posibles: si el
+// planificador carga una OT que ya está en un reporte, la unión la dedupea por
+// clave canónica y no pasa nada. La Fase 1 no necesita avisar nada al respecto.
+//
+// Clase A = la ejecuta Mantenimiento. Clase B = la ejecuta otra área; ocupa el
+// número y nada más. El ejecutor es INDEPENDIENTE del prefijo de sector.
+function PoolLoginDialog({ onConfirm, onCancel }) {
+  const [pwd, setPwd] = useState('');
+  const [error, setError] = useState('');
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    inputRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const submit = () => {
+    const ok = onConfirm(pwd);
+    if (!ok) setError('Password incorrecto');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-violet-600 flex items-center justify-center flex-shrink-0">
+            <Inbox className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">Rol planificador</h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Habilita el registro de solicitudes de trabajo en el pool de OTs.
+            </p>
+          </div>
+        </div>
+        <input ref={inputRef} type="password" value={pwd}
+          onChange={e => { setPwd(e.target.value); setError(''); }}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+          placeholder="Password"
+          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500 transition" />
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={submit}
+            className="px-4 py-2 text-sm font-semibold text-white bg-violet-600 hover:bg-violet-500 rounded-lg transition">
+            Activar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Anulación con motivo obligatorio. Es el ÚNICO camino de corrección: el
+// planificador no edita ni cierra OTs. Soft-delete, nunca DELETE — el CHECK
+// `ordenes_pool_anulacion` de la tabla también lo exige del lado de la base.
+function PoolAnularDialog({ row, onConfirm, onCancel }) {
+  const [motivo, setMotivo] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    inputRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const submit = async () => {
+    const m = motivo.trim();
+    if (!m) { setError('El motivo es obligatorio'); return; }
+    setBusy(true);
+    try { await onConfirm(m); }
+    catch (e) { setError(e.message || 'No se pudo anular'); setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center flex-shrink-0">
+            <Ban className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">
+              Anular <span className="num">{row.ot}</span>
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              La OT queda registrada como anulada, con el motivo. No se borra.
+            </p>
+          </div>
+        </div>
+        <input ref={inputRef} type="text" value={motivo}
+          onChange={e => { setMotivo(e.target.value); setError(''); }}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+          placeholder="Motivo de la anulación"
+          className={inputCls} />
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel} disabled={busy}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition disabled:opacity-50">
+            Cancelar
+          </button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg transition disabled:opacity-50">
+            {busy ? 'Anulando…' : 'Anular'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TURNOS_POOL = ['Mañana', 'Tarde', 'Noche'];
+
+function PoolView({ pool, poolLoading, poolError, onAdd, onAnular, onRefresh }) {
+  const [ot, setOt] = useState('');
+  const [clase, setClase] = useState('A');
+  const [ejecutor, setEjecutor] = useState('');
+  const [fecha, setFecha] = useState(todayLocalISO());
+  const [turno, setTurno] = useState(currentShiftFromClock());
+  const [descripcion, setDescripcion] = useState('');
+  const [cargadaPor, setCargadaPor] = useState('');
+  const [msg, setMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [filtroSector, setFiltroSector] = useState('');
+  const [verAnuladas, setVerAnuladas] = useState(false);
+  const [anularTarget, setAnularTarget] = useState(null);
+
+  const activas = pool.filter(r => !r.anulada_at);
+  const listado = pool
+    .filter(r => (verAnuladas ? true : !r.anulada_at))
+    .filter(r => (filtroSector ? r.sector === filtroSector : true));
+
+  const submit = async () => {
+    // canonOT nunca adivina el sector: si no matchea el catálogo devuelve ''.
+    const canon = canonOT(ot);
+    if (!canon || !isValidOT(canon)) { setMsg('Error: elegí sector y número de OT.'); return; }
+    if (!fecha) { setMsg('Error: falta la fecha.'); return; }
+    if (isFutureDate(fecha)) { setMsg('Error: no se puede registrar una OT con fecha futura.'); return; }
+    if (!turno) { setMsg('Error: falta el turno de origen.'); return; }
+
+    const [sec, num] = canon.split('-');
+    setSaving(true);
+    setMsg('');
+    try {
+      await onAdd({
+        ot: canon,
+        sector: sec,
+        correlativo: parseInt(num, 10),
+        clase,
+        // El ejecutor solo aplica a Clase B; en Clase A ejecuta Mantenimiento por definición.
+        ejecutor: clase === 'B' ? (ejecutor.trim() || null) : null,
+        fecha,
+        turno_origen: turno,
+        descripcion: descripcion.trim() || null,
+        cargada_por: cargadaPor || null
+      });
+      // Reset del N° de OT y de los campos propios de esa OT. Fecha, turno y
+      // "cargada por" se conservan (son de la sesión de trabajo). El SECTOR se
+      // resetea a propósito: un sector pegajoso puede guardar una OT bien
+      // formada pero mal atribuida, sin ninguna señal. Ver decisión 35.
+      setOt('');
+      setDescripcion('');
+      setEjecutor('');
+      setMsg(`✓ ${canon} registrada en el pool`);
+    } catch (e) {
+      setMsg(e.code === 'DUPLICADA'
+        ? `Error: ${canon} ya está activa en el pool`
+        : `Error: ${e.message || 'no se pudo registrar'}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doAnular = async (motivo) => {
+    await onAnular(anularTarget.id, motivo);
+    setAnularTarget(null);
+    setMsg('✓ OT anulada');
+  };
+
+  if (!storage.configured) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-amber-800">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          El pool de OTs requiere Supabase configurado. En modo local no está disponible.
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Card className="p-5">
+        <SectionTitle icon={Inbox} accent="violet">Registrar OT en el pool</SectionTitle>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <Field label="N° de OT">
+            <OTNumberInput value={ot} onChange={setOt} />
+          </Field>
+
+          <Field label="Clase">
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setClase('A')}
+                className={`${buttonCls} flex-1 justify-center ${clase === 'A' ? 'bg-sky-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                title="La ejecuta Mantenimiento — entra al carry-over y a estadísticas">
+                A · Mantenimiento
+              </button>
+              <button type="button" onClick={() => setClase('B')}
+                className={`${buttonCls} flex-1 justify-center ${clase === 'B' ? 'bg-slate-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                title="La ejecuta otra área — solo ocupa el número">
+                B · Otra área
+              </button>
+            </div>
+          </Field>
+
+          <Field label="Fecha de emisión">
+            <input type="date" className={`${inputCls} num`} value={fecha}
+              max={todayLocalISO()} onChange={e => setFecha(e.target.value)} />
+          </Field>
+
+          <Field label="Turno de origen">
+            <select className={inputCls} value={turno} onChange={e => setTurno(e.target.value)}>
+              {TURNOS_POOL.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </Field>
+
+          {clase === 'B' && (
+            <Field label="Ejecuta (área)">
+              <input type="text" className={inputCls} value={ejecutor}
+                onChange={e => setEjecutor(e.target.value)}
+                placeholder="Ej: Facilities" />
+            </Field>
+          )}
+
+          <Field label="Descripción (opcional)" className={clase === 'B' ? 'lg:col-span-2' : 'lg:col-span-3'}>
+            <input type="text" className={inputCls} value={descripcion}
+              onChange={e => setDescripcion(e.target.value)}
+              placeholder="Lo que dice el papel" />
+          </Field>
+
+          <Field label="Cargada por">
+            <select className={inputCls} value={cargadaPor} onChange={e => setCargadaPor(e.target.value)}>
+              <option value="">—</option>
+              {RESPONSABLES.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        <div className="flex items-center gap-3 mt-4">
+          <button onClick={submit} disabled={saving}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-500 text-white rounded-xl font-bold text-sm transition disabled:opacity-50 shadow-md">
+            <Plus className="w-4 h-4" />{saving ? 'Registrando…' : 'Registrar OT'}
+          </button>
+          {msg && (
+            <span className={`text-xs font-medium ${msg.startsWith('Error') ? 'text-red-600' : 'text-emerald-600'}`}>
+              {msg}
+            </span>
+          )}
+        </div>
+
+        <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
+          El pool registra la solicitud, no el trabajo. La OT se sigue cargando y cerrando
+          en el reporte del turno como siempre; si ya está en un reporte, registrarla acá no la duplica.
+        </p>
+      </Card>
+
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <SectionTitle icon={ListChecks} accent="slate">
+            OTs en el pool
+          </SectionTitle>
+          <div className="flex items-center gap-2">
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg num"
+              value={filtroSector} onChange={e => setFiltroSector(e.target.value)}>
+              <option value="">Todos los sectores</option>
+              {SECTORES_OT.map(sx => <option key={sx.code} value={sx.code}>{sx.code}</option>)}
+            </select>
+            <label className="flex items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" checked={verAnuladas} onChange={e => setVerAnuladas(e.target.checked)} />
+              Ver anuladas
+            </label>
+            <button onClick={onRefresh} className="p-1.5 hover:bg-slate-100 rounded transition" title="Refrescar">
+              <RefreshCw className="w-4 h-4 text-slate-500" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-4 mb-4 text-xs text-slate-600">
+          <span><strong className="num text-slate-800">{activas.length}</strong> activas</span>
+          <span><strong className="num text-slate-800">{activas.filter(r => r.clase === 'A').length}</strong> Clase A</span>
+          <span><strong className="num text-slate-800">{activas.filter(r => r.clase === 'B').length}</strong> Clase B</span>
+          <span><strong className="num text-slate-800">{pool.length - activas.length}</strong> anuladas</span>
+        </div>
+
+        {poolError && (
+          <div className="mb-3 text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" />{poolError}
+          </div>
+        )}
+
+        {poolLoading ? (
+          <div className="text-center text-slate-500 py-10 text-sm">Cargando pool…</div>
+        ) : listado.length === 0 ? (
+          <EmptyHint>No hay OTs registradas en el pool con este filtro.</EmptyHint>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="py-2 pr-3">N° OT</th>
+                  <th className="py-2 pr-3">Clase</th>
+                  <th className="py-2 pr-3">Ejecuta</th>
+                  <th className="py-2 pr-3">Emisión</th>
+                  <th className="py-2 pr-3">Descripción</th>
+                  <th className="py-2 pr-3">Cargada por</th>
+                  <th className="py-2 pr-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {listado.map(r => (
+                  <tr key={r.id} className={`border-b border-slate-100 ${r.anulada_at ? 'opacity-50' : ''}`}>
+                    <td className="py-2 pr-3 num font-semibold text-slate-800">
+                      {r.anulada_at ? <s>{r.ot}</s> : r.ot}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${r.clase === 'A' ? 'bg-sky-100 text-sky-700' : 'bg-slate-200 text-slate-600'}`}>
+                        {r.clase}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-600">{r.clase === 'A' ? 'Mantenimiento' : (r.ejecutor || '—')}</td>
+                    <td className="py-2 pr-3 num text-slate-600 whitespace-nowrap">{r.fecha} · {r.turno_origen}</td>
+                    <td className="py-2 pr-3 text-slate-600 max-w-[280px] truncate" title={r.descripcion || ''}>{r.descripcion || '—'}</td>
+                    <td className="py-2 pr-3 text-slate-500 text-xs">{r.cargada_por || '—'}</td>
+                    <td className="py-2 pr-3 text-right">
+                      {r.anulada_at ? (
+                        <span className="text-[10px] text-amber-700" title={r.anulada_motivo || ''}>
+                          anulada
+                        </span>
+                      ) : (
+                        <button onClick={() => setAnularTarget(r)}
+                          className="p-1 hover:bg-amber-50 rounded transition" title="Anular con motivo">
+                          <Ban className="w-4 h-4 text-amber-600" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {anularTarget && (
+        <PoolAnularDialog
+          row={anularTarget}
+          onConfirm={doAnular}
+          onCancel={() => setAnularTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 function AdminLoginDialog({ onConfirm, onCancel }) {
   const [pwd, setPwd] = useState('');
   const [error, setError] = useState('');
