@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.21';
+const APP_VERSION = 'v3.22';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -200,15 +200,63 @@ const isValidOT = (ot) => {
   return SECTORES_CODES.includes(match[1]);
 };
 
+// v3.22 (#39) — Normalización canónica del N° de OT.
+// Reduce cualquier string a la forma SECTOR-NNNNN, o devuelve '' si no puede
+// identificar el sector contra SECTORES_CODES. NUNCA adivina el sector.
+// Casos que resuelve (todos presentes en el histórico):
+//   'OT-MAN-00677'  → 'MAN-00677'   (prefijo "OT" que trae el papel)
+//   '0T-MAN-00354'  → 'MAN-00354'   (cero en vez de O)
+//   'FOA1 01382'    → 'FOA1-01382'  (separador espacio)
+//   'OT-FO-A1 01413'→ 'FOA1-01413'  (separadores múltiples)
+//   'RO-3255'       → 'RO-03255'    (padding faltante)
+//   'FOA1-01395'    → 'FOA1-01395'  (idempotente sobre lo ya canónico)
+// Casos que NO resuelve (devuelven '' — se conserva el raw, no se inventa):
+//   '02324'  (número pelado, sin sector)
+//   'MAN'    (sector sin número)
+//   'FACILTY'(sector no reconocible)
+const canonOT = (ot) => {
+  if (!ot || typeof ot !== 'string') return '';
+  // Uppercase → saca prefijo "OT"/"0T" inicial → elimina todo separador.
+  const t = ot.trim().toUpperCase()
+    .replace(/^[O0]T[^A-Z0-9]*/, '')
+    .replace(/[^A-Z0-9]/g, '');
+  if (!t) return '';
+  // Match del código de sector más largo primero, para que un código que sea
+  // prefijo de otro no gane por casualidad si el catálogo cambia a futuro.
+  const sector = [...SECTORES_CODES]
+    .sort((a, b) => b.length - a.length)
+    .find(code => t.startsWith(code));
+  if (!sector) return '';
+  const num = t.slice(sector.length);
+  if (!/^\d{1,5}$/.test(num)) return '';
+  return `${sector}-${num.padStart(5, '0')}`;
+};
+
+// Clave de identidad de una OT dentro de un reporte (dedup y unicidad).
+// Usa la forma canónica cuando se puede resolver; si no, cae al string crudo
+// trimmeado (comportamiento previo a v3.22). '' = sin número, no se dedupea.
+const otKey = (ot) => canonOT(ot) || (ot || '').trim();
+
 // Parsea "FOA1-01395" → { sector: 'FOA1', numero: '01395' }
-// IMPORTANTE: NO padea el número. Solo lo devuelve tal cual.
+// IMPORTANTE: en el camino directo NO padea el número. Solo lo devuelve tal cual.
 // El padding se aplica únicamente al perder foco (handleNumeroBlur).
 // Esto permite escribir digito por digito sin que se autocompleten ceros.
 const parseOT = (ot) => {
   if (!ot) return { sector: '', numero: '' };
+  // Camino directo: ya viene estructurado. Es el caso de alguien tipeando
+  // (buildOT produce "MAN-1", "MAN-12"…), así que acá NO se padea.
   const match = ot.trim().match(/^([A-Z0-9]+)-(\d{1,5})$/);
   if (match && SECTORES_CODES.includes(match[1])) {
     return { sector: match[1], numero: match[2] };
+  }
+  // v3.22 (#39) — Camino tolerante: sólo se alcanza cuando el valor NO tiene
+  // forma estructurada, es decir cuando viene de dato ya guardado y sucio.
+  // Acá sí se padea, porque nadie está tipeando. Permite que el input
+  // estructurado edite una OT legacy y que se autocure al primer guardado.
+  const canon = canonOT(ot);
+  if (canon) {
+    const m = canon.match(/^([A-Z0-9]+)-(\d{5})$/);
+    if (m) return { sector: m[1], numero: m[2] };
   }
   return { sector: '', numero: '' };
 };
@@ -396,7 +444,10 @@ const dedupCorrective = (corrective) => {
   const indexByOt = new Map();   // ot# -> índice en `result` donde vive la entrada fusionada
   const result = [];
   list.forEach(c => {
-    const key = (c.ot || '').trim();
+    // v3.22 (#39) — Clave canónica: 'RO-3255' y 'RO-03255' son la MISMA OT.
+    // Antes se comparaba el string crudo, así que las variantes de formato
+    // convivían como entradas distintas (duplicado invisible).
+    const key = otKey(c.ot);
     const entry = { ...c, timeline: c.timeline || [] };
     if (!key) { result.push(entry); return; }   // sin número: no se dedup
     if (!indexByOt.has(key)) {
@@ -858,13 +909,15 @@ const StatePill = ({ state }) => (
 );
 
 // ═══════════════════════════════════════════════════════════════════
-// OT NUMBER INPUT — V2.4
+// OT NUMBER INPUT — V2.4, reformado en v3.22 (#39)
 // Input compuesto: dropdown sector + input numérico de 5 dígitos.
 // Auto-completa con ceros a la izquierda al perder foco.
-// Si la OT viene en formato legacy (sin guión, espacios, etc), muestra
-// el valor raw en modo "legacy" con un indicador visual y un tooltip.
+// v3.22: ya NO existe un modo "legacy" de texto libre. Todas las OTs se editan
+// con el input estructurado, que por construcción no puede producir un número
+// no canónico. Los formatos sucios del histórico se recuperan vía parseOT
+// tolerante; los irrecuperables se muestran al lado como referencia read-only.
 // ═══════════════════════════════════════════════════════════════════
-function OTNumberInput({ value, onChange, isLegacy, hasError, disabled }) {
+function OTNumberInput({ value, onChange, hasError, disabled }) {
   const parsed = parseOT(value);
   const [sector, setSector] = useState(parsed.sector);
   const [numero, setNumero] = useState(parsed.numero);
@@ -877,22 +930,20 @@ function OTNumberInput({ value, onChange, isLegacy, hasError, disabled }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
-  // Si es legacy (formato viejo) mostramos input plano con badge "legacy"
-  if (isLegacy) {
-    return (
-      <div className="flex items-center gap-1">
-        <input
-          className={`${inputCls} num flex-1 ${hasError ? 'border-red-400' : 'border-amber-300 bg-amber-50/30'}`}
-          value={value || ''}
-          onChange={e => onChange(e.target.value)}
-          placeholder="OT legacy"
-          disabled={disabled}
-          title="OT en formato legacy (anterior a V2.4). Para validar al guardar usá el formato XXX-YYYYY"
-        />
-        <span className="text-[9px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-bold" title="Formato legacy">L</span>
-      </div>
-    );
-  }
+  // v3.22 (#39) — Se ELIMINÓ la rama de texto libre para OTs "legacy".
+  // Era un vector de corrupción: una OT heredada con número no canónico recibía
+  // un <input> sin ningún filtro (onChange={e => onChange(e.target.value)}), lo
+  // que la mantenía no canónica para siempre — y por lo tanto en texto libre el
+  // turno siguiente, y el siguiente. Cada turno que la tocaba podía empeorarla.
+  // Ese loop es la causa raíz de los 191 números mal formados del histórico.
+  // Ahora TODAS las OTs se editan con el input estructurado (select de sector +
+  // input de solo dígitos), que no puede producir un valor no canónico.
+  //
+  // Cuando el valor guardado no se puede resolver a un sector conocido
+  // (ej. '02324' pelado, 'FACILTY'), el input estructurado queda vacío y el
+  // string original se muestra al lado como referencia READ-ONLY, para que la
+  // información no se pierda de pantalla y nadie borre un número que no puede leer.
+  const unresolved = !!value && !parsed.sector;
 
   const handleSectorChange = (e) => {
     const newSector = e.target.value;
@@ -916,32 +967,42 @@ function OTNumberInput({ value, onChange, isLegacy, hasError, disabled }) {
   };
 
   return (
-    <div className="flex items-center gap-1">
-      <select
-        className={`px-1.5 py-2 text-xs bg-white border rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/40 transition num font-semibold ${hasError && !sector ? 'border-red-400' : 'border-slate-300'}`}
-        value={sector}
-        onChange={handleSectorChange}
-        disabled={disabled}
-        style={{ width: '70px' }}
-      >
-        <option value="">—</option>
-        {SECTORES_OT.map(s => (
-          <option key={s.code} value={s.code} title={s.label}>{s.code}</option>
-        ))}
-      </select>
-      <span className="text-slate-400 text-sm font-bold">-</span>
-      <input
-        type="text"
-        inputMode="numeric"
-        pattern="[0-9]*"
-        maxLength={5}
-        className={`${inputCls} num flex-1 ${hasError && (numero.length < 5) ? 'border-red-400' : ''}`}
-        value={numero}
-        onChange={handleNumeroChange}
-        onBlur={handleNumeroBlur}
-        placeholder="00000"
-        disabled={disabled}
-      />
+    <div className="flex flex-col gap-1">
+      {/* v3.22 (#39) — Valor original irrecuperable: se muestra como referencia
+          read-only para no perder el dato. No es editable a propósito. */}
+      {unresolved && (
+        <div className="flex items-center gap-1" title={`Formato no reconocido — valor original: ${value}`}>
+          <span className="text-[9px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded font-bold shrink-0">L</span>
+          <span className="text-[10px] text-amber-700 num truncate">{value}</span>
+        </div>
+      )}
+      <div className="flex items-center gap-1">
+        <select
+          className={`px-1.5 py-2 text-xs bg-white border rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/40 transition num font-semibold ${(hasError || unresolved) && !sector ? 'border-red-400' : 'border-slate-300'}`}
+          value={sector}
+          onChange={handleSectorChange}
+          disabled={disabled}
+          style={{ width: '70px' }}
+        >
+          <option value="">—</option>
+          {SECTORES_OT.map(s => (
+            <option key={s.code} value={s.code} title={s.label}>{s.code}</option>
+          ))}
+        </select>
+        <span className="text-slate-400 text-sm font-bold">-</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={5}
+          className={`${inputCls} num flex-1 ${hasError && (numero.length < 5) ? 'border-red-400' : ''}`}
+          value={numero}
+          onChange={handleNumeroChange}
+          onBlur={handleNumeroBlur}
+          placeholder="00000"
+          disabled={disabled}
+        />
+      </div>
     </div>
   );
 }
@@ -1214,9 +1275,11 @@ export default function App() {
     // hydrate sanea esto en LECTURA, pero acá lo frenamos en ESCRITURA para que no
     // se genere el dato corrupto y el usuario corrija en el momento.
     // Solo cuenta OTs con número (las vacías son caso aparte, se ignoran).
+    // v3.22 (#39) — La comparación pasa a ser por clave canónica, así que
+    // 'RO-3255' y 'RO-03255' cuentan como el mismo número (antes escapaban).
     const otCounts = {};
     (r.corrective || []).forEach((c, i) => {
-      const key = (c.ot || '').trim();
+      const key = otKey(c.ot);
       if (!key) return;
       if (!otCounts[key]) otCounts[key] = [];
       otCounts[key].push(i);
@@ -3744,11 +3807,14 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
   const renderOTCard = (c, i) => {
             // V2.5 — Técnico obligatorio en cualquier estado (no solo "Realizada")
             const missingTech = (!c.technicians || c.technicians.length === 0);
-            // V2.4 — Determinar si la OT es nueva (creada en este turno) o legacy
-            // Las nuevas se editan con OTNumberInput estructurado, las legacy con input plano
+            // V2.4 — Determinar si la OT es nueva (creada en este turno).
+            // Solo se usa para el flag de error de formato: la validación de
+            // formato (regla 4) aplica únicamente a OTs creadas en este turno,
+            // las heredadas quedan exentas para no bloquear el turno por dato viejo.
             const currentShiftKey = `${report.date}-${report.shift}`;
             const isNewOT = c.createdInShift === currentShiftKey;
-            const isLegacyFormat = !isValidOT(c.ot) && !isNewOT;
+            // v3.22 (#39) — isLegacyFormat se eliminó junto con la rama de texto
+            // libre de OTNumberInput. Todas las OTs usan el input estructurado.
             const otHasError = isNewOT && !isValidOT(c.ot);
             // v3.16 — OT marcada como error por la validación al intentar guardar
             const hasValidationError = otErrorIndices.has(i);
@@ -3786,7 +3852,6 @@ function FormView({ report, setReport, onSave, saveMsg, setSaveMsg, saving, hist
                     <OTNumberInput
                       value={c.ot}
                       onChange={(newOt) => updateCorrectiveItem(i, { ot: newOt })}
-                      isLegacy={isLegacyFormat}
                       hasError={otHasError}
                     />
                   </Field>
