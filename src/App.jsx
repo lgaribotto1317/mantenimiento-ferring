@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.23';
+const APP_VERSION = 'v3.24';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -2998,8 +2998,6 @@ function PoolAnularDialog({ row, onConfirm, onCancel }) {
   );
 }
 
-const TURNOS_POOL = ['Mañana', 'Tarde', 'Noche'];
-
 function PoolView({ pool, poolLoading, poolError, onAdd, onAnular, onRefresh }) {
   const [ot, setOt] = useState('');
   const [clase, setClase] = useState('A');
@@ -3109,7 +3107,7 @@ function PoolView({ pool, poolLoading, poolError, onAdd, onAnular, onRefresh }) 
 
           <Field label="Turno de origen">
             <select className={inputCls} value={turno} onChange={e => setTurno(e.target.value)}>
-              {TURNOS_POOL.map(t => <option key={t} value={t}>{t}</option>)}
+              {TURNOS.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </Field>
 
@@ -6003,24 +6001,38 @@ function StatsView({ history, adminMode }) {
             </h3>
             <span className="text-[10px] text-slate-500">
               {ultimoDia.turnos.length === 0 ? 'sin datos' :
-                `${ultimoDia.turnos.length} turno${ultimoDia.turnos.length === 1 ? '' : 's'} · ${formatDateShort(ultimoDia.fechaBase)}`}
+                `${ultimoDia.turnos.length} de 3 turnos · ${formatDateShort(ultimoDia.fechaBase)}`}
             </span>
           </div>
           {ultimoDia.turnos.length === 0 ? (
-            <EmptyHint>Sin reportes recientes</EmptyHint>
+            <EmptyHint>
+              {ultimoDia.sinDiaAnterior
+                ? 'Todavía no hay un día cerrado anterior a hoy'
+                : 'Sin reportes recientes'}
+            </EmptyHint>
           ) : (
             <>
-              <div className="text-[11px] text-slate-500 mb-2">
-                {ultimoDia.turnos.length === 1
-                  ? `Turno del día: ${ultimoDia.turnos.map(t => t.shift).join(', ')}`
-                  : `Turnos del día (${ultimoDia.turnos.length}): ${ultimoDia.turnos.map(t => t.shift).join(', ')}`}
-              </div>
+              {/* v3.24 — La completitud se muestra siempre: un día al que le falta
+                  un turno da KPIs que parecen bajos sin que nada lo indique. */}
+              {ultimoDia.turnosFaltantes.length > 0 ? (
+                <div className="text-[11px] text-amber-700 mb-2 inline-flex items-center gap-1.5">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                  Día incompleto — falta {ultimoDia.turnosFaltantes.join(', ')}
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500 mb-2">
+                  Día completo · {ultimoDia.turnos.map(t => t.shift).join(' · ')}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <MiniKPI label="Correctivos generados" value={ultimoDia.correctivosGenerados} color="orange" />
                 <MiniKPI label="Correctivos realizados" value={ultimoDia.correctivosRealizados} color="emerald" />
                 <MiniKPI label="Preventivos asignados" value={ultimoDia.preventivosAsignados} color="sky" />
                 <MiniKPI label="Preventivos realizados" value={ultimoDia.preventivosRealizados} color="emerald" />
               </div>
+              <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                Generados = pedidos ese día. Realizados = cerrados ese día, incluidas heredadas.
+              </p>
             </>
           )}
         </Card>
@@ -6595,52 +6607,62 @@ function computeWeekendStats(history) {
 // Caso típico: el responsable carga el reporte por la mañana, y quiere ver los últimos 3 turnos:
 // Noche(día previo) + Tarde(día previo) + Mañana(día previo).
 function computeLastDayStats(history) {
-  if (history.length === 0) {
-    return { fechaBase: '', turnos: [], correctivosGenerados: 0, correctivosRealizados: 0, preventivosAsignados: 0, preventivosRealizados: 0 };
-  }
+  const vacio = {
+    fechaBase: '', turnos: [], turnosFaltantes: [], sinDiaAnterior: true,
+    correctivosGenerados: 0, correctivosRealizados: 0,
+    preventivosAsignados: 0, preventivosRealizados: 0
+  };
+  if (history.length === 0) return vacio;
 
-  // Encontrar la fecha más reciente con al menos un reporte
-  const fechasOrdenadas = [...new Set(history.map(r => r.date))].sort((a, b) => b.localeCompare(a));
-  if (fechasOrdenadas.length === 0) {
-    return { fechaBase: '', turnos: [], correctivosGenerados: 0, correctivosRealizados: 0, preventivosAsignados: 0, preventivosRealizados: 0 };
-  }
+  // v3.24 — "Último día" = el día CERRADO más reciente, es decir la fecha más
+  // reciente ANTERIOR a hoy que tenga datos. Antes tomaba la fecha más reciente
+  // a secas, y como el turno Noche se etiqueta con la fecha de cierre (arranca
+  // la noche anterior; shiftOrder Noche=0), el Noche de hoy caía en la card y
+  // mostraba un único turno en curso en vez del día completo anterior.
+  // Se ancla al reloj y no a "la segunda fecha con datos" para que, si hoy
+  // todavía no se cargó nada, igual muestre ayer y no anteayer.
+  const hoy = todayLocalISO();
+  const fechaBase = [...new Set(history.map(r => r.date))]
+    .sort((a, b) => b.localeCompare(a))
+    .find(f => f < hoy) || '';
+  if (!fechaBase) return vacio;
 
-  // Tomar el último día con datos como "fecha base"
-  const fechaBase = fechasOrdenadas[0];
-
-  // Tomar todos los turnos de ese día (Mañana + Tarde + Noche)
   const turnos = history
     .filter(r => r.date === fechaBase)
     .sort((a, b) => shiftOrder(a.shift).localeCompare(shiftOrder(b.shift)));
+  const turnosFaltantes = TURNOS.filter(t => !turnos.some(r => r.shift === t));
 
-  let correctivosGenerados = 0, correctivosRealizados = 0;
-  let preventivosAsignados = 0, preventivosRealizados = 0;
-
-  // V2.3 — Deduplicación: misma lógica que computeWeekendStats
-  const uniqueByOT2 = new Map();
-  let countWithoutOT2 = 0, realizedWithoutOT2 = 0;
+  // v3.24 — Los dos KPIs miden poblaciones DISTINTAS a propósito:
+  //   generados  = correctivos que se PIDIERON ese día (createdInShift dentro del día)
+  //   realizados = correctivos que se HICIERON ese día, sin importar cuándo se pidieron
+  // Por eso "realizados" puede superar a "generados" o quedar muy por debajo:
+  // no son numerador y denominador de una misma cosa, son demanda y ejecución.
+  // Antes "generados" contaba OTs DISTINTAS vistas en el período, así que toda
+  // heredada abierta sumaba como generada y el número se inflaba con el carry-over.
+  const vistas = new Map();
   turnos.forEach(r => {
-    (r.corrective || []).forEach(c => {
-      const key = (c.ot || '').trim();
-      if (!key) {
-        countWithoutOT2++;
-        if (c.state === 'Realizada') realizedWithoutOT2++;
-        return;
-      }
-      uniqueByOT2.set(key, c);
+    const reportId = `${r.date}-${r.shift}`;
+    (r.corrective || []).forEach((c, i) => {
+      // Las OTs sin número no se dedupean (misma regla que dedupCorrective):
+      // se les da una clave por posición para que no se agrupen entre sí.
+      const k = canonOT(c.ot) ? otKey(c.ot) : `__SINNUM__${reportId}#${i}`;
+      // Los turnos vienen ordenados, así que la última escritura deja el estado final del día.
+      vistas.set(k, c);
     });
   });
-  correctivosGenerados = uniqueByOT2.size + countWithoutOT2;
-  correctivosRealizados = [...uniqueByOT2.values()].filter(c => c.state === 'Realizada').length + realizedWithoutOT2;
 
+  const delDia = (c) => typeof c.createdInShift === 'string' && c.createdInShift.startsWith(`${fechaBase}-`);
+  const correctivosGenerados = [...vistas.values()].filter(delDia).length;
+  const correctivosRealizados = [...vistas.values()].filter(c => c.state === 'Realizada').length;
+
+  let preventivosAsignados = 0, preventivosRealizados = 0;
   turnos.forEach(r => {
     preventivosAsignados += Number(r.preventivosResumen?.asignados) || 0;
     preventivosRealizados += Number(r.preventivosResumen?.realizados) || 0;
   });
 
   return {
-    fechaBase,
-    turnos,
+    fechaBase, turnos, turnosFaltantes, sinDiaAnterior: false,
     correctivosGenerados, correctivosRealizados,
     preventivosAsignados, preventivosRealizados
   };
