@@ -6045,22 +6045,34 @@ function StatsView({ history, adminMode }) {
             </h3>
             <span className="text-[10px] text-slate-500">
               {finde.turnos.length === 0 ? 'sin datos' :
-                `${formatDateShort(finde.viernes)} (Noche) → ${formatDateShort(finde.domingo)}`}
+                `${finde.turnos.length} de 6 turnos · ${formatDateShort(finde.sabado)} → ${formatDateShort(finde.domingo)}`}
             </span>
           </div>
           {finde.turnos.length === 0 ? (
             <EmptyHint>Sin reportes del último FDS cerrado</EmptyHint>
           ) : (
             <>
-              <div className="text-[11px] text-slate-500 mb-2">
-                Viernes Noche + Sábado completo + Domingo completo · {finde.turnos.length} turno{finde.turnos.length === 1 ? '' : 's'} cargado{finde.turnos.length === 1 ? '' : 's'}
-              </div>
+              {/* v3.24 — 6 turnos: los etiquetados sábado y domingo.
+                  Cobertura real viernes 23:00 → domingo 23:00. */}
+              {finde.turnos.length < 6 ? (
+                <div className="text-[11px] text-amber-700 mb-2 inline-flex items-center gap-1.5">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                  FDS incompleto — {finde.turnos.length} de 6 turnos cargados
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500 mb-2">
+                  FDS completo · viernes 23:00 → domingo 23:00
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <MiniKPI label="Correctivos generados" value={finde.correctivosGenerados} color="orange" />
                 <MiniKPI label="Correctivos realizados" value={finde.correctivosRealizados} color="emerald" />
                 <MiniKPI label="Preventivos asignados" value={finde.preventivosAsignados} color="sky" />
                 <MiniKPI label="Preventivos realizados" value={finde.preventivosRealizados} color="emerald" />
               </div>
+              <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                Generados = pedidos en el FDS. Realizados = cerrados en el FDS, incluidas heredadas.
+              </p>
             </>
           )}
         </Card>
@@ -6550,43 +6562,51 @@ function computeWeekendStats(history) {
   const viernes = new Date(domingo);
   viernes.setDate(domingo.getDate() - 2);
 
-  const fmt = (d) => d.toISOString().slice(0, 10);
+  // v3.24 — fmt local, no toISOString(): toISOString() convierte a UTC y con un
+  // offset positivo devolvería el día siguiente. Con UTC-3 no fallaba, pero era
+  // una bomba de tiempo. Existe todayLocalISO() para el mismo propósito.
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const viernesStr = fmt(viernes), sabadoStr = fmt(sabado), domingoStr = fmt(domingo);
 
-  // Filtrar reportes que correspondan:
-  //  - viernes Noche
-  //  - sábado Mañana, Tarde, Noche
-  //  - domingo Mañana, Tarde, Noche
-  const turnos = history.filter(r => {
-    if (r.date === viernesStr && r.shift === 'Noche') return true;
-    if (r.date === sabadoStr) return true;
-    if (r.date === domingoStr) return true;
-    return false;
-  });
+  // v3.24 — CORRECCIÓN DE VENTANA. Antes tomaba `viernes-Noche` + sábado + domingo
+  // = 7 turnos, asumiendo que `viernes-Noche` era el viernes a la noche.
+  // NO lo es: el turno Noche se etiqueta con la fecha de CIERRE (arranca la noche
+  // anterior, shiftOrder Noche=0), así que `viernes-Noche` corrió de jueves 23:00
+  // a viernes 06:00 — un turno de día de semana. Al mismo tiempo faltaba el sábado
+  // a la noche, que se etiqueta `domingo-Noche`.
+  //
+  // La ventana correcta son los 6 turnos etiquetados sábado y domingo:
+  //   sabado-Noche    = viernes 23:00 → sábado 06:00   (el "viernes noche" real)
+  //   sabado-Mañana/Tarde
+  //   domingo-Noche   = sábado 23:00 → domingo 06:00
+  //   domingo-Mañana/Tarde
+  // Cobertura real: viernes 23:00 → domingo 23:00.
+  // El domingo a la noche NO entra: se etiqueta `lunes-Noche` y es del lunes.
+  const turnos = history.filter(r => r.date === sabadoStr || r.date === domingoStr);
 
   let correctivosGenerados = 0, correctivosRealizados = 0;
   let preventivosAsignados = 0, preventivosRealizados = 0;
 
-  // V2.3 — Deduplicación: cada OT (por número) cuenta una sola vez.
-  //   - "correctivosGenerados" = OTs únicas que aparecen en estos turnos
-  //   - "correctivosRealizados" = OTs únicas cuyo estado FINAL en estos turnos es 'Realizada'
-  // Para OTs sin número, contamos cada aparición (caso borde).
+  // v3.24 — Misma semántica que computeLastDayStats, para que "generados" signifique
+  // lo mismo en las dos cards de la pantalla:
+  //   generados  = correctivos PEDIDOS en la ventana (createdInShift dentro del FDS)
+  //   realizados = correctivos CERRADOS en la ventana, sin importar cuándo se pidieron
+  // Antes "generados" contaba OTs distintas vistas, así que toda heredada abierta
+  // sumaba como generada. Verificado sobre el FDS 25-26/07: 45 -> 28.
+  // Dedup por otKey (decisión 37). Las OTs sin número no se dedupean: clave por posición.
   const sortedTurnos = [...turnos].sort((a, b) => reportSortKey(a).localeCompare(reportSortKey(b)));
-  const uniqueByOT = new Map();
-  let countWithoutOT = 0, realizedWithoutOT = 0;
+  const vistasFds = new Map();
   sortedTurnos.forEach(r => {
-    (r.corrective || []).forEach(c => {
-      const key = (c.ot || '').trim();
-      if (!key) {
-        countWithoutOT++;
-        if (c.state === 'Realizada') realizedWithoutOT++;
-        return;
-      }
-      uniqueByOT.set(key, c); // sobrescribe con la versión más reciente
+    const reportId = `${r.date}-${r.shift}`;
+    (r.corrective || []).forEach((c, i) => {
+      const k = canonOT(c.ot) ? otKey(c.ot) : `__SINNUM__${reportId}#${i}`;
+      vistasFds.set(k, c); // los turnos vienen ordenados: la última escritura deja el estado final
     });
   });
-  correctivosGenerados = uniqueByOT.size + countWithoutOT;
-  correctivosRealizados = [...uniqueByOT.values()].filter(c => c.state === 'Realizada').length + realizedWithoutOT;
+  const enVentana = (c) => typeof c.createdInShift === 'string' &&
+    (c.createdInShift.startsWith(`${sabadoStr}-`) || c.createdInShift.startsWith(`${domingoStr}-`));
+  correctivosGenerados = [...vistasFds.values()].filter(enVentana).length;
+  correctivosRealizados = [...vistasFds.values()].filter(c => c.state === 'Realizada').length;
 
   turnos.forEach(r => {
     preventivosAsignados += Number(r.preventivosResumen?.asignados) || 0;
