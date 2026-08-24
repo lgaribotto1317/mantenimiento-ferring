@@ -434,6 +434,34 @@ const extrasHorasCalc = (fecha, horaInicio, horaFin) => {
   return Math.round(((end - ini) / 3600000) * 100) / 100;
 };
 
+// Timestamp de auditoría en hora LOCAL: "24/ago/26 19:05".
+// Los timestamptz vuelven de Postgres en UTC; renderizarlos crudos con
+// .slice()/replace() los deja 3 h adelantados en Argentina — era el bug del
+// export de la primera versión de #46. new Date() + getters locales convierte
+// bien y no depende del locale del navegador para el ORDEN de los campos.
+const formatTimestamp = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mmm = MESES_CORTOS[d.getMonth()] || '???';
+  const yy = String(d.getFullYear()).slice(-2);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mmm}/${yy} ${hh}:${mi}`;
+};
+
+// Equivalente en 12 h de un "HH:MM" de 24 h, solo como referencia visual
+// al lado del selector: "17:30" → "5:30 pm".
+const to12h = (hhmm) => {
+  if (!hhmm || !hhmm.includes(':')) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return '';
+  const suf = h < 12 ? 'am' : 'pm';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${suf}`;
+};
+
 // Formato de horas para pantalla: 2.5 → "2,5 h" (coma decimal, es-AR).
 const formatHoras = (h) => {
   const n = Number(h) || 0;
@@ -3646,6 +3674,44 @@ function ExtrasMotivoDialog({ titulo, descripcion, placeholder, requerido, cta, 
   );
 }
 
+// Selector de hora en 24 h. Reemplaza a <input type="time">, cuyo formato lo
+// decide el LOCALE del navegador/SO y no se puede forzar desde el HTML: con el
+// navegador en inglés aparece el picker de AM/PM, y no hay atributo que lo
+// cambie. Con dos selects el formato es el mismo para todos los usuarios,
+// independiente de cómo tenga configurada la máquina cada encargado.
+// El valor sigue siendo "HH:MM" de 24 h, igual que antes — la columna `time`
+// de Postgres no se entera de este cambio.
+// Los minutos van de a 5: las horas extras se pactan en bloques, no al minuto.
+// Si alguna vez hace falta el minuto exacto, ampliar MINUTOS_STEP5 a 0..59.
+const HORAS_24 = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTOS_STEP5 = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
+
+function TimeInput24({ value, onChange, disabled }) {
+  const [h, m] = (value || '').split(':');
+  // Elegir solo una de las dos mitades completa la otra en '00' en vez de dejar
+  // un valor a medio formar que después rebota en la validación.
+  const setH = (nh) => onChange(nh ? `${nh}:${m || '00'}` : '');
+  const setM = (nm) => onChange(`${h || '00'}:${nm}`);
+  const selCls = "px-2 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition num font-semibold";
+
+  return (
+    <div className="flex items-center gap-1">
+      <select className={selCls} value={h || ''} onChange={e => setH(e.target.value)} disabled={disabled}>
+        <option value="">--</option>
+        {HORAS_24.map(x => <option key={x} value={x}>{x}</option>)}
+      </select>
+      <span className="text-slate-400 font-bold">:</span>
+      <select className={selCls} value={m || ''} onChange={e => setM(e.target.value)} disabled={disabled}>
+        <option value="">--</option>
+        {MINUTOS_STEP5.map(x => <option key={x} value={x}>{x}</option>)}
+      </select>
+      {value && value.includes(':') && (
+        <span className="text-[10px] text-slate-400 whitespace-nowrap ml-0.5">{to12h(value)}</span>
+      )}
+    </div>
+  );
+}
+
 // Lista editable de OTs asociadas. Opcionales (hay extras sin OT: cobertura por
 // ausencia, guardia). Reutiliza OTNumberInput, así que no se puede tipear un
 // número no canónico — misma garantía que en el reporte y en el pool (#39).
@@ -3877,10 +3943,15 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       'OTs asociadas': (r.ots || []).join(' · '),
       'Estado': r.anulada_at ? 'ANULADA' : r.estado,
       'Solicitada por': r.solicitado_por_nombre || '',
+      // Trazabilidad: CUÁNDO se pidió y CUÁNDO se resolvió, en hora local.
+      // Antes se exportaba el timestamptz crudo, que sale en UTC: en Argentina
+      // eso mostraba una aprobación de las 19:00 como las 22:00.
+      'Fecha de solicitud': formatTimestamp(r.created_at),
       'Resuelta por': r.resuelto_por_nombre || '',
-      'Fecha de resolución': r.resuelto_at ? r.resuelto_at.slice(0, 16).replace('T', ' ') : '',
+      'Fecha de resolución': r.resuelto_at ? formatTimestamp(r.resuelto_at) : '',
       'Motivo de rechazo': r.rechazo_motivo || '',
       'Anulada por': r.anulada_por || '',
+      'Fecha de anulación': r.anulada_at ? formatTimestamp(r.anulada_at) : '',
       'Motivo de anulación': r.anulada_motivo || ''
     }));
     const rango = [filtroDesde || 'inicio', filtroHasta || todayLocalISO()].join('_a_');
@@ -3929,14 +4000,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           </Field>
 
           <Field label="Hora de inicio">
-            <input type="time" className={`${inputCls} num`} value={horaInicio}
-              onChange={e => setHoraInicio(e.target.value)} />
+            <TimeInput24 value={horaInicio} onChange={setHoraInicio} />
           </Field>
 
           <Field label="Hora de fin">
-            <div className="flex items-center gap-2">
-              <input type="time" className={`${inputCls} num`} value={horaFin}
-                onChange={e => setHoraFin(e.target.value)} />
+            <div className="flex items-center gap-2 flex-wrap">
+              <TimeInput24 value={horaFin} onChange={setHoraFin} />
               {cruza && (
                 <span className="text-[10px] px-1.5 py-1 bg-indigo-100 text-indigo-700 rounded font-bold whitespace-nowrap"
                       title={`Cruza medianoche: termina el ${formatDateShort(extrasFechaFin(fecha, horaInicio, horaFin))}`}>
@@ -4052,6 +4121,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                   <th className="py-2 pr-3">OTs</th>
                   <th className="py-2 pr-3">Estado</th>
                   {esJefe && <th className="py-2 pr-3">Solicitó</th>}
+                  <th className="py-2 pr-3">Cargada</th>
                   <th className="py-2 pr-3"></th>
                 </tr>
               </thead>
@@ -4091,14 +4161,25 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                         </span>
                         {r.anulada_at && (
                           <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-slate-200 text-slate-600"
-                                title={`${r.anulada_motivo || ''}${r.anulada_por ? ` — ${r.anulada_por}` : ''}`}>
+                                title={`${formatTimestamp(r.anulada_at)}${r.anulada_por ? ` — ${r.anulada_por}` : ''}${r.anulada_motivo ? `: ${r.anulada_motivo}` : ''}`}>
                             anulada
                           </span>
+                        )}
+                        {/* Cuándo se resolvió y quién, debajo del estado. */}
+                        {r.resuelto_at && (
+                          <div className="text-[10px] text-slate-400 num whitespace-nowrap mt-0.5"
+                               title={r.resuelto_por_nombre ? `Resuelta por ${r.resuelto_por_nombre}` : ''}>
+                            {formatTimestamp(r.resuelto_at)}
+                          </div>
                         )}
                       </td>
                       {esJefe && (
                         <td className="py-2 pr-3 text-slate-500 text-xs whitespace-nowrap">{r.solicitado_por_nombre || '—'}</td>
                       )}
+                      {/* Momento en que el encargado dejó asentada la solicitud. */}
+                      <td className="py-2 pr-3 text-slate-400 text-[11px] num whitespace-nowrap">
+                        {formatTimestamp(r.created_at)}
+                      </td>
                       <td className="py-2 pr-3">
                         <div className="flex items-center justify-end gap-1">
                           {puedeResolver(r) && (
