@@ -3681,10 +3681,10 @@ function ExtrasMotivoDialog({ titulo, descripcion, placeholder, requerido, cta, 
 // independiente de cómo tenga configurada la máquina cada encargado.
 // El valor sigue siendo "HH:MM" de 24 h, igual que antes — la columna `time`
 // de Postgres no se entera de este cambio.
-// Los minutos van de a 5: las horas extras se pactan en bloques, no al minuto.
-// Si alguna vez hace falta el minuto exacto, ampliar MINUTOS_STEP5 a 0..59.
+// Los minutos son SOLO :00 y :30 — las horas extras no se fraccionan por debajo
+// de la media hora. Al elegir la hora, los minutos se completan en '00' solos.
 const HORAS_24 = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
-const MINUTOS_STEP5 = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
+const MINUTOS_VALIDOS = ['00', '30'];
 
 function TimeInput24({ value, onChange, disabled }) {
   const [h, m] = (value || '').split(':');
@@ -3692,6 +3692,13 @@ function TimeInput24({ value, onChange, disabled }) {
   // un valor a medio formar que después rebota en la validación.
   const setH = (nh) => onChange(nh ? `${nh}:${m || '00'}` : '');
   const setM = (nm) => onChange(`${h || '00'}:${nm}`);
+  // Si una fila guardada trae un minuto fuera de la lista (por ejemplo :45 de
+  // una carga anterior a esta regla), se agrega como opción en vez de dejar el
+  // select vacío: editar el motivo de esa fila no le puede cambiar la hora en
+  // silencio. La opción extra desaparece en cuanto se elige :00 o :30.
+  const opcionesMin = m && !MINUTOS_VALIDOS.includes(m)
+    ? [...MINUTOS_VALIDOS, m].sort()
+    : MINUTOS_VALIDOS;
   const selCls = "px-2 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition num font-semibold";
 
   return (
@@ -3703,7 +3710,7 @@ function TimeInput24({ value, onChange, disabled }) {
       <span className="text-slate-400 font-bold">:</span>
       <select className={selCls} value={m || ''} onChange={e => setM(e.target.value)} disabled={disabled}>
         <option value="">--</option>
-        {MINUTOS_STEP5.map(x => <option key={x} value={x}>{x}</option>)}
+        {opcionesMin.map(x => <option key={x} value={x}>{x}</option>)}
       </select>
       {value && value.includes(':') && (
         <span className="text-[10px] text-slate-400 whitespace-nowrap ml-0.5">{to12h(value)}</span>
