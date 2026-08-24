@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.25';
+const APP_VERSION = 'v3.26';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -874,6 +874,39 @@ const storage = {
     return res.json();
   },
 
+  // BACKLOG #50 (v3.26) — Sonda para el aviso del botón de rol del header.
+  // Corre para TODOS los usuarios al arrancar la app y en cada refresh, entren
+  // o no a Extras: es el único modo de que el jefe vea que hay algo pendiente
+  // sin loguearse. Por eso tiene que ser el query más barato posible.
+  //
+  // Devuelve BOOLEAN, no un conteo, por dos motivos:
+  //  1. La UI decidida no muestra número (solo el color), así que contar sería
+  //     traer un dato que nadie mira.
+  //  2. `limit=1` + `select=id` trae como máximo una fila de un entero. La
+  //     alternativa (`HEAD` con `Prefer: count=exact`) cuesta lo mismo en
+  //     round-trip pero obliga a parsear el header `Content-Range` y depende de
+  //     que CORS lo exponga. Si algún día hace falta el número, es cambiar
+  //     `limit=1` por el count: la firma del método es lo único que se toca.
+  //
+  // Población: `estado = 'pendiente'` Y `anulada_at IS NULL`. Las anuladas no
+  // suman NUNCA — mismo criterio que los contadores del listado de Extras. Las
+  // de fecha futura sí cuentan: son el caso normal (se solicita antes de
+  // trabajar), no una anomalía a filtrar.
+  //
+  // FAIL-SILENT a propósito: si esto falla no debe ensuciar `connError` ni
+  // bloquear nada. Es un aviso, no un dato operativo. Ante la duda, false:
+  // preferimos no avisar de más que teñir el header por un error de red.
+  async hasExtrasPendientes() {
+    if (!supabaseConfigured) return false;
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/horas_extras?select=id&estado=eq.pendiente&anulada_at=is.null&limit=1`,
+      { headers: sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase extras (sonda): ${res.status} ${await res.text()}`);
+    const rows = await res.json();
+    return rows.length > 0;
+  },
+
   async insertExtra(row) {
     if (!supabaseConfigured) throw new Error('Extras requiere Supabase configurado');
     const res = await fetch(
@@ -1307,6 +1340,10 @@ export default function App() {
   const [extras, setExtras] = useState([]);
   const [extrasLoading, setExtrasLoading] = useState(false);
   const [extrasError, setExtrasError] = useState('');
+  // BACKLOG #50 (v3.26) — ¿Hay solicitudes de horas extras sin resolver?
+  // Independiente de `extras`: esto se sabe SIN estar logueado al rol, que es
+  // justamente el punto. `extras` solo tiene datos después del login.
+  const [extrasPendientes, setExtrasPendientes] = useState(false);
   // V2.6 — Confirmación de eliminación de reporte completo
   const [deleteReportConfirm, setDeleteReportConfirm] = useState(null); // null | { date, shift, source }
 
@@ -1353,7 +1390,24 @@ export default function App() {
     setDashboardOverride(null);
   }, []);
 
+  // BACKLOG #50 (v3.26) — Sonda de pendientes de Extras.
+  // try/catch PROPIO y separado del de `refresh`: un fallo acá no debe setear
+  // `connError` ni abortar la carga del histórico, que es el dato que la app
+  // realmente necesita para funcionar.
+  const loadExtrasPendientes = useCallback(async () => {
+    try {
+      setExtrasPendientes(await storage.hasExtrasPendientes());
+    } catch (e) {
+      console.warn('Extras: no se pudo verificar si hay pendientes (fail-silent):', e);
+      setExtrasPendientes(false);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
+    // La sonda va acá y no en un useEffect propio para que quede colgada del
+    // mismo gesto que ya refresca todo: el botón ↻ del header y el arranque de
+    // la app. Un camino, no dos.
+    loadExtrasPendientes();
     try {
       setConnError('');
       const data = await storage.list();
@@ -1366,7 +1420,7 @@ export default function App() {
       console.error(e);
       return [];
     }
-  }, []);
+  }, [loadExtrasPendientes]);
 
   // Punto 2 — Chequeo de versión al arrancar. Fail-open: si no se puede
   // verificar (red caída, tabla inexistente), NO bloquea y deja trabajar.
@@ -2330,6 +2384,12 @@ export default function App() {
     setExtras([]);
     // Si estaba parado en la solapa de Extras, vuelve a Carga: la tab deja de existir.
     setTab(t => (t === 'extras' ? 'form' : t));
+    // #50 — Revalidar la sonda justo cuando el botón vuelve a ser visible.
+    // Durante la sesión el aviso NO se renderiza (en su lugar está el badge del
+    // rol), así que no hace falta recalcularlo en cada alta o resolución: alcanza
+    // con hacerlo en el único momento en que el resultado vuelve a mirarse.
+    // Si el jefe acaba de aprobar la última pendiente, el naranja se apaga acá.
+    loadExtrasPendientes();
   };
 
   const handleExtrasAdd = async (row) => {
@@ -2876,7 +2936,19 @@ export default function App() {
               )}
               {/* #46 (v3.25) — Rol Extras. Mismo patrón que el pool: la solapa no
                   existe hasta loguearse. El badge muestra el nombre, no el usuario:
-                  lo que importa es quién es, no con qué mail entró. */}
+                  lo que importa es quién es, no con qué mail entró.
+
+                  #50 (v3.26) — El botón se pone NARANJA cuando hay solicitudes
+                  sin resolver (`estado = 'pendiente'` y no anuladas).
+                  Aplica SOLO al botón con el rol inactivo: una vez logueado, el
+                  badge conserva su teal/cyan por rol. El aviso existe justamente
+                  para que se vea ANTES de entrar — es la única forma de que el
+                  jefe sepa que tiene algo que aprobar sin loguearse.
+                  Lo ven todos, no solo el jefe: sin sesión la app no sabe quién
+                  está del otro lado, así que discriminar por rol es imposible
+                  hasta el login, momento en el que el aviso ya no se muestra.
+                  Naranja y no ámbar a propósito: el ámbar ya está tomado en este
+                  mismo header por el badge "Modo local". */}
               {extrasUser ? (
                 <div className="flex items-center gap-1.5">
                   <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded ring-1 font-semibold ${extrasUser.rol === 'jefe' ? 'bg-teal-500/30 text-teal-100 ring-teal-400/50' : 'bg-cyan-500/30 text-cyan-100 ring-cyan-400/50'}`}
@@ -2893,7 +2965,14 @@ export default function App() {
                 </div>
               ) : (
                 <button onClick={() => setExtrasLoginOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-slate-300 rounded ring-1 ring-white/10 transition">
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded ring-1 transition ${
+                    extrasPendientes
+                      ? 'bg-orange-500/30 hover:bg-orange-500/40 text-orange-100 ring-orange-400/50 font-semibold'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-300 ring-white/10'
+                  }`}
+                  title={extrasPendientes
+                    ? 'Hay solicitudes de horas extras sin resolver'
+                    : 'Ingresar al módulo de horas extras'}>
                   <Timer className="w-3.5 h-3.5" />Extras
                 </button>
               )}
