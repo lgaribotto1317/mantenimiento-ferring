@@ -5,7 +5,7 @@ import {
   HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
   CalendarDays, Clock, Image as ImageIcon, FileDown,
-  Lock, LogOut, Edit3, Shield, RotateCcw, Inbox, Ban
+  Lock, LogOut, Edit3, Shield, RotateCcw, Inbox, Ban, Timer
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.24';
+const APP_VERSION = 'v3.25';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -131,6 +131,45 @@ const ADMIN_PASSWORD = 'FerringBiomas2026';
 // es una barrera anti-clicks accidentales. Deliberadamente SEPARADA de la de admin:
 // el planificador no debe pasar por una pantalla que puede borrar reportes.
 const POOL_PASSWORD = 'Planificador2026';
+
+// ═══════════════════════════════════════════════════════════════════
+// BACKLOG #46 (v3.25) — EXTRAS: solicitud y aprobación de horas extras
+// ═══════════════════════════════════════════════════════════════════
+// MISMO nivel de garantía que ADMIN_PASSWORD y POOL_PASSWORD, y conviene ser
+// explícito porque acá el flujo es una APROBACIÓN (algo que después se paga):
+//
+//   Estas credenciales viajan en el bundle JS que sirve Vercel. Cualquiera con
+//   la URL de la app las lee desde DevTools en diez segundos. NO son control de
+//   acceso. Son (a) una barrera contra clicks accidentales y (b) ATRIBUCIÓN
+//   NOMINAL: quién dice ser el que carga o el que aprueba.
+//
+// El filtrado "cada encargado ve solo lo suyo" es partición de UI, NO de datos:
+// la policy RLS de `horas_extras` es `USING (true)`, igual que el resto de las
+// tablas del proyecto, así que la tabla entera se puede leer vía REST con la
+// publishable key. El registro sirve como control interno del sector; no
+// respalda una aprobación formal ante RRHH.
+//
+// Decidido a sabiendas con Leo el 2026-08-23 (opción A1 sobre A2/A3). La
+// migración a Supabase Auth + RLS por auth.uid() queda en BACKLOG #47.
+//
+// SUPUESTO A VERIFICAR: el mapeo usuario → nombre se infirió de las direcciones
+// de mail que pasó Leo. Si alguno no corresponde, corregir acá: el `nombre` es
+// lo que queda escrito en cada solicitud como solicitante o resolutor.
+const EXTRAS_USUARIOS = [
+  { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
+  { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
+  { user: 'gtp@ferring.com',   pass: 'gtp2026',      nombre: 'PARE, Gustavo',       rol: 'encargado' },
+  { user: 'lgar@ferring.com',  pass: 'Extrasbiomas', nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' }
+];
+
+// Autenticación local contra el catálogo de arriba. Devuelve la sesión (sin la
+// password) o null. La comparación de usuario es case-insensitive y trimmed
+// porque el teclado del celular capitaliza la primera letra de un mail solo.
+const extrasAuth = (user, pass) => {
+  const u = (user || '').trim().toLowerCase();
+  const hit = EXTRAS_USUARIOS.find(x => x.user.toLowerCase() === u && x.pass === pass);
+  return hit ? { user: hit.user, nombre: hit.nombre, rol: hit.rol } : null;
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -356,6 +395,81 @@ const isFutureDate = (isoDate) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return target > today;
+};
+
+// #46 (v3.25) — Helpers de horas extras.
+// Suma días a una fecha ISO en calendario LOCAL (mismo criterio que todayLocalISO:
+// nada de UTC, que corre el día después de las 21h en Argentina).
+const addDaysISO = (isoDate, days) => {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return isoDate;
+  const t = new Date(y, m - 1, d + days);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
+// REGLA DE MEDIANOCHE (acordada el 2026-08-23): si la hora de fin es menor o
+// IGUAL a la de inicio, el extra cruza medianoche y termina al día siguiente.
+// El caso típico es el turno Noche (23:00 → 02:00). El "igual" también cae acá
+// a propósito: 20:00 → 20:00 no es un extra de cero horas, es uno de 24, y el
+// CHECK de la tabla lo rebota como ventana inválida solo si fuese cero.
+// La UI muestra un chip "+1 día" cuando esto se dispara, para que no sea sorpresa.
+const extrasCruzaMedianoche = (horaInicio, horaFin) =>
+  !!horaInicio && !!horaFin && horaFin <= horaInicio;
+
+const extrasFechaFin = (fecha, horaInicio, horaFin) =>
+  extrasCruzaMedianoche(horaInicio, horaFin) ? addDaysISO(fecha, 1) : fecha;
+
+// Duración en horas decimales. Es SOLO para previsualizar en el form y para
+// totalizar en pantalla: la columna `horas` de la tabla es GENERATED ALWAYS en
+// Postgres, así que el número que se guarda lo calcula la base, no el browser.
+// Se replica la fórmula acá para que el usuario vea el mismo valor antes de
+// guardar; si alguna vez divergen, la base manda.
+const extrasHorasCalc = (fecha, horaInicio, horaFin) => {
+  if (!fecha || !horaInicio || !horaFin) return 0;
+  const fin = extrasFechaFin(fecha, horaInicio, horaFin);
+  const ini = new Date(`${fecha}T${horaInicio}`);
+  const end = new Date(`${fin}T${horaFin}`);
+  if (isNaN(ini) || isNaN(end)) return 0;
+  return Math.round(((end - ini) / 3600000) * 100) / 100;
+};
+
+// Fecha de auditoría (solicitud, resolución, anulación) en calendario LOCAL:
+// "24/ago/26". Se muestra solo la FECHA, sin hora — decidido el 2026-08-24.
+// La base sigue guardando el timestamptz completo: tirar la hora en la columna
+// sería irreversible y no ahorra nada, mientras que ocultarla en pantalla es
+// esto. Si algún día hace falta la hora, está.
+//
+// La conversión a local NO es cosmética: los timestamptz vuelven de Postgres en
+// UTC, y en Argentina (UTC−3) todo lo cargado después de las 21:00 cae al día
+// SIGUIENTE si se lee crudo. Una solicitud del lunes 23:30 se mostraría como
+// martes. new Date() + getters locales lo resuelve; slice()/replace() sobre el
+// string ISO no — ese era el bug de la primera versión de #46.
+const formatFechaAudit = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mmm = MESES_CORTOS[d.getMonth()] || '???';
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${dd}/${mmm}/${yy}`;
+};
+
+// Equivalente en 12 h de un "HH:MM" de 24 h, solo como referencia visual
+// al lado del selector: "17:30" → "5:30 pm".
+const to12h = (hhmm) => {
+  if (!hhmm || !hhmm.includes(':')) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return '';
+  const suf = h < 12 ? 'am' : 'pm';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${suf}`;
+};
+
+// Formato de horas para pantalla: 2.5 → "2,5 h" (coma decimal, es-AR).
+const formatHoras = (h) => {
+  const n = Number(h) || 0;
+  return `${n.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')} h`;
 };
 
 // #9 (v3.14) — Ventana de edición para no-admin: solo HOY o AYER (fecha calendario local).
@@ -737,6 +851,64 @@ const storage = {
     );
     if (!res.ok) throw new Error(`Supabase pool: ${res.status} ${await res.text()}`);
     const rows = await res.json();
+    return rows[0];
+  },
+
+  // ─────────────────────────────────────────────────────────────────
+  // BACKLOG #46 (v3.25) — HORAS EXTRAS (tabla `horas_extras`)
+  // ─────────────────────────────────────────────────────────────────
+  // Igual que el pool: NO hay fallback a localStorage. Un registro de horas
+  // extras per-device no significa nada — el encargado solicita en una máquina
+  // y el jefe aprueba en otra. Sin Supabase, la solapa se muestra deshabilitada.
+  //
+  // La tabla NO tiene GRANT de DELETE (ver el DDL): la corrección es siempre
+  // soft-delete con motivo. Si alguna vez hace falta purgar de verdad, se hace
+  // desde el SQL Editor como `postgres`, con backup previo.
+  async listExtras(limit = 500) {
+    if (!supabaseConfigured) return [];
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/horas_extras?select=*&order=fecha.desc,hora_inicio.desc&limit=${limit}`,
+      { headers: sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase extras: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  async insertExtra(row) {
+    if (!supabaseConfigured) throw new Error('Extras requiere Supabase configurado');
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/horas_extras`,
+      {
+        method: 'POST',
+        headers: { ...sbHeaders(), Prefer: 'return=representation' },
+        body: JSON.stringify(row)
+      }
+    );
+    if (!res.ok) throw new Error(`Supabase extras: ${res.status} ${await res.text()}`);
+    const rows = await res.json();
+    return rows[0];
+  },
+
+  // PATCH genérico. Lo usan los tres caminos de escritura posteriores al alta
+  // (editar mientras está pendiente, resolver, anular). `updated_at` se pisa
+  // siempre acá y no en cada call site, para que no se pueda olvidar.
+  async updateExtra(id, patch) {
+    if (!supabaseConfigured) throw new Error('Extras requiere Supabase configurado');
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/horas_extras?id=eq.${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { ...sbHeaders(), Prefer: 'return=representation' },
+        body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() })
+      }
+    );
+    if (!res.ok) throw new Error(`Supabase extras: ${res.status} ${await res.text()}`);
+    const rows = await res.json();
+    if (!rows.length) {
+      // 0 filas devueltas con 200 = la fila existe pero el PATCH no matcheó el
+      // filtro, o la borró otro. No es un caso esperado; se avisa fuerte.
+      throw new Error('La solicitud ya no existe o fue modificada por otra sesión');
+    }
     return rows[0];
   }
 };
@@ -1125,6 +1297,16 @@ export default function App() {
   const [pool, setPool] = useState([]);
   const [poolLoading, setPoolLoading] = useState(false);
   const [poolError, setPoolError] = useState('');
+
+  // BACKLOG #46 (v3.25) — Sesión de Extras. Independiente de adminMode y de
+  // poolMode: son tres roles distintos y ninguno implica a los otros.
+  // extrasUser = null | { user, nombre, rol }. No persiste entre recargas a
+  // propósito (mismo criterio que los otros dos roles).
+  const [extrasUser, setExtrasUser] = useState(null);
+  const [extrasLoginOpen, setExtrasLoginOpen] = useState(false);
+  const [extras, setExtras] = useState([]);
+  const [extrasLoading, setExtrasLoading] = useState(false);
+  const [extrasError, setExtrasError] = useState('');
   // V2.6 — Confirmación de eliminación de reporte completo
   const [deleteReportConfirm, setDeleteReportConfirm] = useState(null); // null | { date, shift, source }
 
@@ -2110,6 +2292,58 @@ export default function App() {
     return updated;
   };
 
+  // BACKLOG #46 (v3.25) — Carga y handlers de horas extras.
+  // Se trae SIEMPRE la tabla completa y se filtra en el cliente por rol. Esto
+  // es una decisión consciente y su límite hay que tenerlo presente: filtrar
+  // server-side (`?solicitado_por=eq.X`) daría exactamente la misma garantía,
+  // que es ninguna, porque la RLS está abierta y cualquiera puede pedir la
+  // tabla entera igual. Traer todo simplifica el refresh y evita dos caminos
+  // de carga distintos según el rol.
+  const loadExtras = useCallback(async () => {
+    if (!supabaseConfigured) { setExtras([]); return; }
+    setExtrasLoading(true);
+    setExtrasError('');
+    try {
+      setExtras(await storage.listExtras());
+    } catch (e) {
+      setExtrasError(e.message || 'No se pudieron cargar las horas extras');
+    } finally {
+      setExtrasLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (extrasUser) loadExtras(); }, [extrasUser, loadExtras]);
+
+  const handleExtrasLogin = (user, pass) => {
+    const sess = extrasAuth(user, pass);
+    if (sess) {
+      setExtrasUser(sess);
+      setExtrasLoginOpen(false);
+      setTab('extras');
+      return true;
+    }
+    return false;
+  };
+
+  const handleExtrasLogout = () => {
+    setExtrasUser(null);
+    setExtras([]);
+    // Si estaba parado en la solapa de Extras, vuelve a Carga: la tab deja de existir.
+    setTab(t => (t === 'extras' ? 'form' : t));
+  };
+
+  const handleExtrasAdd = async (row) => {
+    const created = await storage.insertExtra(row);
+    setExtras(prev => [created, ...prev]);
+    return created;
+  };
+
+  const handleExtrasUpdate = async (id, patch) => {
+    const updated = await storage.updateExtra(id, patch);
+    setExtras(prev => prev.map(r => (r.id === id ? updated : r)));
+    return updated;
+  };
+
   const handleAdminLogin = (passwordTry) => {
     if (passwordTry === ADMIN_PASSWORD) {
       setAdminMode(true);
@@ -2597,7 +2831,14 @@ export default function App() {
                   <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
-              {/* V2.6 — Botón Admin debajo del badge de Supabase */}
+              {/* v3.25 — Los tres roles (Admin · Planificador · Extras) en FILA
+                  horizontal debajo del badge de Supabase. Antes iban apilados y
+                  con el tercero quedaba un header de tres pisos.
+                  Van acá y no al lado de "Guardar reporte" porque ese bloque está
+                  condicionado a `tab === 'form'`: colgados de ahí desaparecerían
+                  en Dashboard, Estadísticas e Histórico, que es justo desde donde
+                  se necesita entrar a Extras. */}
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
               {adminMode ? (
                 <div className="flex items-center gap-1.5">
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/30 text-red-100 rounded ring-1 ring-red-400/50 font-semibold">
@@ -2633,6 +2874,30 @@ export default function App() {
                   <Inbox className="w-3.5 h-3.5" />Planificador
                 </button>
               )}
+              {/* #46 (v3.25) — Rol Extras. Mismo patrón que el pool: la solapa no
+                  existe hasta loguearse. El badge muestra el nombre, no el usuario:
+                  lo que importa es quién es, no con qué mail entró. */}
+              {extrasUser ? (
+                <div className="flex items-center gap-1.5">
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded ring-1 font-semibold ${extrasUser.rol === 'jefe' ? 'bg-teal-500/30 text-teal-100 ring-teal-400/50' : 'bg-cyan-500/30 text-cyan-100 ring-cyan-400/50'}`}
+                        title={`${extrasUser.nombre} · ${extrasUser.rol}`}>
+                    <Timer className="w-3.5 h-3.5" />
+                    <span className="md:hidden">{extrasUser.rol === 'jefe' ? 'JEFE' : 'EXTRAS'}</span>
+                    <span className="hidden md:inline">{extrasUser.rol === 'jefe' ? 'EXTRAS · JEFE' : 'EXTRAS'}</span>
+                  </span>
+                  <button onClick={handleExtrasLogout}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded transition text-[10px]"
+                    title="Cerrar sesión de Extras">
+                    <LogOut className="w-3 h-3" /><span className="hidden md:inline">Salir</span>
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => setExtrasLoginOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-slate-300 rounded ring-1 ring-white/10 transition">
+                  <Timer className="w-3.5 h-3.5" />Extras
+                </button>
+              )}
+              </div>
             </div>
             <div className="text-right">
               <div className="num text-sm font-semibold text-white capitalize">
@@ -2680,7 +2945,9 @@ export default function App() {
               { id: 'stats', label: 'Estadísticas', icon: TrendingUp },
               { id: 'history', label: 'Histórico & Excel', icon: FileSpreadsheet },
               // #42 (Fase 1) — la pestaña del pool solo existe con el rol activo
-              ...(poolMode ? [{ id: 'pool', label: 'Pool de OTs', icon: Inbox }] : [])
+              ...(poolMode ? [{ id: 'pool', label: 'Pool de OTs', icon: Inbox }] : []),
+              // #46 (v3.25) — ídem Extras: patrón del pool, la solapa aparece al loguearse
+              ...(extrasUser ? [{ id: 'extras', label: 'Extras', icon: Timer }] : [])
             ].map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
                 className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition whitespace-nowrap ${tab === t.id ? 'border-sky-400 text-white' : 'border-transparent text-slate-300 hover:text-white'}`}>
@@ -2741,6 +3008,16 @@ export default function App() {
           adminMode={adminMode}
           onDeleteReport={(date, shift) => requestDeleteReport(date, shift, 'history')}
         />}
+        {!loading && tab === 'extras' && extrasUser && <ExtrasView
+          sesion={extrasUser}
+          extras={extras}
+          extrasLoading={extrasLoading}
+          extrasError={extrasError}
+          onAdd={handleExtrasAdd}
+          onUpdate={handleExtrasUpdate}
+          onRefresh={loadExtras}
+        />}
+
         {!loading && tab === 'pool' && poolMode && <PoolView
           pool={pool}
           poolLoading={poolLoading}
@@ -2774,6 +3051,14 @@ export default function App() {
         <PoolLoginDialog
           onConfirm={handlePoolLogin}
           onCancel={() => setPoolLoginOpen(false)}
+        />
+      )}
+
+      {/* #46 (v3.25) — Modal de login de Extras (usuario + password) */}
+      {extrasLoginOpen && (
+        <ExtrasLoginDialog
+          onConfirm={handleExtrasLogin}
+          onCancel={() => setExtrasLoginOpen(false)}
         />
       )}
 
@@ -3241,6 +3526,739 @@ function PoolView({ pool, poolLoading, poolError, onAdd, onAnular, onRefresh }) 
       {anularTarget && (
         <PoolAnularDialog
           row={anularTarget}
+          onConfirm={doAnular}
+          onCancel={() => setAnularTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BACKLOG #46 (v3.25) — EXTRAS: solicitud y aprobación de horas extras
+// ═══════════════════════════════════════════════════════════════════
+// Modelo del flujo, para que se entienda leyendo solo esto:
+//
+//   - Tres ENCARGADOS cargan solicitudes de horas extras. Cada uno ve
+//     únicamente las que cargó él (filtro por AUTOR, no por turno: los turnos
+//     rotan y un turno fijo por usuario se rompería en la primera rotación).
+//   - Un JEFE ve todas, aprueba o rechaza. También puede cargar, y lo que
+//     carga nace ya aprobado (se autoaprueba: no tiene a quién elevarlo).
+//   - Las fechas FUTURAS son válidas y son el caso normal: se solicita antes
+//     de hacer el trabajo, no después. Al revés que los reportes, que bloquean
+//     el futuro (#11).
+//   - Una solicitud `pendiente` es editable y anulable por su autor. Una vez
+//     resuelta queda congelada; corregir = anular con motivo y cargar de nuevo.
+//   - Anular es soft-delete con motivo obligatorio, NUNCA DELETE (la tabla ni
+//     siquiera tiene GRANT de DELETE). El encargado anula solo las propias y
+//     pendientes; el jefe anula cualquiera, en cualquier estado.
+//
+// Lo que este módulo NO garantiza está documentado arriba de EXTRAS_USUARIOS.
+
+function ExtrasLoginDialog({ onConfirm, onCancel }) {
+  const [user, setUser] = useState('');
+  const [pwd, setPwd] = useState('');
+  const [error, setError] = useState('');
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    inputRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const submit = () => {
+    if (!user.trim() || !pwd) { setError('Completá usuario y contraseña'); return; }
+    const ok = onConfirm(user, pwd);
+    if (!ok) setError('Usuario o contraseña incorrectos');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-cyan-600 flex items-center justify-center flex-shrink-0">
+            <Timer className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">Horas extras</h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Solicitud y aprobación de horas extras. Ingresá con tu usuario.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          <input ref={inputRef} type="text" value={user} autoComplete="username"
+            autoCapitalize="none" autoCorrect="off" spellCheck={false}
+            onChange={e => { setUser(e.target.value); setError(''); }}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+            placeholder="Usuario"
+            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition" />
+          <input type="password" value={pwd} autoComplete="current-password"
+            onChange={e => { setPwd(e.target.value); setError(''); }}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+            placeholder="Contraseña"
+            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition" />
+        </div>
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+            Cancelar
+          </button>
+          <button onClick={submit}
+            className="px-4 py-2 text-sm font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition">
+            Ingresar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Diálogo de motivo, compartido por anulación (motivo OBLIGATORIO, lo exige
+// también el CHECK `horas_extras_anulacion` de la tabla) y rechazo (motivo
+// opcional, decidido así el 2026-08-23).
+function ExtrasMotivoDialog({ titulo, descripcion, placeholder, requerido, cta, ctaColor, iconColor, icon: Icon, onConfirm, onCancel }) {
+  const [motivo, setMotivo] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    inputRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const submit = async () => {
+    const m = motivo.trim();
+    if (requerido && !m) { setError('El motivo es obligatorio'); return; }
+    setBusy(true);
+    try { await onConfirm(m); }
+    catch (e) { setError(e.message || 'No se pudo completar la operación'); setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+         onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-5"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className={`w-10 h-10 rounded-full ${iconColor} flex items-center justify-center flex-shrink-0`}>
+            <Icon className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">{titulo}</h3>
+            <p className="text-sm text-slate-600 leading-relaxed">{descripcion}</p>
+          </div>
+        </div>
+        <input ref={inputRef} type="text" value={motivo}
+          onChange={e => { setMotivo(e.target.value); setError(''); }}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+          placeholder={placeholder}
+          className={inputCls} />
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel} disabled={busy}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition disabled:opacity-50">
+            Cancelar
+          </button>
+          <button onClick={submit} disabled={busy}
+            className={`px-4 py-2 text-sm font-semibold text-white rounded-lg transition disabled:opacity-50 ${ctaColor}`}>
+            {busy ? 'Guardando…' : cta}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Selector de hora en 24 h. Reemplaza a <input type="time">, cuyo formato lo
+// decide el LOCALE del navegador/SO y no se puede forzar desde el HTML: con el
+// navegador en inglés aparece el picker de AM/PM, y no hay atributo que lo
+// cambie. Con dos selects el formato es el mismo para todos los usuarios,
+// independiente de cómo tenga configurada la máquina cada encargado.
+// El valor sigue siendo "HH:MM" de 24 h, igual que antes — la columna `time`
+// de Postgres no se entera de este cambio.
+// Los minutos son SOLO :00 y :30 — las horas extras no se fraccionan por debajo
+// de la media hora. Al elegir la hora, los minutos se completan en '00' solos.
+const HORAS_24 = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTOS_VALIDOS = ['00', '30'];
+
+function TimeInput24({ value, onChange, disabled }) {
+  const [h, m] = (value || '').split(':');
+  // Elegir solo una de las dos mitades completa la otra en '00' en vez de dejar
+  // un valor a medio formar que después rebota en la validación.
+  const setH = (nh) => onChange(nh ? `${nh}:${m || '00'}` : '');
+  const setM = (nm) => onChange(`${h || '00'}:${nm}`);
+  // Si una fila guardada trae un minuto fuera de la lista (por ejemplo :45 de
+  // una carga anterior a esta regla), se agrega como opción en vez de dejar el
+  // select vacío: editar el motivo de esa fila no le puede cambiar la hora en
+  // silencio. La opción extra desaparece en cuanto se elige :00 o :30.
+  const opcionesMin = m && !MINUTOS_VALIDOS.includes(m)
+    ? [...MINUTOS_VALIDOS, m].sort()
+    : MINUTOS_VALIDOS;
+  const selCls = "px-2 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition num font-semibold";
+
+  return (
+    <div className="flex items-center gap-1">
+      <select className={selCls} value={h || ''} onChange={e => setH(e.target.value)} disabled={disabled}>
+        <option value="">--</option>
+        {HORAS_24.map(x => <option key={x} value={x}>{x}</option>)}
+      </select>
+      <span className="text-slate-400 font-bold">:</span>
+      <select className={selCls} value={m || ''} onChange={e => setM(e.target.value)} disabled={disabled}>
+        <option value="">--</option>
+        {opcionesMin.map(x => <option key={x} value={x}>{x}</option>)}
+      </select>
+      {value && value.includes(':') && (
+        <span className="text-[10px] text-slate-400 whitespace-nowrap ml-0.5">{to12h(value)}</span>
+      )}
+    </div>
+  );
+}
+
+// Lista editable de OTs asociadas. Opcionales (hay extras sin OT: cobertura por
+// ausencia, guardia). Reutiliza OTNumberInput, así que no se puede tipear un
+// número no canónico — misma garantía que en el reporte y en el pool (#39).
+function ExtrasOtsInput({ ots, onChange, disabled }) {
+  const setAt = (i, v) => onChange(ots.map((o, k) => (k === i ? v : o)));
+  const add = () => onChange([...ots, '']);
+  const del = (i) => onChange(ots.filter((_, k) => k !== i));
+
+  return (
+    <div className="flex flex-col gap-2">
+      {ots.length === 0 && (
+        <span className="text-xs text-slate-400 italic">Sin OTs asociadas</span>
+      )}
+      {ots.map((o, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <OTNumberInput value={o} onChange={v => setAt(i, v)} disabled={disabled} />
+          <button type="button" onClick={() => del(i)} disabled={disabled}
+            className="p-1.5 hover:bg-red-50 rounded transition disabled:opacity-40" title="Quitar OT">
+            <X className="w-4 h-4 text-red-500" />
+          </button>
+        </div>
+      ))}
+      <button type="button" onClick={add} disabled={disabled}
+        className="self-start inline-flex items-center gap-1 text-xs font-medium text-cyan-700 hover:text-cyan-800 disabled:opacity-40">
+        <Plus className="w-3.5 h-3.5" />Agregar OT
+      </button>
+    </div>
+  );
+}
+
+const EXTRAS_ESTADO_STYLE = {
+  pendiente: 'bg-amber-100 text-amber-700',
+  aprobada:  'bg-emerald-100 text-emerald-700',
+  rechazada: 'bg-red-100 text-red-700'
+};
+
+function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdate, onRefresh }) {
+  const esJefe = sesion.rol === 'jefe';
+
+  // Form
+  const [tecnico, setTecnico] = useState('');
+  const [fecha, setFecha] = useState(todayLocalISO());
+  const [horaInicio, setHoraInicio] = useState('');
+  const [horaFin, setHoraFin] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [ots, setOts] = useState([]);
+  const [editId, setEditId] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // Filtros del listado (también acotan lo que sale al Excel)
+  const [filtroEstado, setFiltroEstado] = useState('');
+  const [filtroDesde, setFiltroDesde] = useState('');
+  const [filtroHasta, setFiltroHasta] = useState('');
+  const [verAnuladas, setVerAnuladas] = useState(false);
+
+  // Diálogos
+  const [anularTarget, setAnularTarget] = useState(null);
+  const [rechazarTarget, setRechazarTarget] = useState(null);
+
+  // ── Visibilidad por rol (partición de UI, no de datos: ver nota en
+  //    EXTRAS_USUARIOS). Encargado = solo lo que cargó él, por AUTOR.
+  const visibles = useMemo(
+    () => (esJefe ? extras : extras.filter(r => r.solicitado_por === sesion.user)),
+    [extras, esJefe, sesion.user]
+  );
+
+  const listado = useMemo(() => visibles
+    .filter(r => (verAnuladas ? true : !r.anulada_at))
+    .filter(r => (filtroEstado ? r.estado === filtroEstado : true))
+    .filter(r => (filtroDesde ? r.fecha >= filtroDesde : true))
+    .filter(r => (filtroHasta ? r.fecha <= filtroHasta : true)),
+    [visibles, verAnuladas, filtroEstado, filtroDesde, filtroHasta]);
+
+  // Totales sobre lo que se está viendo. Las anuladas NO suman nunca, aunque
+  // estén visibles con el checkbox: una hora anulada no se trabaja ni se paga.
+  const totales = useMemo(() => {
+    const vivas = listado.filter(r => !r.anulada_at);
+    const sum = (est) => vivas
+      .filter(r => r.estado === est)
+      .reduce((a, r) => a + (Number(r.horas) || 0), 0);
+    return {
+      pendientes: sum('pendiente'),
+      aprobadas: sum('aprobada'),
+      nPendientes: vivas.filter(r => r.estado === 'pendiente').length
+    };
+  }, [listado]);
+
+  const cruza = extrasCruzaMedianoche(horaInicio, horaFin);
+  const horasPreview = extrasHorasCalc(fecha, horaInicio, horaFin);
+
+  const resetForm = () => {
+    setEditId(null);
+    setTecnico('');
+    setHoraInicio('');
+    setHoraFin('');
+    setMotivo('');
+    setOts([]);
+    // La fecha NO se resetea: al cargar varios extras del mismo día seguidos,
+    // volver a tipearla cada vez es la forma más rápida de equivocarse.
+  };
+
+  const cargarParaEditar = (r) => {
+    setEditId(r.id);
+    setTecnico(r.tecnico_nombre || '');
+    setFecha(r.fecha);
+    setHoraInicio((r.hora_inicio || '').slice(0, 5));
+    setHoraFin((r.hora_fin || '').slice(0, 5));
+    setMotivo(r.motivo || '');
+    setOts(Array.isArray(r.ots) ? [...r.ots] : []);
+    setMsg('');
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const submit = async () => {
+    if (!tecnico) { setMsg('Error: elegí el técnico.'); return; }
+    if (!fecha) { setMsg('Error: falta la fecha.'); return; }
+    if (!horaInicio || !horaFin) { setMsg('Error: faltan las horas de inicio y fin.'); return; }
+    if (horasPreview <= 0) { setMsg('Error: la ventana horaria es inválida.'); return; }
+    if (horasPreview > 24) { setMsg('Error: más de 24 h en un solo extra — revisá las horas.'); return; }
+    if (!motivo.trim()) { setMsg('Error: el motivo es obligatorio.'); return; }
+
+    // Las OTs son opcionales, pero las que estén cargadas tienen que ser
+    // canónicas: se descartan las vacías y se rechaza cualquier resto sucio.
+    const otsLimpias = ots.map(o => canonOT(o)).filter(Boolean);
+    if (otsLimpias.length !== ots.filter(o => (o || '').trim()).length) {
+      setMsg('Error: hay una OT incompleta — elegí sector y número, o quitala.');
+      return;
+    }
+
+    setSaving(true);
+    setMsg('');
+    try {
+      const datos = {
+        tecnico_id: findTecnicoId(tecnico) || null,
+        tecnico_nombre: tecnico,
+        fecha,
+        hora_inicio: horaInicio,
+        fecha_fin: extrasFechaFin(fecha, horaInicio, horaFin),
+        hora_fin: horaFin,
+        motivo: motivo.trim(),
+        ots: otsLimpias
+      };
+
+      if (editId) {
+        // Edición de una pendiente propia: solo datos. El estado, el solicitante
+        // y la traza de resolución no se tocan desde acá por diseño.
+        await onUpdate(editId, datos);
+        setMsg('✓ Solicitud actualizada');
+      } else {
+        const ahora = new Date().toISOString();
+        await onAdd({
+          ...datos,
+          solicitado_por: sesion.user,
+          solicitado_por_nombre: sesion.nombre,
+          // El jefe autoaprueba lo que carga: no tiene a quién elevárselo.
+          // Queda registrado como resuelto por él mismo, que es lo que pasó.
+          estado: esJefe ? 'aprobada' : 'pendiente',
+          resuelto_por: esJefe ? sesion.user : null,
+          resuelto_por_nombre: esJefe ? sesion.nombre : null,
+          resuelto_at: esJefe ? ahora : null
+        });
+        setMsg(esJefe ? '✓ Horas extras cargadas y aprobadas' : '✓ Solicitud enviada · queda pendiente de aprobación');
+      }
+      resetForm();
+    } catch (e) {
+      setMsg(`Error: ${e.message || 'no se pudo guardar'}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const aprobar = async (r) => {
+    try {
+      await onUpdate(r.id, {
+        estado: 'aprobada',
+        resuelto_por: sesion.user,
+        resuelto_por_nombre: sesion.nombre,
+        resuelto_at: new Date().toISOString(),
+        rechazo_motivo: null
+      });
+      setMsg(`✓ Aprobada · ${r.tecnico_nombre}`);
+    } catch (e) {
+      setMsg(`Error: ${e.message || 'no se pudo aprobar'}`);
+    }
+  };
+
+  const doRechazar = async (motivoRechazo) => {
+    await onUpdate(rechazarTarget.id, {
+      estado: 'rechazada',
+      resuelto_por: sesion.user,
+      resuelto_por_nombre: sesion.nombre,
+      resuelto_at: new Date().toISOString(),
+      rechazo_motivo: motivoRechazo || null
+    });
+    setRechazarTarget(null);
+    setMsg('✓ Solicitud rechazada');
+  };
+
+  const doAnular = async (motivoAnulacion) => {
+    await onUpdate(anularTarget.id, {
+      anulada_at: new Date().toISOString(),
+      anulada_por: sesion.nombre,
+      anulada_motivo: motivoAnulacion
+    });
+    setAnularTarget(null);
+    setMsg('✓ Solicitud anulada');
+  };
+
+  // Permisos de fila. El encargado toca solo lo propio y pendiente; el jefe
+  // resuelve lo pendiente de otros y anula cualquier cosa, en cualquier estado.
+  const puedeEditar = (r) => !r.anulada_at && r.estado === 'pendiente' && r.solicitado_por === sesion.user;
+  const puedeAnular = (r) => !r.anulada_at && (esJefe || (r.estado === 'pendiente' && r.solicitado_por === sesion.user));
+  const puedeResolver = (r) => esJefe && !r.anulada_at && r.estado === 'pendiente';
+
+  // ── Export a Excel. Sale EXACTAMENTE lo que se está viendo (mismo rol, mismos
+  //    filtros), para que el archivo no pueda contener algo que en pantalla no
+  //    estaba. Una fila por solicitud.
+  const exportar = () => {
+    if (listado.length === 0) { setMsg('Error: no hay filas para exportar con estos filtros.'); return; }
+    const rows = listado.map(r => ({
+      'Técnico': r.tecnico_nombre,
+      'Fecha': r.fecha,
+      'Hora inicio': (r.hora_inicio || '').slice(0, 5),
+      'Fecha fin': r.fecha_fin,
+      'Hora fin': (r.hora_fin || '').slice(0, 5),
+      'Horas': Number(r.horas) || 0,
+      'Motivo': r.motivo || '',
+      'OTs asociadas': (r.ots || []).join(' · '),
+      'Estado': r.anulada_at ? 'ANULADA' : r.estado,
+      'Solicitada por': r.solicitado_por_nombre || '',
+      // Trazabilidad: en qué FECHA se pidió y en qué fecha se resolvió, en
+      // calendario local. Antes se exportaba el timestamptz crudo, que sale en
+      // UTC y corría el día en todo lo cargado después de las 21:00.
+      'Fecha de solicitud': formatFechaAudit(r.created_at),
+      'Resuelta por': r.resuelto_por_nombre || '',
+      'Fecha de resolución': r.resuelto_at ? formatFechaAudit(r.resuelto_at) : '',
+      'Motivo de rechazo': r.rechazo_motivo || '',
+      'Anulada por': r.anulada_por || '',
+      'Fecha de anulación': r.anulada_at ? formatFechaAudit(r.anulada_at) : '',
+      'Motivo de anulación': r.anulada_motivo || ''
+    }));
+    const rango = [filtroDesde || 'inicio', filtroHasta || todayLocalISO()].join('_a_');
+    downloadSingle(rows, 'Horas extras', `HorasExtras_${rango}.xlsx`);
+    setMsg(`✓ Exportadas ${rows.length} solicitudes`);
+  };
+
+  if (!storage.configured) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-amber-800">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          Las horas extras requieren Supabase configurado. En modo local no están disponibles.
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* ── ALTA / EDICIÓN ─────────────────────────────────────────── */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionTitle icon={Timer} accent={esJefe ? 'emerald' : 'cyan'}>
+            {editId ? 'Editar solicitud' : (esJefe ? 'Cargar horas extras' : 'Solicitar horas extras')}
+          </SectionTitle>
+          <span className="text-xs text-slate-500 mb-4">
+            {sesion.nombre} · <span className="font-semibold">{esJefe ? 'jefe' : 'encargado'}</span>
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <Field label="Técnico">
+            <select className={inputCls} value={tecnico} onChange={e => setTecnico(e.target.value)}>
+              <option value="">—</option>
+              {TECNICO_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </Field>
+
+          {/* Sin `max`: las fechas futuras son válidas y son el caso normal
+              (se solicita antes de hacer el trabajo). Ver #11 para el contraste
+              con los reportes, donde el futuro sí está bloqueado. */}
+          <Field label="Fecha del extra">
+            <input type="date" className={`${inputCls} num`} value={fecha}
+              onChange={e => setFecha(e.target.value)} />
+          </Field>
+
+          <Field label="Hora de inicio">
+            <TimeInput24 value={horaInicio} onChange={setHoraInicio} />
+          </Field>
+
+          <Field label="Hora de fin">
+            <div className="flex items-center gap-2 flex-wrap">
+              <TimeInput24 value={horaFin} onChange={setHoraFin} />
+              {cruza && (
+                <span className="text-[10px] px-1.5 py-1 bg-indigo-100 text-indigo-700 rounded font-bold whitespace-nowrap"
+                      title={`Cruza medianoche: termina el ${formatDateShort(extrasFechaFin(fecha, horaInicio, horaFin))}`}>
+                  +1 día
+                </span>
+              )}
+            </div>
+          </Field>
+
+          <Field label="Motivo" className="lg:col-span-3">
+            <input type="text" className={inputCls} value={motivo}
+              onChange={e => setMotivo(e.target.value)}
+              placeholder="Ej: parada de planta de efluentes, cobertura por ausencia…" />
+          </Field>
+
+          <Field label="Duración">
+            <div className="px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg num font-semibold text-slate-700">
+              {horasPreview > 0 ? formatHoras(horasPreview) : '—'}
+            </div>
+          </Field>
+
+          <Field label="OTs asociadas (opcional)" className="lg:col-span-4">
+            <ExtrasOtsInput ots={ots} onChange={setOts} />
+          </Field>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 mt-4">
+          <button onClick={submit} disabled={saving}
+            className={`inline-flex items-center gap-2 px-5 py-2.5 text-white rounded-xl font-bold text-sm transition disabled:opacity-50 shadow-md ${esJefe ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-cyan-600 hover:bg-cyan-500'}`}>
+            {editId ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+            {saving ? 'Guardando…' : (editId ? 'Guardar cambios' : (esJefe ? 'Cargar y aprobar' : 'Solicitar'))}
+          </button>
+          {editId && (
+            <button onClick={() => { resetForm(); setMsg(''); }}
+              className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+              Cancelar edición
+            </button>
+          )}
+          {msg && (
+            <span className={`text-xs font-medium ${msg.startsWith('Error') ? 'text-red-600' : 'text-emerald-600'}`}>
+              {msg}
+            </span>
+          )}
+        </div>
+
+        <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
+          {esJefe
+            ? 'Lo que cargues acá queda aprobado en el momento, registrado a tu nombre.'
+            : 'La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular.'}
+        </p>
+      </Card>
+
+      {/* ── LISTADO ────────────────────────────────────────────────── */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <SectionTitle icon={ListChecks} accent="slate">
+            {esJefe ? 'Todas las solicitudes' : 'Mis solicitudes'}
+          </SectionTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
+              value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}>
+              <option value="">Todos los estados</option>
+              <option value="pendiente">Pendientes</option>
+              <option value="aprobada">Aprobadas</option>
+              <option value="rechazada">Rechazadas</option>
+            </select>
+            <input type="date" className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg num"
+              value={filtroDesde} onChange={e => setFiltroDesde(e.target.value)} title="Desde" />
+            <input type="date" className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg num"
+              value={filtroHasta} onChange={e => setFiltroHasta(e.target.value)} title="Hasta" />
+            <label className="flex items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" checked={verAnuladas} onChange={e => setVerAnuladas(e.target.checked)} />
+              Ver anuladas
+            </label>
+            <button onClick={exportar}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition"
+              title="Exportar a Excel lo que se ve con estos filtros">
+              <Download className="w-3.5 h-3.5" />Excel
+            </button>
+            <button onClick={onRefresh} className="p-1.5 hover:bg-slate-100 rounded transition" title="Refrescar">
+              <RefreshCw className="w-4 h-4 text-slate-500" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-4 mb-4 text-xs text-slate-600">
+          <span><strong className="num text-amber-700">{formatHoras(totales.pendientes)}</strong> pendientes de aprobación
+            {totales.nPendientes > 0 && <span className="num"> ({totales.nPendientes})</span>}</span>
+          <span><strong className="num text-emerald-700">{formatHoras(totales.aprobadas)}</strong> aprobadas</span>
+          <span><strong className="num text-slate-800">{listado.length}</strong> solicitudes en pantalla</span>
+        </div>
+
+        {extrasError && (
+          <div className="mb-3 text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" />{extrasError}
+          </div>
+        )}
+
+        {extrasLoading ? (
+          <div className="text-center text-slate-500 py-10 text-sm">Cargando horas extras…</div>
+        ) : listado.length === 0 ? (
+          <EmptyHint>No hay solicitudes con estos filtros.</EmptyHint>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="py-2 pr-3">Técnico</th>
+                  <th className="py-2 pr-3">Fecha</th>
+                  <th className="py-2 pr-3">Horario</th>
+                  <th className="py-2 pr-3 text-right">Horas</th>
+                  <th className="py-2 pr-3">Motivo</th>
+                  <th className="py-2 pr-3">OTs</th>
+                  <th className="py-2 pr-3">Estado</th>
+                  {esJefe && <th className="py-2 pr-3">Solicitó</th>}
+                  <th className="py-2 pr-3">Cargada</th>
+                  <th className="py-2 pr-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {listado.map(r => {
+                  const cruzaRow = r.fecha_fin !== r.fecha;
+                  return (
+                    <tr key={r.id} className={`border-b border-slate-100 ${r.anulada_at ? 'opacity-50' : ''}`}>
+                      <td className="py-2 pr-3 font-semibold text-slate-800 whitespace-nowrap">
+                        {r.anulada_at ? <s>{r.tecnico_nombre}</s> : r.tecnico_nombre}
+                      </td>
+                      <td className="py-2 pr-3 num text-slate-600 whitespace-nowrap">{formatDateShort(r.fecha)}</td>
+                      <td className="py-2 pr-3 num text-slate-600 whitespace-nowrap">
+                        {(r.hora_inicio || '').slice(0, 5)}–{(r.hora_fin || '').slice(0, 5)}
+                        {cruzaRow && (
+                          <span className="ml-1 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
+                                title={`Termina el ${formatDateShort(r.fecha_fin)}`}>+1</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 num text-right font-semibold text-slate-800 whitespace-nowrap">
+                        {formatHoras(r.horas)}
+                      </td>
+                      <td className="py-2 pr-3 text-slate-600 max-w-[260px] truncate" title={r.motivo || ''}>
+                        {r.motivo || '—'}
+                      </td>
+                      <td className="py-2 pr-3 num text-slate-500 text-xs max-w-[160px] truncate"
+                          title={(r.ots || []).join(' · ')}>
+                        {(r.ots || []).length ? (r.ots || []).join(' · ') : '—'}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${EXTRAS_ESTADO_STYLE[r.estado] || 'bg-slate-200 text-slate-600'}`}
+                              title={[
+                                r.resuelto_por_nombre ? `Resuelta por ${r.resuelto_por_nombre}` : '',
+                                r.rechazo_motivo ? `Motivo: ${r.rechazo_motivo}` : ''
+                              ].filter(Boolean).join(' · ')}>
+                          {r.estado}
+                        </span>
+                        {r.anulada_at && (
+                          <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-slate-200 text-slate-600"
+                                title={`${formatFechaAudit(r.anulada_at)}${r.anulada_por ? ` — ${r.anulada_por}` : ''}${r.anulada_motivo ? `: ${r.anulada_motivo}` : ''}`}>
+                            anulada
+                          </span>
+                        )}
+                        {/* Cuándo se resolvió y quién, debajo del estado. */}
+                        {r.resuelto_at && (
+                          <div className="text-[10px] text-slate-400 num whitespace-nowrap mt-0.5"
+                               title={r.resuelto_por_nombre ? `Resuelta por ${r.resuelto_por_nombre}` : ''}>
+                            {formatFechaAudit(r.resuelto_at)}
+                          </div>
+                        )}
+                      </td>
+                      {esJefe && (
+                        <td className="py-2 pr-3 text-slate-500 text-xs whitespace-nowrap">{r.solicitado_por_nombre || '—'}</td>
+                      )}
+                      {/* Momento en que el encargado dejó asentada la solicitud. */}
+                      <td className="py-2 pr-3 text-slate-400 text-[11px] num whitespace-nowrap">
+                        {formatFechaAudit(r.created_at)}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <div className="flex items-center justify-end gap-1">
+                          {puedeResolver(r) && (
+                            <>
+                              <button onClick={() => aprobar(r)}
+                                className="p-1 hover:bg-emerald-50 rounded transition" title="Aprobar">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                              </button>
+                              <button onClick={() => setRechazarTarget(r)}
+                                className="p-1 hover:bg-red-50 rounded transition" title="Rechazar">
+                                <X className="w-4 h-4 text-red-500" />
+                              </button>
+                            </>
+                          )}
+                          {puedeEditar(r) && (
+                            <button onClick={() => cargarParaEditar(r)}
+                              className="p-1 hover:bg-sky-50 rounded transition" title="Editar (solo mientras esté pendiente)">
+                              <Edit3 className="w-4 h-4 text-sky-600" />
+                            </button>
+                          )}
+                          {puedeAnular(r) && (
+                            <button onClick={() => setAnularTarget(r)}
+                              className="p-1 hover:bg-amber-50 rounded transition" title="Anular con motivo">
+                              <Ban className="w-4 h-4 text-amber-600" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <p className="text-[11px] text-slate-400 mt-4 leading-relaxed">
+          Registro de control interno del sector. Las credenciales de esta solapa son una
+          barrera contra cargas accidentales y sirven para dejar asentado quién solicitó y
+          quién aprobó — no son un control de acceso ni una firma electrónica.
+        </p>
+      </Card>
+
+      {rechazarTarget && (
+        <ExtrasMotivoDialog
+          titulo="Rechazar solicitud"
+          descripcion={`${rechazarTarget.tecnico_nombre} · ${formatDateShort(rechazarTarget.fecha)} · ${formatHoras(rechazarTarget.horas)}. El motivo es opcional.`}
+          placeholder="Motivo del rechazo (opcional)"
+          requerido={false}
+          cta="Rechazar"
+          ctaColor="bg-red-600 hover:bg-red-500"
+          iconColor="bg-red-500"
+          icon={X}
+          onConfirm={doRechazar}
+          onCancel={() => setRechazarTarget(null)}
+        />
+      )}
+
+      {anularTarget && (
+        <ExtrasMotivoDialog
+          titulo="Anular solicitud"
+          descripcion={`${anularTarget.tecnico_nombre} · ${formatDateShort(anularTarget.fecha)} · ${formatHoras(anularTarget.horas)}. Queda registrada como anulada, con el motivo. No se borra.`}
+          placeholder="Motivo de la anulación"
+          requerido={true}
+          cta="Anular"
+          ctaColor="bg-amber-600 hover:bg-amber-500"
+          iconColor="bg-amber-500"
+          icon={Ban}
           onConfirm={doAnular}
           onCancel={() => setAnularTarget(null)}
         />
