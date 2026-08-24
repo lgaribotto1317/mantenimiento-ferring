@@ -434,21 +434,25 @@ const extrasHorasCalc = (fecha, horaInicio, horaFin) => {
   return Math.round(((end - ini) / 3600000) * 100) / 100;
 };
 
-// Timestamp de auditoría en hora LOCAL: "24/ago/26 19:05".
-// Los timestamptz vuelven de Postgres en UTC; renderizarlos crudos con
-// .slice()/replace() los deja 3 h adelantados en Argentina — era el bug del
-// export de la primera versión de #46. new Date() + getters locales convierte
-// bien y no depende del locale del navegador para el ORDEN de los campos.
-const formatTimestamp = (iso) => {
+// Fecha de auditoría (solicitud, resolución, anulación) en calendario LOCAL:
+// "24/ago/26". Se muestra solo la FECHA, sin hora — decidido el 2026-08-24.
+// La base sigue guardando el timestamptz completo: tirar la hora en la columna
+// sería irreversible y no ahorra nada, mientras que ocultarla en pantalla es
+// esto. Si algún día hace falta la hora, está.
+//
+// La conversión a local NO es cosmética: los timestamptz vuelven de Postgres en
+// UTC, y en Argentina (UTC−3) todo lo cargado después de las 21:00 cae al día
+// SIGUIENTE si se lee crudo. Una solicitud del lunes 23:30 se mostraría como
+// martes. new Date() + getters locales lo resuelve; slice()/replace() sobre el
+// string ISO no — ese era el bug de la primera versión de #46.
+const formatFechaAudit = (iso) => {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return '—';
   const dd = String(d.getDate()).padStart(2, '0');
   const mmm = MESES_CORTOS[d.getMonth()] || '???';
   const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mmm}/${yy} ${hh}:${mi}`;
+  return `${dd}/${mmm}/${yy}`;
 };
 
 // Equivalente en 12 h de un "HH:MM" de 24 h, solo como referencia visual
@@ -3950,15 +3954,15 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       'OTs asociadas': (r.ots || []).join(' · '),
       'Estado': r.anulada_at ? 'ANULADA' : r.estado,
       'Solicitada por': r.solicitado_por_nombre || '',
-      // Trazabilidad: CUÁNDO se pidió y CUÁNDO se resolvió, en hora local.
-      // Antes se exportaba el timestamptz crudo, que sale en UTC: en Argentina
-      // eso mostraba una aprobación de las 19:00 como las 22:00.
-      'Fecha de solicitud': formatTimestamp(r.created_at),
+      // Trazabilidad: en qué FECHA se pidió y en qué fecha se resolvió, en
+      // calendario local. Antes se exportaba el timestamptz crudo, que sale en
+      // UTC y corría el día en todo lo cargado después de las 21:00.
+      'Fecha de solicitud': formatFechaAudit(r.created_at),
       'Resuelta por': r.resuelto_por_nombre || '',
-      'Fecha de resolución': r.resuelto_at ? formatTimestamp(r.resuelto_at) : '',
+      'Fecha de resolución': r.resuelto_at ? formatFechaAudit(r.resuelto_at) : '',
       'Motivo de rechazo': r.rechazo_motivo || '',
       'Anulada por': r.anulada_por || '',
-      'Fecha de anulación': r.anulada_at ? formatTimestamp(r.anulada_at) : '',
+      'Fecha de anulación': r.anulada_at ? formatFechaAudit(r.anulada_at) : '',
       'Motivo de anulación': r.anulada_motivo || ''
     }));
     const rango = [filtroDesde || 'inicio', filtroHasta || todayLocalISO()].join('_a_');
@@ -4168,7 +4172,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                         </span>
                         {r.anulada_at && (
                           <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-slate-200 text-slate-600"
-                                title={`${formatTimestamp(r.anulada_at)}${r.anulada_por ? ` — ${r.anulada_por}` : ''}${r.anulada_motivo ? `: ${r.anulada_motivo}` : ''}`}>
+                                title={`${formatFechaAudit(r.anulada_at)}${r.anulada_por ? ` — ${r.anulada_por}` : ''}${r.anulada_motivo ? `: ${r.anulada_motivo}` : ''}`}>
                             anulada
                           </span>
                         )}
@@ -4176,7 +4180,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                         {r.resuelto_at && (
                           <div className="text-[10px] text-slate-400 num whitespace-nowrap mt-0.5"
                                title={r.resuelto_por_nombre ? `Resuelta por ${r.resuelto_por_nombre}` : ''}>
-                            {formatTimestamp(r.resuelto_at)}
+                            {formatFechaAudit(r.resuelto_at)}
                           </div>
                         )}
                       </td>
@@ -4185,7 +4189,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                       )}
                       {/* Momento en que el encargado dejó asentada la solicitud. */}
                       <td className="py-2 pr-3 text-slate-400 text-[11px] num whitespace-nowrap">
-                        {formatTimestamp(r.created_at)}
+                        {formatFechaAudit(r.created_at)}
                       </td>
                       <td className="py-2 pr-3">
                         <div className="flex items-center justify-end gap-1">
