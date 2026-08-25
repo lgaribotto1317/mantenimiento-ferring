@@ -210,6 +210,39 @@ const findTecnicoId = (name) => TECNICOS.find(t => t.name === name)?.id || '';
 // Subset who can act as Foguista (Planta de Efluentes y Caldera)
 const FOGUISTAS = ['FIGUEIRA, Gastón', 'MORENO, Jorge', 'MEDINA, Emanuel', 'YEGROS, Lucas'];
 
+// ═══════════════════════════════════════════════════════════════════
+// PERSONAL HABILITADO PARA HORAS EXTRAS (solapa Extras, #46)
+// ═══════════════════════════════════════════════════════════════════
+// Universo PROPIO de Extras. NO es TECNICOS y no debe serlo: incluye a los tres
+// supervisores (RESPONSABLES) y a personal que reporta horas extras pero NO
+// ejecuta OTs de mantenimiento. Ese personal no puede aparecer en "Equipo del
+// Turno", ni en Preventivos, ni en el export a Excel del reporte de turno —
+// por eso es una lista separada y no un alta en TECNICOS.
+//
+// Se DERIVA de los catálogos existentes en vez de copiar nombres: un alta o una
+// corrección en TECNICOS o RESPONSABLES se propaga sola acá. Lo único
+// hardcodeado es el personal que no vive en ningún otro catálogo.
+//
+// Orden: técnicos (orden del catálogo) → supervisores → personal solo-extras.
+// Dedup defensivo por si alguien pasa a estar en dos listas a la vez.
+//
+// Los que NO son técnicos no tienen `id`: `findTecnicoId` devuelve '' y en
+// `horas_extras` la fila queda con `tecnico_id = NULL` y el nombre en
+// `tecnico_nombre` (NOT NULL, snapshot), que es la fuente real del registro.
+// La tabla ya lo admite — `tecnico_id INTEGER` es nullable. Sin cambios en
+// Supabase, sin migración.
+const EXTRAS_SOLO_PERSONAL = [
+  'INGINO, Matias',
+  'NIETO, Ignacio',
+  'CUENCA, Sergio',
+  'LEZCANO, Nahuel'
+];
+const EXTRAS_PERSONAL_NAMES = [
+  ...TECNICO_NAMES,
+  ...RESPONSABLES.map(r => r.name),
+  ...EXTRAS_SOLO_PERSONAL
+].filter((n, i, arr) => arr.indexOf(n) === i);
+
 // V2.4 — Sectores válidos para N° OT (según SOP 10.3.2)
 // Formato: XXX-YYYYY (sector-correlativo de 5 dígitos)
 const SECTORES_OT = [
@@ -4075,9 +4108,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <Field label="Técnico">
+            {/* EXTRAS_PERSONAL_NAMES, no TECNICO_NAMES: acá también reportan
+                los supervisores y personal que no ejecuta OTs. Ver el catálogo
+                arriba para por qué es una lista separada. */}
             <select className={inputCls} value={tecnico} onChange={e => setTecnico(e.target.value)}>
               <option value="">—</option>
-              {TECNICO_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+              {EXTRAS_PERSONAL_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
           </Field>
 
