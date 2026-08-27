@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.26';
+const APP_VERSION = 'v3.27';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -242,6 +242,63 @@ const EXTRAS_PERSONAL_NAMES = [
   ...RESPONSABLES.map(r => r.name),
   ...EXTRAS_SOLO_PERSONAL
 ].filter((n, i, arr) => arr.indexOf(n) === i);
+
+// ═══════════════════════════════════════════════════════════════════
+// MOTIVOS DE HORAS EXTRAS (#54, v3.27)
+// ═══════════════════════════════════════════════════════════════════
+// El motivo dejó de ser texto libre: ahora es categoría cerrada + detalle.
+// La razón es el dashboard — agrupar por texto libre obligaba a normalizar
+// strings y "Cubrir licencia" y "cubrir licencia médica" caían en grupos
+// distintos. Con categoría el agrupamiento es exacto.
+//
+// El dominio está replicado en Postgres como CHECK constraint
+// (`horas_extras_motivo_categoria_chk`). SI SE AGREGA O RENOMBRA UNA
+// CATEGORÍA ACÁ, HAY QUE ACTUALIZAR LA CONSTRAINT EN EL MISMO PASO o el
+// insert lo rechaza la base con un error crudo de la API.
+const EXTRAS_MOTIVO_CATEGORIAS = [
+  'Cubrir vacaciones',
+  'Cubrir licencia médica',
+  'Cubrir vacante',
+  'Cubrir feriado',
+  'Trabajos específicos',
+  'Finalización de trabajos en curso',
+  'Otros'
+];
+
+// Categorías que exigen detalle. Las cuatro de cobertura se explican solas;
+// forzar texto ahí solo genera "-" y repeticiones de la categoría.
+// Replicado en `horas_extras_motivo_detalle_chk`.
+const EXTRAS_MOTIVO_REQUIERE_DETALLE = [
+  'Trabajos específicos',
+  'Finalización de trabajos en curso',
+  'Otros'
+];
+const extrasRequiereDetalle = (cat) => EXTRAS_MOTIVO_REQUIERE_DETALLE.includes(cat);
+
+// Motivos REACTIVOS: el trabajo se ejecuta ANTES de que el jefe apruebe, así
+// que la aprobación es un acto administrativo posterior al hecho. Los
+// planificados se piden y se aprueban antes. La distinción no cambia el
+// guardado — cambia cómo se leen las métricas de proceso en el dashboard,
+// donde promediar ambos tipos juntos no significa nada.
+const EXTRAS_MOTIVOS_REACTIVOS = [
+  'Trabajos específicos',
+  'Finalización de trabajos en curso'
+];
+const extrasEsReactivo = (cat) => EXTRAS_MOTIVOS_REACTIVOS.includes(cat);
+
+// ── Detección de solapamiento (#54) ────────────────────────────────
+// Una misma persona puede tener varios extras el mismo día y eso es legítimo
+// (un trabajo que se extiende se carga como fila aparte y las horas se suman).
+// Lo que NO se distingue solo es una duplicación por error de una cadena
+// legítima, y en un registro que alimenta liquidación eso se paga dos veces.
+// De ahí el aviso: detecta, avisa, y deja pasar si el usuario confirma.
+const extrasVentana = (r) => ({
+  ini: `${r.fecha}T${(r.hora_inicio || '').slice(0, 5)}`,
+  fin: `${r.fecha_fin}T${(r.hora_fin || '').slice(0, 5)}`
+});
+// Comparación lexicográfica de ISO: válida porque el formato es de ancho fijo.
+// Bordes que se tocan (una termina 14:00, la otra arranca 14:00) NO solapan.
+const extrasSolapan = (a, b) => a.ini < b.fin && b.ini < a.fin;
 
 // V2.4 — Sectores válidos para N° OT (según SOP 10.3.2)
 // Formato: XXX-YYYYY (sector-correlativo de 5 dígitos)
@@ -3879,11 +3936,14 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [fecha, setFecha] = useState(todayLocalISO());
   const [horaInicio, setHoraInicio] = useState('');
   const [horaFin, setHoraFin] = useState('');
+  const [motivoCat, setMotivoCat] = useState('');
   const [motivo, setMotivo] = useState('');
   const [ots, setOts] = useState([]);
   const [editId, setEditId] = useState(null);
   const [msg, setMsg] = useState('');
   const [saving, setSaving] = useState(false);
+  // Segundo click para aceptar un solapamiento detectado (#54).
+  const [solapeOk, setSolapeOk] = useState(false);
 
   // Filtros del listado (también acotan lo que sale al Excel)
   const [filtroEstado, setFiltroEstado] = useState('');
@@ -3926,13 +3986,41 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const cruza = extrasCruzaMedianoche(horaInicio, horaFin);
   const horasPreview = extrasHorasCalc(fecha, horaInicio, horaFin);
 
+  // ── Solapamiento con extras ya cargados de la misma persona (#54).
+  //    Se busca sobre `extras` COMPLETO, no sobre `visibles`: el encargado no
+  //    ve lo que cargó otro encargado, pero igual tiene que ser advertido si
+  //    se pisa con ello — si no, la duplicación queda invisible justo para
+  //    quien la está creando. Es el único lugar donde la partición de UI se
+  //    saltea a propósito.
+  //    No cuentan las anuladas ni las rechazadas: esas horas no se pagan.
+  const solapes = useMemo(() => {
+    if (!tecnico || !fecha || !horaInicio || !horaFin || horasPreview <= 0) return [];
+    const nueva = {
+      ini: `${fecha}T${horaInicio}`,
+      fin: `${extrasFechaFin(fecha, horaInicio, horaFin)}T${horaFin}`
+    };
+    return extras.filter(r =>
+      r.tecnico_nombre === tecnico &&
+      !r.anulada_at &&
+      r.estado !== 'rechazada' &&
+      r.id !== editId &&
+      extrasSolapan(nueva, extrasVentana(r))
+    );
+  }, [extras, tecnico, fecha, horaInicio, horaFin, horasPreview, editId]);
+
+  // Cualquier cambio en la ventana o la persona invalida la confirmación
+  // anterior: si no, se acepta un solapamiento y después se cambia la hora.
+  useEffect(() => { setSolapeOk(false); }, [tecnico, fecha, horaInicio, horaFin]);
+
   const resetForm = () => {
     setEditId(null);
     setTecnico('');
     setHoraInicio('');
     setHoraFin('');
+    setMotivoCat('');
     setMotivo('');
     setOts([]);
+    setSolapeOk(false);
     // La fecha NO se resetea: al cargar varios extras del mismo día seguidos,
     // volver a tipearla cada vez es la forma más rápida de equivocarse.
   };
@@ -3943,25 +4031,41 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     setFecha(r.fecha);
     setHoraInicio((r.hora_inicio || '').slice(0, 5));
     setHoraFin((r.hora_fin || '').slice(0, 5));
+    setMotivoCat(r.motivo_categoria || '');
     setMotivo(r.motivo || '');
     setOts(Array.isArray(r.ots) ? [...r.ots] : []);
+    setSolapeOk(false);
     setMsg('');
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const submit = async () => {
-    if (!tecnico) { setMsg('Error: elegí el técnico.'); return; }
+    if (!tecnico) { setMsg('Error: elegí a la persona.'); return; }
     if (!fecha) { setMsg('Error: falta la fecha.'); return; }
     if (!horaInicio || !horaFin) { setMsg('Error: faltan las horas de inicio y fin.'); return; }
     if (horasPreview <= 0) { setMsg('Error: la ventana horaria es inválida.'); return; }
     if (horasPreview > 24) { setMsg('Error: más de 24 h en un solo extra — revisá las horas.'); return; }
-    if (!motivo.trim()) { setMsg('Error: el motivo es obligatorio.'); return; }
+    if (!motivoCat) { setMsg('Error: elegí la categoría del motivo.'); return; }
+    if (extrasRequiereDetalle(motivoCat) && !motivo.trim()) {
+      setMsg(`Error: "${motivoCat}" necesita que detalles el trabajo.`);
+      return;
+    }
 
     // Las OTs son opcionales, pero las que estén cargadas tienen que ser
     // canónicas: se descartan las vacías y se rechaza cualquier resto sucio.
     const otsLimpias = ots.map(o => canonOT(o)).filter(Boolean);
     if (otsLimpias.length !== ots.filter(o => (o || '').trim()).length) {
       setMsg('Error: hay una OT incompleta — elegí sector y número, o quitala.');
+      return;
+    }
+
+    // Aviso blando de solapamiento (#54): no bloquea, pide un segundo click.
+    // Deliberadamente NO es un hard-block: encadenar extras sobre un trabajo
+    // que se extendió es un caso legítimo y frecuente.
+    if (solapes.length > 0 && !solapeOk) {
+      const cual = solapes[0];
+      setSolapeOk(true);
+      setMsg(`Error: ${tecnico} ya tiene un extra que se pisa con este (${formatDateShort(cual.fecha)} ${(cual.hora_inicio || '').slice(0, 5)}–${(cual.hora_fin || '').slice(0, 5)}). Si es correcto, volvé a tocar el botón para confirmar.`);
       return;
     }
 
@@ -3975,6 +4079,10 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         hora_inicio: horaInicio,
         fecha_fin: extrasFechaFin(fecha, horaInicio, horaFin),
         hora_fin: horaFin,
+        motivo_categoria: motivoCat,
+        // Vacío es válido para las categorías de cobertura. La constraint
+        // `horas_extras_motivo_no_vacio` se dropeó en v3.27 justamente para
+        // permitirlo; el Excel muestra la categoría cuando el detalle falta.
         motivo: motivo.trim(),
         ots: otsLimpias
       };
@@ -4056,13 +4164,21 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const exportar = () => {
     if (listado.length === 0) { setMsg('Error: no hay filas para exportar con estos filtros.'); return; }
     const rows = listado.map(r => ({
+      // El encabezado sigue diciendo "Técnico" a propósito (#53): renombrarlo
+      // rompería cualquier planilla o proceso que consuma la columna por
+      // nombre. En pantalla sí dice "Personal".
       'Técnico': r.tecnico_nombre,
       'Fecha': r.fecha,
       'Hora inicio': (r.hora_inicio || '').slice(0, 5),
       'Fecha fin': r.fecha_fin,
       'Hora fin': (r.hora_fin || '').slice(0, 5),
       'Horas': Number(r.horas) || 0,
-      'Motivo': r.motivo || '',
+      'Categoría': r.motivo_categoria || '',
+      // Fallback deliberado: las categorías de cobertura no exigen detalle, y
+      // una celda vacía en una planilla que puede ir a RRHH se lee como dato
+      // faltante. En la BASE `motivo` queda vacío — no se duplica la categoría
+      // — para que siga siendo consultable cuáles tienen detalle real.
+      'Motivo': (r.motivo || '').trim() || r.motivo_categoria || '',
       'OTs asociadas': (r.ots || []).join(' · '),
       'Estado': r.anulada_at ? 'ANULADA' : r.estado,
       'Solicitada por': r.solicitado_por_nombre || '',
@@ -4107,7 +4223,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          <Field label="Técnico">
+          <Field label="Personal">
             {/* EXTRAS_PERSONAL_NAMES, no TECNICO_NAMES: acá también reportan
                 los supervisores y personal que no ejecuta OTs. Ver el catálogo
                 arriba para por qué es una lista separada. */}
@@ -4141,10 +4257,25 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             </div>
           </Field>
 
-          <Field label="Motivo" className="lg:col-span-3">
+          <Field label="Motivo">
+            <select className={inputCls} value={motivoCat}
+              onChange={e => { setMotivoCat(e.target.value); }}>
+              <option value="">—</option>
+              {EXTRAS_MOTIVO_CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+
+          <Field
+            label={extrasRequiereDetalle(motivoCat) ? 'Detalle del trabajo *' : 'Detalle (opcional)'}
+            className="lg:col-span-2">
             <input type="text" className={inputCls} value={motivo}
               onChange={e => setMotivo(e.target.value)}
-              placeholder="Ej: parada de planta de efluentes, cobertura por ausencia…" />
+              placeholder={
+                !motivoCat ? 'Elegí primero una categoría…'
+                  : extrasRequiereDetalle(motivoCat)
+                    ? 'Qué trabajo se hizo — obligatorio para esta categoría'
+                    : 'Opcional: a quién cubre, o cualquier aclaración'
+              } />
           </Field>
 
           <Field label="Duración">
@@ -4157,6 +4288,38 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             <ExtrasOtsInput ots={ots} onChange={setOts} />
           </Field>
         </div>
+
+        {/* Aviso de solapamiento (#54). Informativo: no impide guardar. */}
+        {solapes.length > 0 && (
+          <div className="mt-4 flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-800 leading-relaxed">
+              <strong>{tecnico}</strong> ya tiene {solapes.length === 1 ? 'un extra' : `${solapes.length} extras`} que se
+              {solapes.length === 1 ? ' pisa' : ' pisan'} con esta ventana:
+              <ul className="mt-1 space-y-0.5">
+                {solapes.slice(0, 4).map(s => (
+                  <li key={s.id} className="num">
+                    · {formatDateShort(s.fecha)} {(s.hora_inicio || '').slice(0, 5)}–{(s.hora_fin || '').slice(0, 5)}
+                    <span className="font-sans"> · {s.motivo_categoria || s.motivo || 'sin motivo'} · {s.estado}</span>
+                  </li>
+                ))}
+                {solapes.length > 4 && <li className="text-amber-700">· y {solapes.length - 4} más</li>}
+              </ul>
+              <div className="mt-1">
+                Si el trabajo se extendió y esto es una continuación, está bien — confirmá y seguí.
+                Si es una carga repetida, corregila: se pagaría dos veces.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Los motivos reactivos se ejecutan antes de la aprobación. */}
+        {extrasEsReactivo(motivoCat) && (
+          <p className="text-[11px] text-slate-500 mt-3 leading-relaxed">
+            Este motivo se registra normalmente <strong>después</strong> de hecho el trabajo. La aprobación queda como
+            acto administrativo posterior, y el dashboard lo cuenta aparte de los motivos planificados.
+          </p>
+        )}
 
         <div className="flex flex-wrap items-center gap-3 mt-4">
           <button onClick={submit} disabled={saving}
@@ -4239,7 +4402,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                  <th className="py-2 pr-3">Técnico</th>
+                  <th className="py-2 pr-3">Personal</th>
                   <th className="py-2 pr-3">Fecha</th>
                   <th className="py-2 pr-3">Horario</th>
                   <th className="py-2 pr-3 text-right">Horas</th>
@@ -4270,8 +4433,14 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                       <td className="py-2 pr-3 num text-right font-semibold text-slate-800 whitespace-nowrap">
                         {formatHoras(r.horas)}
                       </td>
-                      <td className="py-2 pr-3 text-slate-600 max-w-[260px] truncate" title={r.motivo || ''}>
-                        {r.motivo || '—'}
+                      <td className="py-2 pr-3 text-slate-600 max-w-[260px]"
+                          title={[r.motivo_categoria, r.motivo].filter(Boolean).join(' — ')}>
+                        <div className="font-medium text-slate-700 truncate">
+                          {r.motivo_categoria || <span className="text-slate-400 italic">sin categoría</span>}
+                        </div>
+                        {(r.motivo || '').trim() && (
+                          <div className="text-[11px] text-slate-500 truncate">{r.motivo}</div>
+                        )}
                       </td>
                       <td className="py-2 pr-3 num text-slate-500 text-xs max-w-[160px] truncate"
                           title={(r.ots || []).join(' · ')}>
