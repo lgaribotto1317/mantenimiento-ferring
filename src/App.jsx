@@ -3892,36 +3892,6 @@ function TimeInput24({ value, onChange, disabled }) {
   );
 }
 
-// Lista editable de OTs asociadas. Opcionales (hay extras sin OT: cobertura por
-// ausencia, guardia). Reutiliza OTNumberInput, así que no se puede tipear un
-// número no canónico — misma garantía que en el reporte y en el pool (#39).
-function ExtrasOtsInput({ ots, onChange, disabled }) {
-  const setAt = (i, v) => onChange(ots.map((o, k) => (k === i ? v : o)));
-  const add = () => onChange([...ots, '']);
-  const del = (i) => onChange(ots.filter((_, k) => k !== i));
-
-  return (
-    <div className="flex flex-col gap-2">
-      {ots.length === 0 && (
-        <span className="text-xs text-slate-400 italic">Sin OTs asociadas</span>
-      )}
-      {ots.map((o, i) => (
-        <div key={i} className="flex items-center gap-1.5">
-          <OTNumberInput value={o} onChange={v => setAt(i, v)} disabled={disabled} />
-          <button type="button" onClick={() => del(i)} disabled={disabled}
-            className="p-1.5 hover:bg-red-50 rounded transition disabled:opacity-40" title="Quitar OT">
-            <X className="w-4 h-4 text-red-500" />
-          </button>
-        </div>
-      ))}
-      <button type="button" onClick={add} disabled={disabled}
-        className="self-start inline-flex items-center gap-1 text-xs font-medium text-cyan-700 hover:text-cyan-800 disabled:opacity-40">
-        <Plus className="w-3.5 h-3.5" />Agregar OT
-      </button>
-    </div>
-  );
-}
-
 const EXTRAS_ESTADO_STYLE = {
   pendiente: 'bg-amber-100 text-amber-700',
   aprobada:  'bg-emerald-100 text-emerald-700',
@@ -3938,7 +3908,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [horaFin, setHoraFin] = useState('');
   const [motivoCat, setMotivoCat] = useState('');
   const [motivo, setMotivo] = useState('');
-  const [ots, setOts] = useState([]);
   const [editId, setEditId] = useState(null);
   const [msg, setMsg] = useState('');
   const [saving, setSaving] = useState(false);
@@ -4019,7 +3988,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     setHoraFin('');
     setMotivoCat('');
     setMotivo('');
-    setOts([]);
     setSolapeOk(false);
     // La fecha NO se resetea: al cargar varios extras del mismo día seguidos,
     // volver a tipearla cada vez es la forma más rápida de equivocarse.
@@ -4033,7 +4001,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     setHoraFin((r.hora_fin || '').slice(0, 5));
     setMotivoCat(r.motivo_categoria || '');
     setMotivo(r.motivo || '');
-    setOts(Array.isArray(r.ots) ? [...r.ots] : []);
     setSolapeOk(false);
     setMsg('');
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -4048,14 +4015,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     if (!motivoCat) { setMsg('Error: elegí la categoría del motivo.'); return; }
     if (extrasRequiereDetalle(motivoCat) && !motivo.trim()) {
       setMsg(`Error: "${motivoCat}" necesita que detalles el trabajo.`);
-      return;
-    }
-
-    // Las OTs son opcionales, pero las que estén cargadas tienen que ser
-    // canónicas: se descartan las vacías y se rechaza cualquier resto sucio.
-    const otsLimpias = ots.map(o => canonOT(o)).filter(Boolean);
-    if (otsLimpias.length !== ots.filter(o => (o || '').trim()).length) {
-      setMsg('Error: hay una OT incompleta — elegí sector y número, o quitala.');
       return;
     }
 
@@ -4083,8 +4042,10 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         // Vacío es válido para las categorías de cobertura. La constraint
         // `horas_extras_motivo_no_vacio` se dropeó en v3.27 justamente para
         // permitirlo; el Excel muestra la categoría cuando el detalle falta.
-        motivo: motivo.trim(),
-        ots: otsLimpias
+        motivo: motivo.trim()
+        // `ots` NO se manda (#55): la columna sigue existiendo en la base con
+        // DEFAULT '{}' NOT NULL, así que las filas nuevas nacen con array
+        // vacío sin que el cliente la toque.
       };
 
       if (editId) {
@@ -4179,7 +4140,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       // faltante. En la BASE `motivo` queda vacío — no se duplica la categoría
       // — para que siga siendo consultable cuáles tienen detalle real.
       'Motivo': (r.motivo || '').trim() || r.motivo_categoria || '',
-      'OTs asociadas': (r.ots || []).join(' · '),
       'Estado': r.anulada_at ? 'ANULADA' : r.estado,
       'Solicitada por': r.solicitado_por_nombre || '',
       // Trazabilidad: en qué FECHA se pidió y en qué fecha se resolvió, en
@@ -4282,10 +4242,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             <div className="px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg num font-semibold text-slate-700">
               {horasPreview > 0 ? formatHoras(horasPreview) : '—'}
             </div>
-          </Field>
-
-          <Field label="OTs asociadas (opcional)" className="lg:col-span-4">
-            <ExtrasOtsInput ots={ots} onChange={setOts} />
           </Field>
         </div>
 
@@ -4407,7 +4363,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                   <th className="py-2 pr-3">Horario</th>
                   <th className="py-2 pr-3 text-right">Horas</th>
                   <th className="py-2 pr-3">Motivo</th>
-                  <th className="py-2 pr-3">OTs</th>
                   <th className="py-2 pr-3">Estado</th>
                   {esJefe && <th className="py-2 pr-3">Solicitó</th>}
                   <th className="py-2 pr-3">Cargada</th>
@@ -4441,10 +4396,6 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                         {(r.motivo || '').trim() && (
                           <div className="text-[11px] text-slate-500 truncate">{r.motivo}</div>
                         )}
-                      </td>
-                      <td className="py-2 pr-3 num text-slate-500 text-xs max-w-[160px] truncate"
-                          title={(r.ots || []).join(' · ')}>
-                        {(r.ots || []).length ? (r.ots || []).join(' · ') : '—'}
                       </td>
                       <td className="py-2 pr-3 whitespace-nowrap">
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${EXTRAS_ESTADO_STYLE[r.estado] || 'bg-slate-200 text-slate-600'}`}
