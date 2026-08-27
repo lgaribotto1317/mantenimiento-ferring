@@ -351,6 +351,23 @@ function extrasPeriodo(tipo, offset) {
   };
 }
 
+// Ventana de 12 meses para el gráfico de evolución (#49).
+// Independiente del período de los KPIs: el gráfico siempre muestra 12 meses,
+// porque una sola barra no es una evolución. `modo` es 'anio' (año calendario
+// que contiene al período) o 'movil' (los 12 meses que terminan en el período).
+// Se ancla en el ÚLTIMO mes del período para que, mirando un cuatrimestre o un
+// año, la ventana móvil no se corte antes de lo que se está mirando.
+function extrasVentana12(periodo, modo) {
+  const ult = periodo.meses[periodo.meses.length - 1];
+  if (modo === 'anio') {
+    return Array.from({ length: 12 }, (_, m) => ({ y: ult.y, m }));
+  }
+  return Array.from({ length: 12 }, (_, k) => {
+    const d = new Date(ult.y, ult.m - 11 + k, 1);
+    return { y: d.getFullYear(), m: d.getMonth() };
+  });
+}
+
 // Duración legible para los tiempos de resolución del dashboard.
 const formatDuracion = (horas) => {
   const h = Number(horas) || 0;
@@ -1067,7 +1084,25 @@ const storage = {
     return res.json();
   },
 
-  // BACKLOG #50 (v3.26) — Sonda para el aviso del botón de rol del header.
+  // #49 — Serie del gráfico de evolución: 12 meses, proyección MÍNIMA.
+  // Solo 4 columnas en vez de las 22 de `select=*`. Un año entero con esta
+  // proyección pesa menos que un mes con la fila completa, así que traer 12
+  // meses para el gráfico sale más barato que traer el período para los KPIs.
+  async listExtrasSerie(desde, hasta, limit = EXTRAS_DASHBOARD_LIMIT) {
+    if (!supabaseConfigured) return [];
+    const qs = [
+      'select=fecha,horas,estado,anulada_at',
+      `fecha=gte.${encodeURIComponent(desde)}`,
+      `fecha=lte.${encodeURIComponent(hasta)}`,
+      'order=fecha.asc',
+      `limit=${limit}`
+    ].join('&');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/horas_extras?${qs}`, { headers: sbHeaders() });
+    if (!res.ok) throw new Error(`Supabase extras serie: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  // #50 (v3.26) — Sonda para el aviso del botón de rol del header.
   // Corre para TODOS los usuarios al arrancar la app y en cada refresh, entren
   // o no a Extras: es el único modo de que el jefe vea que hay algo pendiente
   // sin loguearse. Por eso tiene que ser el query más barato posible.
@@ -4029,6 +4064,11 @@ function ExtrasDashboard() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
 
+  // Serie del gráfico de evolución: ventana propia de 12 meses, con su modo.
+  const [modo12, setModo12] = useState('anio');
+  const [serie, setSerie] = useState([]);
+  const [serieCargando, setSerieCargando] = useState(true);
+
   // Cambiar de granularidad vuelve al período actual: mantener el offset
   // saltaría a un cuatrimestre de hace años al pasar de mes a cuatrimestre.
   useEffect(() => { setOffset(0); }, [tipo]);
@@ -4050,6 +4090,25 @@ function ExtrasDashboard() {
   }, [periodo.desde, periodo.hasta]);
 
   useEffect(() => { setVerTodos(false); }, [periodo.desde, tipo]);
+
+  // ── Ventana de 12 meses del gráfico ──────────────────────────────
+  const meses12 = useMemo(() => extrasVentana12(periodo, modo12), [periodo, modo12]);
+  const rango12 = useMemo(() => {
+    const a = meses12[0], z = meses12[11];
+    return {
+      desde: isoLocalYMD(a.y, a.m, 1),
+      hasta: isoLocalYMD(z.y, z.m, new Date(z.y, z.m + 1, 0).getDate())
+    };
+  }, [meses12]);
+
+  useEffect(() => {
+    let vigente = true;
+    setSerieCargando(true);
+    storage.listExtrasSerie(rango12.desde, rango12.hasta)
+      .then(r => { if (vigente) { setSerie(r); setSerieCargando(false); } })
+      .catch(() => { if (vigente) { setSerie([]); setSerieCargando(false); } });
+    return () => { vigente = false; };
+  }, [rango12.desde, rango12.hasta]);
 
   const truncado = datos.length >= EXTRAS_DASHBOARD_LIMIT;
 
@@ -4089,17 +4148,25 @@ function ExtrasDashboard() {
     [porPersona, verTodos]
   );
 
-  // Evolución por mes. Se recorren los meses del PERÍODO, no los que tienen
-  // datos: un mes sin extras tiene que verse como cero, no desaparecer.
-  const porMes = useMemo(() => periodo.meses.map(({ y, m }) => {
-    const pre = `${y}-${String(m + 1).padStart(2, '0')}`;
-    const delMes = vivas.filter(r => (r.fecha || '').startsWith(pre));
-    return {
-      mes: `${MESES_CORTOS[m]}${periodo.meses.length > 4 ? '' : ` ${String(y).slice(2)}`}`,
-      aprobadas: Number(sumH(delMes.filter(r => r.estado === 'aprobada')).toFixed(2)),
-      pendientes: Number(sumH(delMes.filter(r => r.estado === 'pendiente')).toFixed(2))
-    };
-  }), [vivas, periodo]);
+  // Evolución: SIEMPRE 12 meses, sobre la serie propia y no sobre el período.
+  // Una sola barra no es una evolución. Se recorren los 12 meses de la ventana
+  // y no los que tienen datos: un mes en cero tiene que verse como cero.
+  // `enPeriodo` marca los meses que caen dentro del período de los KPIs, para
+  // que se vea dónde estás parado dentro de la ventana.
+  const porMes = useMemo(() => {
+    const vivasSerie = serie.filter(r => !r.anulada_at);
+    return meses12.map(({ y, m }) => {
+      const pre = `${y}-${String(m + 1).padStart(2, '0')}`;
+      const delMes = vivasSerie.filter(r => (r.fecha || '').startsWith(pre));
+      const primero = isoLocalYMD(y, m, 1);
+      return {
+        mes: `${MESES_CORTOS[m]} ${String(y).slice(2)}`,
+        enPeriodo: primero >= periodo.desde.slice(0, 7) + '-01' && primero <= periodo.hasta,
+        aprobadas: Number(sumH(delMes.filter(r => r.estado === 'aprobada')).toFixed(2)),
+        pendientes: Number(sumH(delMes.filter(r => r.estado === 'pendiente')).toFixed(2))
+      };
+    });
+  }, [serie, meses12, periodo]);
 
   // Horas por categoría de motivo. Exacto desde #54: antes era texto libre y
   // había que normalizar strings, con lo que "Cubrir licencia" y "cubrir
@@ -4208,6 +4275,61 @@ function ExtrasDashboard() {
         </div>
       )}
 
+      {/* ── Evolución: SIEMPRE 12 meses, ventana propia ─────────────
+          Va FUERA del condicional del período: aunque el período elegido
+          esté vacío, los otros 11 meses siguen teniendo algo que decir. */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SectionTitle icon={BarChart3} accent="emerald">Evolución · 12 meses</SectionTitle>
+          <div className="flex items-center gap-1 mb-4">
+            <button onClick={() => setModo12('anio')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
+                modo12 === 'anio' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+              }`} title="Enero a diciembre del año del período">
+              Año calendario
+            </button>
+            <button onClick={() => setModo12('movil')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
+                modo12 === 'movil' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+              }`} title="Los 12 meses que terminan en el período">
+              Últimos 12
+            </button>
+          </div>
+        </div>
+        {serieCargando ? (
+          <div className="text-center text-slate-500 py-16 text-sm">Cargando serie…</div>
+        ) : (
+          <>
+            <ResponsiveContainer width="100%" height={250}>
+              <BarChart data={porMes}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="mes" tick={{ fontSize: 10 }} interval={0} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatHoras(v)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {/* Los meses fuera del período se atenúan: la ventana es de 12
+                    pero los KPIs de abajo son del período. Sin esta señal, los
+                    dos bloques parecen hablar del mismo recorte y no lo hacen. */}
+                <Bar dataKey="aprobadas" name="Aprobadas" radius={[3, 3, 0, 0]}>
+                  {porMes.map((d, i) => (
+                    <Cell key={i} fill="#059669" fillOpacity={d.enPeriodo ? 1 : 0.35} />
+                  ))}
+                </Bar>
+                <Bar dataKey="pendientes" name="Pendientes" radius={[3, 3, 0, 0]}>
+                  {porMes.map((d, i) => (
+                    <Cell key={i} fill="#d97706" fillOpacity={d.enPeriodo ? 1 : 0.35} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <p className="text-[11px] text-slate-400 mt-2">
+              En color pleno, los meses del período seleccionado ({periodo.label}). El resto de la ventana
+              va atenuado y no entra en los números de abajo.
+            </p>
+          </>
+        )}
+      </Card>
+
       {cargando ? (
         <Card className="p-5">
           <div className="text-center text-slate-500 py-10 text-sm">Cargando {periodo.label}…</div>
@@ -4241,22 +4363,6 @@ function ExtrasDashboard() {
               <div className="text-[11px] text-slate-400">con extras en el período</div>
             </Card>
           </div>
-
-          {/* ── Evolución mensual ─────────────────────────────────── */}
-          <Card className="p-5">
-            <SectionTitle icon={BarChart3} accent="emerald">Evolución por mes</SectionTitle>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={porMes}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => formatHoras(v)} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="aprobadas" name="Aprobadas" fill="#059669" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="pendientes" name="Pendientes" fill="#d97706" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
 
           {/* ── Ranking por persona ───────────────────────────────── */}
           <Card className="p-5">
