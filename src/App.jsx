@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.27';
+const APP_VERSION = 'v3.28';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -155,6 +155,55 @@ const POOL_PASSWORD = 'Planificador2026';
 // SUPUESTO A VERIFICAR: el mapeo usuario → nombre se infirió de las direcciones
 // de mail que pasó Leo. Si alguno no corresponde, corregir acá: el `nombre` es
 // lo que queda escrito en cada solicitud como solicitante o resolutor.
+// ═══════════════════════════════════════════════════════════════════
+// ASIGNACIÓN DE PERSONAL A ENCARGADOS (#58, v3.28)
+// ═══════════════════════════════════════════════════════════════════
+// Define qué gente tiene a cargo cada encargado. Gobierna DOS cosas en la
+// solapa Extras:
+//  1. Qué solicitudes ve el encargado en el listado — su gente, sin importar
+//     quién las cargó. Antes veía lo que él mismo había cargado; el criterio
+//     cambió a "por persona" en v3.28.
+//  2. A quién puede cargarle extras — solo a su gente. El resto lo carga el
+//     jefe, que ve todo.
+//
+// Las 22 personas de TECNICOS están asignadas, sin solapes ni faltantes
+// (verificado contra el catálogo al definirlo). Las 7 restantes de
+// EXTRAS_PERSONAL_NAMES — los tres supervisores y los cuatro de
+// EXTRAS_SOLO_PERSONAL — NO tienen encargado a propósito: las carga y las ve
+// únicamente el jefe.
+//
+// La clave es el `user` de EXTRAS_USUARIOS, no el nombre: el nombre es dato
+// de presentación y podría cambiar de formato.
+//
+// OJO: esto es partición de UI, no de datos. Vale lo mismo que está
+// documentado arriba de EXTRAS_USUARIOS — no es un control de acceso.
+const EXTRAS_A_CARGO = {
+  'jual3@ferring.com': [
+    'OLIVARES, Victor', 'BARRIOS, Martin', 'BAGGIO, Christian', 'VILLASANTE, Eduardo',
+    'LAGOS, Nicolas', 'TERAN, Cesar', 'LEMA, Sergio', 'FIGUEIRA, Gastón',
+    'MORENO, Jorge', 'CAÑETE, Martin'
+  ],
+  'lufi2@ferring.com': [
+    'ECHAZARRETA, Ricardo', 'VERGARA, Antonio', 'MEDINA, Emanuel',
+    'VALDEZ, Sergio', 'SUAREZ, Alan', 'CACERES, Daniel'
+  ],
+  'gtp@ferring.com': [
+    'GOLINO, Santiago', 'RIVERO, Cristian', 'RAMILO, Rodrigo',
+    'ZAVALA, Emmanuel', 'LEDESMA, Emanuel', 'YEGROS, Lucas'
+  ]
+};
+
+// A quién puede CARGARLE extras un encargado: solo su gente.
+const extrasPersonalDe = (user) => EXTRAS_A_CARGO[user] || [];
+
+// Qué solicitudes VE un encargado: su gente MÁS las suyas propias. Ver las
+// horas extras que a uno le cargaron es razonable aunque no pueda tocarlas;
+// editarlas y anularlas sigue exigiendo ser el autor.
+const extrasVisiblesDe = (user, nombre) => {
+  const base = extrasPersonalDe(user);
+  return nombre && !base.includes(nombre) ? [...base, nombre] : base;
+};
+
 const EXTRAS_USUARIOS = [
   { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
   { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
@@ -4511,10 +4560,26 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [rechazarTarget, setRechazarTarget] = useState(null);
 
   // ── Visibilidad por rol (partición de UI, no de datos: ver nota en
-  //    EXTRAS_USUARIOS). Encargado = solo lo que cargó él, por AUTOR.
+  //    EXTRAS_USUARIOS). v3.28 (#58): el criterio pasó de POR AUTOR a POR
+  //    PERSONA. El encargado ve las solicitudes de su gente a cargo aunque
+  //    las haya cargado el jefe, y ya no ve las que él mismo cargó para
+  //    alguien de otro equipo — porque tampoco puede cargarlas.
+  //    Incluye las suyas propias: ver lo que a uno le cargaron es razonable
+  //    aunque no pueda tocarlo.
+  const aCargo = useMemo(
+    () => extrasVisiblesDe(sesion.user, sesion.nombre),
+    [sesion.user, sesion.nombre]
+  );
   const visibles = useMemo(
-    () => (esJefe ? extras : extras.filter(r => r.solicitado_por === sesion.user)),
-    [extras, esJefe, sesion.user]
+    () => (esJefe ? extras : extras.filter(r => aCargo.includes(r.tecnico_nombre))),
+    [extras, esJefe, aCargo]
+  );
+
+  // A quién se le puede cargar: el jefe a cualquiera, el encargado solo a su
+  // gente. No incluye su propio nombre aunque lo vea en el listado.
+  const personalCargable = useMemo(
+    () => (esJefe ? EXTRAS_PERSONAL_NAMES : extrasPersonalDe(sesion.user)),
+    [esJefe, sesion.user]
   );
 
   const listado = useMemo(() => visibles
@@ -4594,6 +4659,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
   const submit = async () => {
     if (!tecnico) { setMsg('Error: elegí a la persona.'); return; }
+    // Defensa además del select: si el nombre quedó de una edición previa y
+    // ya no está a cargo, no se guarda. El select solo oculta la opción.
+    if (!personalCargable.includes(tecnico)) {
+      setMsg(`Error: ${tecnico} no está a tu cargo. Esa carga la hace el jefe.`);
+      return;
+    }
     if (!fecha) { setMsg('Error: falta la fecha.'); return; }
     if (!horaInicio || !horaFin) { setMsg('Error: faltan las horas de inicio y fin.'); return; }
     if (horasPreview <= 0) { setMsg('Error: la ventana horaria es inválida.'); return; }
@@ -4792,12 +4863,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <Field label="Personal">
-            {/* EXTRAS_PERSONAL_NAMES, no TECNICO_NAMES: acá también reportan
-                los supervisores y personal que no ejecuta OTs. Ver el catálogo
-                arriba para por qué es una lista separada. */}
+            {/* Jefe: EXTRAS_PERSONAL_NAMES completo. Encargado: solo su gente
+                a cargo (#58). El resto lo carga el jefe. */}
             <select className={inputCls} value={tecnico} onChange={e => setTecnico(e.target.value)}>
               <option value="">—</option>
-              {EXTRAS_PERSONAL_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+              {personalCargable.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
           </Field>
 
@@ -4907,7 +4977,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
           {esJefe
             ? 'Lo que cargues acá queda aprobado en el momento, registrado a tu nombre.'
-            : 'La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular.'}
+            : `La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular. Solo podés cargar a tu gente a cargo (${extrasPersonalDe(sesion.user).length} personas); el resto lo carga el jefe.`}
         </p>
       </Card>
 
@@ -4915,7 +4985,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <SectionTitle icon={ListChecks} accent="slate">
-            {esJefe ? 'Todas las solicitudes' : 'Mis solicitudes'}
+            {esJefe ? 'Todas las solicitudes' : 'Mi gente a cargo'}
           </SectionTitle>
           <div className="flex flex-wrap items-center gap-2">
             <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
@@ -4972,7 +5042,10 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                   <th className="py-2 pr-3 text-right">Horas</th>
                   <th className="py-2 pr-3">Motivo</th>
                   <th className="py-2 pr-3">Estado</th>
-                  {esJefe && <th className="py-2 pr-3">Solicitó</th>}
+                  {/* v3.28 (#58): visible también para el encargado. Ahora ve
+                      filas que cargó el jefe, y solo puede editar las propias:
+                      sin esta columna no puede saber cuáles son cuáles. */}
+                  <th className="py-2 pr-3">Solicitó</th>
                   <th className="py-2 pr-3">Cargada</th>
                   <th className="py-2 pr-3"></th>
                 </tr>
@@ -5027,9 +5100,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           </div>
                         )}
                       </td>
-                      {esJefe && (
-                        <td className="py-2 pr-3 text-slate-500 text-xs whitespace-nowrap">{r.solicitado_por_nombre || '—'}</td>
-                      )}
+                      <td className="py-2 pr-3 text-slate-500 text-xs whitespace-nowrap">
+                        {r.solicitado_por === sesion.user
+                          ? <span className="font-semibold text-slate-700">vos</span>
+                          : (r.solicitado_por_nombre || '—')}
+                      </td>
                       {/* Momento en que el encargado dejó asentada la solicitud. */}
                       <td className="py-2 pr-3 text-slate-400 text-[11px] num whitespace-nowrap">
                         {formatFechaAudit(r.created_at)}
