@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardList, BarChart3, Download, Plus, Trash2, Save, Calendar, Users,
   Wrench, Activity, FileSpreadsheet, CheckCircle2, AlertTriangle, Building2,
-  HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
+  HardHat, Beaker, ListChecks, ChevronDown, ChevronLeft, ChevronRight, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
   CalendarDays, Clock, Image as ImageIcon, FileDown,
   Lock, LogOut, Edit3, Shield, RotateCcw, Inbox, Ban, Timer
@@ -299,6 +299,85 @@ const extrasVentana = (r) => ({
 // Comparación lexicográfica de ISO: válida porque el formato es de ancho fijo.
 // Bordes que se tocan (una termina 14:00, la otra arranca 14:00) NO solapan.
 const extrasSolapan = (a, b) => a.ini < b.fin && b.ini < a.fin;
+
+// ── Períodos del dashboard de Extras (#49, v3.27) ──────────────────
+// Cuatrimestres de CALENDARIO FIJO, no móviles: ene–abr, may–ago, sep–dic.
+const EXTRAS_CUATRIS = [
+  { label: 'Ene–Abr', ini: 0 },
+  { label: 'May–Ago', ini: 4 },
+  { label: 'Sep–Dic', ini: 8 }
+];
+
+const isoLocalYMD = (y, m, d) =>
+  `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+// Devuelve la ventana del período, su etiqueta y los meses que contiene.
+// `offset` 0 = período actual, -1 = el anterior, +1 = el siguiente.
+// Todo en calendario LOCAL, igual que el resto de la app.
+function extrasPeriodo(tipo, offset) {
+  const hoy = new Date();
+  if (tipo === 'mes') {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() + offset, 1);
+    const y = d.getFullYear(), m = d.getMonth();
+    const ultimo = new Date(y, m + 1, 0).getDate();
+    return {
+      desde: isoLocalYMD(y, m, 1),
+      hasta: isoLocalYMD(y, m, ultimo),
+      label: `${MESES_CORTOS[m]} ${y}`,
+      meses: [{ y, m }]
+    };
+  }
+  if (tipo === 'cuatri') {
+    // Aritmética sobre un índice global de cuatrimestres para que el salto de
+    // año al navegar salga solo, sin casos especiales en diciembre/enero.
+    const total = hoy.getFullYear() * 3 + Math.floor(hoy.getMonth() / 4) + offset;
+    const y = Math.floor(total / 3);
+    const qi = ((total % 3) + 3) % 3;
+    const ini = EXTRAS_CUATRIS[qi].ini;
+    const ultimo = new Date(y, ini + 4, 0).getDate();
+    return {
+      desde: isoLocalYMD(y, ini, 1),
+      hasta: isoLocalYMD(y, ini + 3, ultimo),
+      label: `${EXTRAS_CUATRIS[qi].label} ${y}`,
+      meses: [0, 1, 2, 3].map(k => ({ y, m: ini + k }))
+    };
+  }
+  const y = hoy.getFullYear() + offset;
+  return {
+    desde: isoLocalYMD(y, 0, 1),
+    hasta: isoLocalYMD(y, 11, 31),
+    label: `${y}`,
+    meses: Array.from({ length: 12 }, (_, m) => ({ y, m }))
+  };
+}
+
+// Duración legible para los tiempos de resolución del dashboard.
+const formatDuracion = (horas) => {
+  const h = Number(horas) || 0;
+  if (h < 1) return `${Math.round(h * 60)} min`;
+  if (h < 48) return `${h.toFixed(1).replace('.', ',')} h`;
+  return `${(h / 24).toFixed(1).replace('.', ',')} días`;
+};
+
+// Tope de filas que trae `listExtras` para el LISTADO. El dashboard no lo usa:
+// consulta por rango con su propio tope (ver `listExtrasRango`).
+//
+// DIMENSIONAMIENTO MEDIDO (2026-08-27), sobre el acumulado real de RRHH de
+// ene–ago 2026 para las 22 personas del catálogo que figuran en esa planilla:
+// 4.645 h en 8 meses, promedio 581 h/mes, con picos de 864 h (enero) y 852 h
+// (julio). A 7–9 h por solicitud eso da 65 a 83 cargas por mes y entre 775 y
+// 995 al año — más, porque los 3 supervisores y los 4 de EXTRAS_SOLO_PERSONAL
+// no estaban en esa planilla.
+//
+// O sea que 500 se agota en 6 o 7 meses. Para el LISTADO se acepta: está
+// ordenado por fecha descendente y lo que se corta es lo más viejo. Pero los
+// contadores de arriba del listado se calculan sobre lo cargado, así que un
+// filtro a un rango antiguo va a mostrar de menos. Anotado como BACKLOG #57.
+const EXTRAS_LIST_LIMIT = 500;
+
+// Tope del dashboard, por período consultado. Un año completo al ritmo actual
+// entra cómodo; el banner avisa si alguna vez no entrara.
+const EXTRAS_DASHBOARD_LIMIT = 2000;
 
 // V2.4 — Sectores válidos para N° OT (según SOP 10.3.2)
 // Formato: XXX-YYYYY (sector-correlativo de 5 dígitos)
@@ -954,13 +1033,37 @@ const storage = {
   // La tabla NO tiene GRANT de DELETE (ver el DDL): la corrección es siempre
   // soft-delete con motivo. Si alguna vez hace falta purgar de verdad, se hace
   // desde el SQL Editor como `postgres`, con backup previo.
-  async listExtras(limit = 500) {
+  async listExtras(limit = EXTRAS_LIST_LIMIT) {
     if (!supabaseConfigured) return [];
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/horas_extras?select=*&order=fecha.desc,hora_inicio.desc&limit=${limit}`,
       { headers: sbHeaders() }
     );
     if (!res.ok) throw new Error(`Supabase extras: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  // #49 — Consulta acotada al período que está mirando el dashboard.
+  // El dashboard NO calcula sobre `extras` (el listado): con el volumen real
+  // del sector — ~65 a 83 solicitudes por mes, ~1000 al año — el tope del
+  // listado se agota en 6 o 7 meses y la vista anual quedaría truncada.
+  // Trayendo solo el rango, el payload es proporcional a lo que se mira y la
+  // vista anual pesa lo mismo dentro de cinco años que hoy.
+  //
+  // Se imputa por `fecha` (inicio del extra), coherente con el resto del
+  // módulo: una solicitud que cruza medianoche cuenta entera en el período
+  // donde arrancó.
+  async listExtrasRango(desde, hasta, limit = EXTRAS_DASHBOARD_LIMIT) {
+    if (!supabaseConfigured) return [];
+    const qs = [
+      'select=*',
+      `fecha=gte.${encodeURIComponent(desde)}`,
+      `fecha=lte.${encodeURIComponent(hasta)}`,
+      'order=fecha.desc,hora_inicio.desc',
+      `limit=${limit}`
+    ].join('&');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/horas_extras?${qs}`, { headers: sbHeaders() });
+    if (!res.ok) throw new Error(`Supabase extras rango: ${res.status} ${await res.text()}`);
     return res.json();
   },
 
@@ -3898,8 +4001,385 @@ const EXTRAS_ESTADO_STYLE = {
   rechazada: 'bg-red-100 text-red-700'
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// DASHBOARD DE HORAS EXTRAS (#49, v3.27) — SOLO ROL JEFE
+// ═══════════════════════════════════════════════════════════════════
+// Todo se calcula en el CLIENTE sobre `extras` ya cargado: cero llamadas
+// nuevas a Supabase, cero SQL. La tabla es chica y la alternativa (vistas
+// agregadas en Postgres) obligaría a mantener la lógica en dos lugares.
+//
+// Reglas de población, válidas para TODOS los bloques:
+//  · Las ANULADAS no suman nunca, en ningún bloque, aunque estén vigentes en
+//    el listado con el checkbox. Una hora anulada no se trabaja ni se paga.
+//  · Aprobadas y pendientes se muestran SEPARADAS y jamás sumadas: lo que se
+//    paga son las aprobadas; las pendientes son proyección.
+//  · Se agrupa por `tecnico_nombre`, NUNCA por `tecnico_id` — desde #52 hay
+//    7 personas sin id y un GROUP BY por id las perdería en silencio.
+//  · Una solicitud entra al período por su `fecha` (inicio). Las que cruzan
+//    medianoche el último día del período cuentan enteras en ese período.
+function ExtrasDashboard() {
+  const [tipo, setTipo] = useState('mes');
+  const [offset, setOffset] = useState(0);
+  const [verTodos, setVerTodos] = useState(false);
+
+  // Datos propios, acotados al período. No se usa `extras` (el listado) porque
+  // ese viene topeado en EXTRAS_LIST_LIMIT y con el volumen real del sector se
+  // agota en 6 o 7 meses — la vista anual quedaría truncada.
+  const [datos, setDatos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+
+  // Cambiar de granularidad vuelve al período actual: mantener el offset
+  // saltaría a un cuatrimestre de hace años al pasar de mes a cuatrimestre.
+  useEffect(() => { setOffset(0); }, [tipo]);
+
+  const periodo = useMemo(() => extrasPeriodo(tipo, offset), [tipo, offset]);
+
+  useEffect(() => {
+    let vigente = true;
+    setCargando(true);
+    setError('');
+    storage.listExtrasRango(periodo.desde, periodo.hasta)
+      .then(r => { if (vigente) { setDatos(r); setCargando(false); } })
+      .catch(e => {
+        if (vigente) { setError(e.message || 'no se pudieron cargar los datos'); setCargando(false); }
+      });
+    // Descarta respuestas de un período que ya no se está mirando: si se
+    // navega rápido, la consulta vieja puede llegar después de la nueva.
+    return () => { vigente = false; };
+  }, [periodo.desde, periodo.hasta]);
+
+  useEffect(() => { setVerTodos(false); }, [periodo.desde, tipo]);
+
+  const truncado = datos.length >= EXTRAS_DASHBOARD_LIMIT;
+
+  const vivas = useMemo(() => datos.filter(r => !r.anulada_at), [datos]);
+
+  const sumH = (arr) => arr.reduce((a, r) => a + (Number(r.horas) || 0), 0);
+
+  const kpis = useMemo(() => {
+    const ap = vivas.filter(r => r.estado === 'aprobada');
+    const pe = vivas.filter(r => r.estado === 'pendiente');
+    const re = vivas.filter(r => r.estado === 'rechazada');
+    return {
+      hAprobadas: sumH(ap), nAprobadas: ap.length,
+      hPendientes: sumH(pe), nPendientes: pe.length,
+      hRechazadas: sumH(re), nRechazadas: re.length,
+      personas: new Set(vivas.map(r => r.tecnico_nombre)).size
+    };
+  }, [vivas]);
+
+  // Ranking por persona. Ordenado por aprobadas, que es lo que se paga.
+  const porPersona = useMemo(() => {
+    const map = new Map();
+    vivas.forEach(r => {
+      const k = r.tecnico_nombre || '(sin nombre)';
+      const o = map.get(k) || { nombre: k, aprobadas: 0, pendientes: 0 };
+      if (r.estado === 'aprobada') o.aprobadas += Number(r.horas) || 0;
+      else if (r.estado === 'pendiente') o.pendientes += Number(r.horas) || 0;
+      map.set(k, o);
+    });
+    return [...map.values()]
+      .filter(o => o.aprobadas > 0 || o.pendientes > 0)
+      .sort((a, b) => (b.aprobadas + b.pendientes) - (a.aprobadas + a.pendientes));
+  }, [vivas]);
+
+  const porPersonaTop = useMemo(
+    () => (verTodos ? porPersona : porPersona.slice(0, 15)),
+    [porPersona, verTodos]
+  );
+
+  // Evolución por mes. Se recorren los meses del PERÍODO, no los que tienen
+  // datos: un mes sin extras tiene que verse como cero, no desaparecer.
+  const porMes = useMemo(() => periodo.meses.map(({ y, m }) => {
+    const pre = `${y}-${String(m + 1).padStart(2, '0')}`;
+    const delMes = vivas.filter(r => (r.fecha || '').startsWith(pre));
+    return {
+      mes: `${MESES_CORTOS[m]}${periodo.meses.length > 4 ? '' : ` ${String(y).slice(2)}`}`,
+      aprobadas: Number(sumH(delMes.filter(r => r.estado === 'aprobada')).toFixed(2)),
+      pendientes: Number(sumH(delMes.filter(r => r.estado === 'pendiente')).toFixed(2))
+    };
+  }), [vivas, periodo]);
+
+  // Horas por categoría de motivo. Exacto desde #54: antes era texto libre y
+  // había que normalizar strings, con lo que "Cubrir licencia" y "cubrir
+  // licencia médica" caían en grupos distintos.
+  const porMotivo = useMemo(() => {
+    const map = new Map();
+    vivas.forEach(r => {
+      const k = r.motivo_categoria || '(sin categoría)';
+      const o = map.get(k) || { motivo: k, aprobadas: 0, pendientes: 0, n: 0 };
+      if (r.estado === 'aprobada') o.aprobadas += Number(r.horas) || 0;
+      else if (r.estado === 'pendiente') o.pendientes += Number(r.horas) || 0;
+      o.n += 1;
+      map.set(k, o);
+    });
+    return [...map.values()].sort((a, b) => (b.aprobadas + b.pendientes) - (a.aprobadas + a.pendientes));
+  }, [vivas]);
+
+  // ── Métricas de proceso ──────────────────────────────────────────
+  // Población: solo las RESUELTAS (aprobadas o rechazadas). Las pendientes
+  // no tienen desenlace todavía y meterlas bajaría artificialmente la tasa.
+  //
+  // Las cargas del jefe SE INCLUYEN, por decisión explícita. Como se
+  // autoaprueban, `resuelto_at` se sella en el cliente ANTES de que el insert
+  // ponga su `created_at`, y la diferencia da NEGATIVA. Se cortan en cero: un
+  // tiempo negativo no es un dato, es un artefacto del orden de sellado.
+  const proceso = useMemo(() => {
+    const resueltas = vivas.filter(r => r.estado === 'aprobada' || r.estado === 'rechazada');
+    const conTiempo = resueltas.filter(r => r.created_at && r.resuelto_at);
+    const horasDe = (r) => Math.max(0,
+      (new Date(r.resuelto_at) - new Date(r.created_at)) / 3600000);
+    const prom = (arr) => (arr.length ? arr.reduce((a, r) => a + horasDe(r), 0) / arr.length : null);
+    const planificadas = conTiempo.filter(r => !extrasEsReactivo(r.motivo_categoria));
+    const reactivas = conTiempo.filter(r => extrasEsReactivo(r.motivo_categoria));
+    return {
+      nResueltas: resueltas.length,
+      tasa: resueltas.length
+        ? (resueltas.filter(r => r.estado === 'aprobada').length / resueltas.length) * 100
+        : null,
+      tPlanificadas: prom(planificadas), nPlanificadas: planificadas.length,
+      tReactivas: prom(reactivas), nReactivas: reactivas.length,
+      autoaprobadas: resueltas.filter(r => r.solicitado_por === r.resuelto_por).length
+    };
+  }, [vivas]);
+
+  const btnPeriodo = (t, label) => (
+    <button key={t} onClick={() => setTipo(t)}
+      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+        tipo === t ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+      }`}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* ── Selector de período ─────────────────────────────────── */}
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {btnPeriodo('mes', 'Mensual')}
+            {btnPeriodo('cuatri', 'Cuatrimestral')}
+            {btnPeriodo('anio', 'Anual')}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setOffset(o => o - 1)}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período anterior">
+              <ChevronLeft className="w-4 h-4 text-slate-600" />
+            </button>
+            <span className="text-sm font-bold text-slate-800 min-w-[110px] text-center capitalize">
+              {periodo.label}
+            </span>
+            <button onClick={() => setOffset(o => o + 1)}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período siguiente">
+              <ChevronRight className="w-4 h-4 text-slate-600" />
+            </button>
+            {offset !== 0 && (
+              <button onClick={() => setOffset(0)}
+                className="px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 rounded-lg transition">
+                Hoy
+              </button>
+            )}
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2 num">
+          {formatDateShort(periodo.desde)} — {formatDateShort(periodo.hasta)}
+        </p>
+      </Card>
+
+      {/* Truncamiento: sin esto, un período largo mostraría totales
+          incompletos sin ninguna señal. */}
+      {truncado && (
+        <div className="flex items-start gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="text-xs text-red-800 leading-relaxed">
+            <strong>Datos incompletos.</strong> Se alcanzó el tope de {EXTRAS_DASHBOARD_LIMIT} solicitudes para
+            este período, así que los números de abajo pueden estar por debajo del real.
+            Hay que subir <code>EXTRAS_DASHBOARD_LIMIT</code> o paginar antes de usar esto para liquidación.
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="text-xs text-red-800">No se pudieron cargar los datos del período: {error}</div>
+        </div>
+      )}
+
+      {cargando ? (
+        <Card className="p-5">
+          <div className="text-center text-slate-500 py-10 text-sm">Cargando {periodo.label}…</div>
+        </Card>
+      ) : vivas.length === 0 ? (
+        <Card className="p-5">
+          <EmptyHint>No hay solicitudes en {periodo.label}.</EmptyHint>
+        </Card>
+      ) : (
+        <>
+          {/* ── KPIs ──────────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Aprobadas</div>
+              <div className="text-2xl font-bold text-emerald-700 num mt-1">{formatHoras(kpis.hAprobadas)}</div>
+              <div className="text-[11px] text-slate-400 num">{kpis.nAprobadas} solicitudes · se pagan</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Pendientes</div>
+              <div className="text-2xl font-bold text-amber-700 num mt-1">{formatHoras(kpis.hPendientes)}</div>
+              <div className="text-[11px] text-slate-400 num">{kpis.nPendientes} solicitudes · proyección</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Rechazadas</div>
+              <div className="text-2xl font-bold text-slate-400 num mt-1">{formatHoras(kpis.hRechazadas)}</div>
+              <div className="text-[11px] text-slate-400 num">{kpis.nRechazadas} solicitudes</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Personas</div>
+              <div className="text-2xl font-bold text-slate-800 num mt-1">{kpis.personas}</div>
+              <div className="text-[11px] text-slate-400">con extras en el período</div>
+            </Card>
+          </div>
+
+          {/* ── Evolución mensual ─────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={BarChart3} accent="emerald">Evolución por mes</SectionTitle>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={porMes}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatHoras(v)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="aprobadas" name="Aprobadas" fill="#059669" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="pendientes" name="Pendientes" fill="#d97706" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* ── Ranking por persona ───────────────────────────────── */}
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <SectionTitle icon={Users} accent="emerald">Horas por persona</SectionTitle>
+              {porPersona.length > 15 && (
+                <button onClick={() => setVerTodos(v => !v)}
+                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 mb-4">
+                  {verTodos ? 'Ver solo los primeros 15' : `Ver todos (${porPersona.length})`}
+                </button>
+              )}
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(200, porPersonaTop.length * 30)}>
+              <BarChart data={porPersonaTop} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="nombre" width={150} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatHoras(v)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="aprobadas" name="Aprobadas" stackId="h" fill="#059669" />
+                <Bar dataKey="pendientes" name="Pendientes" stackId="h" fill="#d97706" />
+              </BarChart>
+            </ResponsiveContainer>
+            {!verTodos && porPersona.length > 15 && (
+              <p className="text-[11px] text-slate-400 mt-2">
+                Mostrando 15 de {porPersona.length}, ordenadas por total. Los KPIs de arriba
+                consideran a las {porPersona.length}.
+              </p>
+            )}
+          </Card>
+
+          {/* ── Motivos ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={ListChecks} accent="emerald">Horas por motivo</SectionTitle>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3">Categoría</th>
+                    <th className="py-2 pr-3 text-right">Aprobadas</th>
+                    <th className="py-2 pr-3 text-right">Pendientes</th>
+                    <th className="py-2 pr-3 text-right">Solicitudes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {porMotivo.map(m => (
+                    <tr key={m.motivo} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-slate-700">
+                        {m.motivo}
+                        {extrasEsReactivo(m.motivo) && (
+                          <span className="ml-1.5 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
+                                title="Se ejecuta antes de la aprobación">reactivo</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 num text-right font-semibold text-emerald-700">{formatHoras(m.aprobadas)}</td>
+                      <td className="py-2 pr-3 num text-right text-amber-700">{formatHoras(m.pendientes)}</td>
+                      <td className="py-2 pr-3 num text-right text-slate-500">{m.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* ── Proceso ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={Timer} accent="emerald">Proceso de aprobación</SectionTitle>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Tasa de aprobación</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tasa === null ? '—' : `${proceso.tasa.toFixed(0)}%`}
+                </div>
+                <div className="text-[11px] text-slate-400 num">sobre {proceso.nResueltas} resueltas</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · planificadas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tPlanificadas === null ? '—' : formatDuracion(proceso.tPlanificadas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nPlanificadas} solicitudes</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · reactivas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tReactivas === null ? '—' : formatDuracion(proceso.tReactivas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nReactivas} solicitudes</div>
+              </div>
+            </div>
+
+            {/* Notas al pie. Son parte del dato, no decoración: sin esto los
+                números de arriba se leen como algo que no son. */}
+            <div className="mt-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <p>
+                · Planificadas y reactivas se miden por separado a propósito. En las reactivas el trabajo ya se
+                hizo cuando llega la aprobación, así que el tiempo mide demora administrativa, no velocidad de respuesta.
+              </p>
+              <p>
+                · Las {proceso.autoaprobadas} solicitudes cargadas y aprobadas por la misma persona
+                <strong> están incluidas</strong> en ambas métricas. Se autoaprueban en el momento, así que
+                bajan el promedio de resolución y suben la tasa sin haber pasado por ninguna decisión.
+              </p>
+              <p>
+                · Los tiempos negativos se cortan en cero: en las autoaprobadas el sello de resolución se pone
+                milisegundos antes que el de creación, y eso es un artefacto del orden de guardado, no un dato.
+              </p>
+              <p>· Las anuladas no suman en ningún bloque. Aprobadas y pendientes nunca se suman entre sí.</p>
+            </div>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdate, onRefresh }) {
   const esJefe = sesion.rol === 'jefe';
+
+  // Sub-vista (#49). Solo el jefe tiene dashboard; el encargado ve el listado
+  // siempre y no necesita este estado, pero se declara igual para no meter un
+  // hook condicional.
+  const [vista, setVista] = useState('listado');
 
   // Form
   const [tecnico, setTecnico] = useState('');
@@ -4171,6 +4651,28 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
   return (
     <div className="flex flex-col gap-5">
+      {/* ── Toggle de sub-vista (#49). Solo jefe. ───────────────────── */}
+      {esJefe && (
+        <div className="flex items-center gap-2">
+          <button onClick={() => setVista('listado')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+              vista === 'listado' ? 'bg-slate-800 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+            }`}>
+            <ListChecks className="w-3.5 h-3.5" />Listado
+          </button>
+          <button onClick={() => setVista('dashboard')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+              vista === 'dashboard' ? 'bg-slate-800 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+            }`}>
+            <BarChart3 className="w-3.5 h-3.5" />Dashboard
+          </button>
+        </div>
+      )}
+
+      {esJefe && vista === 'dashboard' ? (
+        <ExtrasDashboard />
+      ) : (
+      <>
       {/* ── ALTA / EDICIÓN ─────────────────────────────────────────── */}
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4468,6 +4970,8 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           quién aprobó — no son un control de acceso ni una firma electrónica.
         </p>
       </Card>
+      </>
+      )}
 
       {rechazarTarget && (
         <ExtrasMotivoDialog
