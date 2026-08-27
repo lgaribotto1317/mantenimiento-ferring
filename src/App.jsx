@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ClipboardList, BarChart3, Download, Plus, Trash2, Save, Calendar, Users,
   Wrench, Activity, FileSpreadsheet, CheckCircle2, AlertTriangle, Building2,
-  HardHat, Beaker, ListChecks, ChevronDown, X, FileText, TrendingUp, Flame,
+  HardHat, Beaker, ListChecks, ChevronDown, ChevronLeft, ChevronRight, X, FileText, TrendingUp, Flame,
   Cog, Zap, Filter, Search, Cloud, CloudOff, RefreshCw, Settings, MessageSquare,
   CalendarDays, Clock, Image as ImageIcon, FileDown,
   Lock, LogOut, Edit3, Shield, RotateCcw, Inbox, Ban, Timer
@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.26';
+const APP_VERSION = 'v3.28';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -155,6 +155,55 @@ const POOL_PASSWORD = 'Planificador2026';
 // SUPUESTO A VERIFICAR: el mapeo usuario → nombre se infirió de las direcciones
 // de mail que pasó Leo. Si alguno no corresponde, corregir acá: el `nombre` es
 // lo que queda escrito en cada solicitud como solicitante o resolutor.
+// ═══════════════════════════════════════════════════════════════════
+// ASIGNACIÓN DE PERSONAL A ENCARGADOS (#58, v3.28)
+// ═══════════════════════════════════════════════════════════════════
+// Define qué gente tiene a cargo cada encargado. Gobierna DOS cosas en la
+// solapa Extras:
+//  1. Qué solicitudes ve el encargado en el listado — su gente, sin importar
+//     quién las cargó. Antes veía lo que él mismo había cargado; el criterio
+//     cambió a "por persona" en v3.28.
+//  2. A quién puede cargarle extras — solo a su gente. El resto lo carga el
+//     jefe, que ve todo.
+//
+// Las 22 personas de TECNICOS están asignadas, sin solapes ni faltantes
+// (verificado contra el catálogo al definirlo). Las 7 restantes de
+// EXTRAS_PERSONAL_NAMES — los tres supervisores y los cuatro de
+// EXTRAS_SOLO_PERSONAL — NO tienen encargado a propósito: las carga y las ve
+// únicamente el jefe.
+//
+// La clave es el `user` de EXTRAS_USUARIOS, no el nombre: el nombre es dato
+// de presentación y podría cambiar de formato.
+//
+// OJO: esto es partición de UI, no de datos. Vale lo mismo que está
+// documentado arriba de EXTRAS_USUARIOS — no es un control de acceso.
+const EXTRAS_A_CARGO = {
+  'jual3@ferring.com': [
+    'OLIVARES, Victor', 'BARRIOS, Martin', 'BAGGIO, Christian', 'VILLASANTE, Eduardo',
+    'LAGOS, Nicolas', 'TERAN, Cesar', 'LEMA, Sergio', 'FIGUEIRA, Gastón',
+    'MORENO, Jorge', 'CAÑETE, Martin'
+  ],
+  'lufi2@ferring.com': [
+    'ECHAZARRETA, Ricardo', 'VERGARA, Antonio', 'MEDINA, Emanuel',
+    'VALDEZ, Sergio', 'SUAREZ, Alan', 'CACERES, Daniel'
+  ],
+  'gtp@ferring.com': [
+    'GOLINO, Santiago', 'RIVERO, Cristian', 'RAMILO, Rodrigo',
+    'ZAVALA, Emmanuel', 'LEDESMA, Emanuel', 'YEGROS, Lucas'
+  ]
+};
+
+// A quién puede CARGARLE extras un encargado: solo su gente.
+const extrasPersonalDe = (user) => EXTRAS_A_CARGO[user] || [];
+
+// Qué solicitudes VE un encargado: su gente MÁS las suyas propias. Ver las
+// horas extras que a uno le cargaron es razonable aunque no pueda tocarlas;
+// editarlas y anularlas sigue exigiendo ser el autor.
+const extrasVisiblesDe = (user, nombre) => {
+  const base = extrasPersonalDe(user);
+  return nombre && !base.includes(nombre) ? [...base, nombre] : base;
+};
+
 const EXTRAS_USUARIOS = [
   { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
   { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
@@ -242,6 +291,181 @@ const EXTRAS_PERSONAL_NAMES = [
   ...RESPONSABLES.map(r => r.name),
   ...EXTRAS_SOLO_PERSONAL
 ].filter((n, i, arr) => arr.indexOf(n) === i);
+
+// ═══════════════════════════════════════════════════════════════════
+// MOTIVOS DE HORAS EXTRAS (#54, v3.27)
+// ═══════════════════════════════════════════════════════════════════
+// El motivo dejó de ser texto libre: ahora es categoría cerrada + detalle.
+// La razón es el dashboard — agrupar por texto libre obligaba a normalizar
+// strings y "Cubrir licencia" y "cubrir licencia médica" caían en grupos
+// distintos. Con categoría el agrupamiento es exacto.
+//
+// El dominio está replicado en Postgres como CHECK constraint
+// (`horas_extras_motivo_categoria_chk`). SI SE AGREGA O RENOMBRA UNA
+// CATEGORÍA ACÁ, HAY QUE ACTUALIZAR LA CONSTRAINT EN EL MISMO PASO o el
+// insert lo rechaza la base con un error crudo de la API.
+const EXTRAS_MOTIVO_CATEGORIAS = [
+  'Cubrir vacaciones',
+  'Cubrir licencia médica',
+  'Cubrir vacante',
+  'Cubrir feriado',
+  'Trabajos específicos',
+  'Finalización de trabajos en curso',
+  'Otros'
+];
+
+// Categorías que exigen detalle. Las cuatro de cobertura se explican solas;
+// forzar texto ahí solo genera "-" y repeticiones de la categoría.
+// Replicado en `horas_extras_motivo_detalle_chk`.
+const EXTRAS_MOTIVO_REQUIERE_DETALLE = [
+  'Trabajos específicos',
+  'Finalización de trabajos en curso',
+  'Otros'
+];
+const extrasRequiereDetalle = (cat) => EXTRAS_MOTIVO_REQUIERE_DETALLE.includes(cat);
+
+// Motivos REACTIVOS: el trabajo se ejecuta ANTES de que el jefe apruebe, así
+// que la aprobación es un acto administrativo posterior al hecho. Los
+// planificados se piden y se aprueban antes. La distinción no cambia el
+// guardado — cambia cómo se leen las métricas de proceso en el dashboard,
+// donde promediar ambos tipos juntos no significa nada.
+const EXTRAS_MOTIVOS_REACTIVOS = [
+  'Trabajos específicos',
+  'Finalización de trabajos en curso'
+];
+const extrasEsReactivo = (cat) => EXTRAS_MOTIVOS_REACTIVOS.includes(cat);
+
+// ── Detección de solapamiento (#54) ────────────────────────────────
+// Una misma persona puede tener varios extras el mismo día y eso es legítimo
+// (un trabajo que se extiende se carga como fila aparte y las horas se suman).
+// Lo que NO se distingue solo es una duplicación por error de una cadena
+// legítima, y en un registro que alimenta liquidación eso se paga dos veces.
+// De ahí el aviso: detecta, avisa, y deja pasar si el usuario confirma.
+const extrasVentana = (r) => ({
+  ini: `${r.fecha}T${(r.hora_inicio || '').slice(0, 5)}`,
+  fin: `${r.fecha_fin}T${(r.hora_fin || '').slice(0, 5)}`
+});
+// Comparación lexicográfica de ISO: válida porque el formato es de ancho fijo.
+// Bordes que se tocan (una termina 14:00, la otra arranca 14:00) NO solapan.
+const extrasSolapan = (a, b) => a.ini < b.fin && b.ini < a.fin;
+
+// ── Períodos del dashboard de Extras (#49, v3.27) ──────────────────
+// Cuatrimestres de CALENDARIO FIJO, no móviles: ene–abr, may–ago, sep–dic.
+const EXTRAS_CUATRIS = [
+  { label: 'Ene–Abr', ini: 0 },
+  { label: 'May–Ago', ini: 4 },
+  { label: 'Sep–Dic', ini: 8 }
+];
+
+const isoLocalYMD = (y, m, d) =>
+  `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+// Devuelve la ventana del período, su etiqueta y los meses que contiene.
+// `offset` 0 = período actual, -1 = el anterior, +1 = el siguiente.
+// Todo en calendario LOCAL, igual que el resto de la app.
+function extrasPeriodo(tipo, offset) {
+  const hoy = new Date();
+  if (tipo === 'mes') {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() + offset, 1);
+    const y = d.getFullYear(), m = d.getMonth();
+    const ultimo = new Date(y, m + 1, 0).getDate();
+    return {
+      desde: isoLocalYMD(y, m, 1),
+      hasta: isoLocalYMD(y, m, ultimo),
+      label: `${MESES_CORTOS[m]} ${y}`,
+      meses: [{ y, m }]
+    };
+  }
+  if (tipo === 'cuatri') {
+    // Aritmética sobre un índice global de cuatrimestres para que el salto de
+    // año al navegar salga solo, sin casos especiales en diciembre/enero.
+    const total = hoy.getFullYear() * 3 + Math.floor(hoy.getMonth() / 4) + offset;
+    const y = Math.floor(total / 3);
+    const qi = ((total % 3) + 3) % 3;
+    const ini = EXTRAS_CUATRIS[qi].ini;
+    const ultimo = new Date(y, ini + 4, 0).getDate();
+    return {
+      desde: isoLocalYMD(y, ini, 1),
+      hasta: isoLocalYMD(y, ini + 3, ultimo),
+      label: `${EXTRAS_CUATRIS[qi].label} ${y}`,
+      meses: [0, 1, 2, 3].map(k => ({ y, m: ini + k }))
+    };
+  }
+  const y = hoy.getFullYear() + offset;
+  return {
+    desde: isoLocalYMD(y, 0, 1),
+    hasta: isoLocalYMD(y, 11, 31),
+    label: `${y}`,
+    meses: Array.from({ length: 12 }, (_, m) => ({ y, m }))
+  };
+}
+
+// ── Períodos RRHH (#59, v3.28) ─────────────────────────────────────
+// RRHH liquida del 11 de un mes al 10 del siguiente: el período "agosto" va
+// del 11/07 al 10/08. NO se usa en los KPIs ni en la evolución, que son de
+// mes calendario — se usa solo en la tabla de acumulado, que es la que se le
+// comparte a RRHH.
+// Devuelve { anio, mes } con mes 1..12, imputando por la fecha de INICIO.
+function extrasPeriodoRRHH(fechaISO) {
+  const [y, m, d] = (fechaISO || '').split('-').map(Number);
+  if (!y || !m || !d) return null;
+  // Del 11 en adelante cae en el período del mes siguiente.
+  const mm = d >= 11 ? m + 1 : m;
+  return mm > 12 ? { anio: y + 1, mes: 1 } : { anio: y, mes: mm };
+}
+
+// Rango de fechas calendario que abarca un período RRHH completo:
+// mes N del año A va del 11 del mes N-1 al 10 del mes N.
+function extrasRangoRRHH(anio, mes) {
+  const ini = new Date(anio, mes - 2, 11);
+  return {
+    desde: isoLocalYMD(ini.getFullYear(), ini.getMonth(), 11),
+    hasta: isoLocalYMD(anio, mes - 1, 10)
+  };
+}
+
+// Corte entre fuentes. Hasta el período RRHH de agosto 2026 inclusive manda
+// lo IMPORTADO de la planilla de RRHH; desde septiembre 2026 (11/08 en
+// adelante) manda lo registrado en la app. Nunca se suman las dos fuentes
+// para un mismo período: eso contaría dos veces las mismas horas.
+const EXTRAS_CORTE_APP = { anio: 2026, mes: 9 };
+const extrasFuenteEsApp = (anio, mes) =>
+  anio > EXTRAS_CORTE_APP.anio ||
+  (anio === EXTRAS_CORTE_APP.anio && mes >= EXTRAS_CORTE_APP.mes);
+
+// Umbrales de alerta del acumulado (#59). Señal visual, NO un límite: no
+// bloquean nada, no cambian ningún total y no impiden cargar. Si alguna vez
+// tienen que ser un tope real, eso es otra feature y necesita su decisión.
+const EXTRAS_ALERTA_MES = 20;
+const EXTRAS_ALERTA_ANIO = 200;
+
+// Duración legible para los tiempos de resolución del dashboard.
+const formatDuracion = (horas) => {
+  const h = Number(horas) || 0;
+  if (h < 1) return `${Math.round(h * 60)} min`;
+  if (h < 48) return `${h.toFixed(1).replace('.', ',')} h`;
+  return `${(h / 24).toFixed(1).replace('.', ',')} días`;
+};
+
+// Tope de filas que trae `listExtras` para el LISTADO. El dashboard no lo usa:
+// consulta por rango con su propio tope (ver `listExtrasRango`).
+//
+// DIMENSIONAMIENTO MEDIDO (2026-08-27), sobre el acumulado real de RRHH de
+// ene–ago 2026 para las 22 personas del catálogo que figuran en esa planilla:
+// 4.645 h en 8 meses, promedio 581 h/mes, con picos de 864 h (enero) y 852 h
+// (julio). A 7–9 h por solicitud eso da 65 a 83 cargas por mes y entre 775 y
+// 995 al año — más, porque los 3 supervisores y los 4 de EXTRAS_SOLO_PERSONAL
+// no estaban en esa planilla.
+//
+// O sea que 500 se agota en 6 o 7 meses. Para el LISTADO se acepta: está
+// ordenado por fecha descendente y lo que se corta es lo más viejo. Pero los
+// contadores de arriba del listado se calculan sobre lo cargado, así que un
+// filtro a un rango antiguo va a mostrar de menos. Anotado como BACKLOG #57.
+const EXTRAS_LIST_LIMIT = 500;
+
+// Tope del dashboard, por período consultado. Un año completo al ritmo actual
+// entra cómodo; el banner avisa si alguna vez no entrara.
+const EXTRAS_DASHBOARD_LIMIT = 2000;
 
 // V2.4 — Sectores válidos para N° OT (según SOP 10.3.2)
 // Formato: XXX-YYYYY (sector-correlativo de 5 dígitos)
@@ -897,7 +1121,7 @@ const storage = {
   // La tabla NO tiene GRANT de DELETE (ver el DDL): la corrección es siempre
   // soft-delete con motivo. Si alguna vez hace falta purgar de verdad, se hace
   // desde el SQL Editor como `postgres`, con backup previo.
-  async listExtras(limit = 500) {
+  async listExtras(limit = EXTRAS_LIST_LIMIT) {
     if (!supabaseConfigured) return [];
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/horas_extras?select=*&order=fecha.desc,hora_inicio.desc&limit=${limit}`,
@@ -907,7 +1131,66 @@ const storage = {
     return res.json();
   },
 
-  // BACKLOG #50 (v3.26) — Sonda para el aviso del botón de rol del header.
+  // #49 — Consulta acotada al período que está mirando el dashboard.
+  // El dashboard NO calcula sobre `extras` (el listado): con el volumen real
+  // del sector — ~65 a 83 solicitudes por mes, ~1000 al año — el tope del
+  // listado se agota en 6 o 7 meses y la vista anual quedaría truncada.
+  // Trayendo solo el rango, el payload es proporcional a lo que se mira y la
+  // vista anual pesa lo mismo dentro de cinco años que hoy.
+  //
+  // Se imputa por `fecha` (inicio del extra), coherente con el resto del
+  // módulo: una solicitud que cruza medianoche cuenta entera en el período
+  // donde arrancó.
+  async listExtrasRango(desde, hasta, limit = EXTRAS_DASHBOARD_LIMIT) {
+    if (!supabaseConfigured) return [];
+    const qs = [
+      'select=*',
+      `fecha=gte.${encodeURIComponent(desde)}`,
+      `fecha=lte.${encodeURIComponent(hasta)}`,
+      'order=fecha.desc,hora_inicio.desc',
+      `limit=${limit}`
+    ].join('&');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/horas_extras?${qs}`, { headers: sbHeaders() });
+    if (!res.ok) throw new Error(`Supabase extras rango: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  // #49 — Serie del gráfico de evolución: 12 meses, proyección MÍNIMA.
+  // Solo 4 columnas en vez de las 22 de `select=*`. Un año entero con esta
+  // proyección pesa menos que un mes con la fila completa, así que traer 12
+  // meses para el gráfico sale más barato que traer el período para los KPIs.
+  async listExtrasSerie(desde, hasta, limit = EXTRAS_DASHBOARD_LIMIT) {
+    if (!supabaseConfigured) return [];
+    const qs = [
+      'select=fecha,horas,estado,anulada_at,tecnico_nombre',
+      `fecha=gte.${encodeURIComponent(desde)}`,
+      `fecha=lte.${encodeURIComponent(hasta)}`,
+      'order=fecha.asc',
+      `limit=${limit}`
+    ].join('&');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/horas_extras?${qs}`, { headers: sbHeaders() });
+    if (!res.ok) throw new Error(`Supabase extras serie: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  // #59 — Horas extras HISTÓRICAS importadas de la planilla de RRHH.
+  // Tabla `horas_extras_importadas`, de solo lectura para la app: la carga se
+  // hace por SQL. No tiene GRANT de INSERT/UPDATE/DELETE para `anon` a
+  // propósito — un dato ya liquidado no se toca desde la UI.
+  // Los totales son MENSUALES por persona en período RRHH (11→10), sin
+  // detalle diario: por eso solo alimentan la tabla de acumulado y no los
+  // bloques de mes calendario.
+  async listImportadas(anio) {
+    if (!supabaseConfigured) return [];
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/horas_extras_importadas?select=persona,anio,mes,horas,origen&anio=eq.${anio}&limit=2000`,
+      { headers: sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase importadas: ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+
+  // #50 (v3.26) — Sonda para el aviso del botón de rol del header.
   // Corre para TODOS los usuarios al arrancar la app y en cada refresh, entren
   // o no a Extras: es el único modo de que el jefe vea que hay algo pendiente
   // sin loguearse. Por eso tiene que ser el query más barato posible.
@@ -3835,55 +4118,724 @@ function TimeInput24({ value, onChange, disabled }) {
   );
 }
 
-// Lista editable de OTs asociadas. Opcionales (hay extras sin OT: cobertura por
-// ausencia, guardia). Reutiliza OTNumberInput, así que no se puede tipear un
-// número no canónico — misma garantía que en el reporte y en el pool (#39).
-function ExtrasOtsInput({ ots, onChange, disabled }) {
-  const setAt = (i, v) => onChange(ots.map((o, k) => (k === i ? v : o)));
-  const add = () => onChange([...ots, '']);
-  const del = (i) => onChange(ots.filter((_, k) => k !== i));
-
-  return (
-    <div className="flex flex-col gap-2">
-      {ots.length === 0 && (
-        <span className="text-xs text-slate-400 italic">Sin OTs asociadas</span>
-      )}
-      {ots.map((o, i) => (
-        <div key={i} className="flex items-center gap-1.5">
-          <OTNumberInput value={o} onChange={v => setAt(i, v)} disabled={disabled} />
-          <button type="button" onClick={() => del(i)} disabled={disabled}
-            className="p-1.5 hover:bg-red-50 rounded transition disabled:opacity-40" title="Quitar OT">
-            <X className="w-4 h-4 text-red-500" />
-          </button>
-        </div>
-      ))}
-      <button type="button" onClick={add} disabled={disabled}
-        className="self-start inline-flex items-center gap-1 text-xs font-medium text-cyan-700 hover:text-cyan-800 disabled:opacity-40">
-        <Plus className="w-3.5 h-3.5" />Agregar OT
-      </button>
-    </div>
-  );
-}
-
 const EXTRAS_ESTADO_STYLE = {
   pendiente: 'bg-amber-100 text-amber-700',
   aprobada:  'bg-emerald-100 text-emerald-700',
   rechazada: 'bg-red-100 text-red-700'
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// DASHBOARD DE HORAS EXTRAS (#49, v3.27) — SOLO ROL JEFE
+// ═══════════════════════════════════════════════════════════════════
+// Todo se calcula en el CLIENTE sobre `extras` ya cargado: cero llamadas
+// nuevas a Supabase, cero SQL. La tabla es chica y la alternativa (vistas
+// agregadas en Postgres) obligaría a mantener la lógica en dos lugares.
+//
+// Reglas de población, válidas para TODOS los bloques:
+//  · Las ANULADAS no suman nunca, en ningún bloque, aunque estén vigentes en
+//    el listado con el checkbox. Una hora anulada no se trabaja ni se paga.
+//  · Aprobadas y pendientes se muestran SEPARADAS y jamás sumadas: lo que se
+//    paga son las aprobadas; las pendientes son proyección.
+//  · Se agrupa por `tecnico_nombre`, NUNCA por `tecnico_id` — desde #52 hay
+//    7 personas sin id y un GROUP BY por id las perdería en silencio.
+//  · Una solicitud entra al período por su `fecha` (inicio). Las que cruzan
+//    medianoche el último día del período cuentan enteras en ese período.
+// `soloPersonas` (#58): null para el jefe, que ve todo. Para el encargado, la
+// lista de su gente a cargo. El recorte es de UI y no de datos: el fetch trae
+// el período completo y el filtro se aplica acá.
+function ExtrasDashboard({ soloPersonas }) {
+  const [tipo, setTipo] = useState('mes');
+  const [offset, setOffset] = useState(0);
+  const [verTodos, setVerTodos] = useState(false);
+
+  // Recorte por gente a cargo. Se aplica a TODOS los bloques.
+  const enAlcance = useCallback(
+    (nombre) => !soloPersonas || soloPersonas.includes(nombre),
+    [soloPersonas]
+  );
+
+  // Datos propios, acotados al período. No se usa `extras` (el listado) porque
+  // ese viene topeado en EXTRAS_LIST_LIMIT y con el volumen real del sector se
+  // agota en 6 o 7 meses — la vista anual quedaría truncada.
+  const [datos, setDatos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+
+  // Serie del gráfico de evolución: ventana propia de 12 períodos, con su
+  // modo y un filtro opcional por persona ('' = todas).
+  const [modo12, setModo12] = useState('anio');
+  const [personaSel, setPersonaSel] = useState('');
+
+  // Cambiar de granularidad vuelve al período actual: mantener el offset
+  // saltaría a un cuatrimestre de hace años al pasar de mes a cuatrimestre.
+  useEffect(() => { setOffset(0); }, [tipo]);
+
+  const periodo = useMemo(() => extrasPeriodo(tipo, offset), [tipo, offset]);
+
+  useEffect(() => {
+    let vigente = true;
+    setCargando(true);
+    setError('');
+    storage.listExtrasRango(periodo.desde, periodo.hasta)
+      .then(r => { if (vigente) { setDatos(r); setCargando(false); } })
+      .catch(e => {
+        if (vigente) { setError(e.message || 'no se pudieron cargar los datos'); setCargando(false); }
+      });
+    // Descarta respuestas de un período que ya no se está mirando: si se
+    // navega rápido, la consulta vieja puede llegar después de la nueva.
+    return () => { vigente = false; };
+  }, [periodo.desde, periodo.hasta]);
+
+  useEffect(() => { setVerTodos(false); }, [periodo.desde, tipo]);
+
+  const truncado = datos.length >= EXTRAS_DASHBOARD_LIMIT;
+
+  // ═════════════════════════════════════════════════════════════════
+  // DATOS EN PERÍODOS RRHH (#59) — alimentan la evolución Y el acumulado
+  // ═════════════════════════════════════════════════════════════════
+  // Ambos bloques trabajan en períodos RRHH (11→10), no en mes calendario.
+  // La razón es que las horas IMPORTADAS solo existen como total mensual del
+  // 11 al 10, sin detalle diario: repartirlas entre dos meses calendario
+  // exigiría inventar una distribución y escribirla como si fuera medición.
+  // Trabajando en períodos RRHH cada barra y cada celda corresponden a un
+  // dato real. Los KPIs de arriba SÍ son de mes calendario, y por eso el
+  // gráfico aclara qué períodos se solapan con el seleccionado.
+  const anioRRHH = periodo.meses[periodo.meses.length - 1].y;
+
+  // Los 12 períodos RRHH de la ventana del gráfico.
+  const periodos12 = useMemo(() => {
+    if (modo12 === 'anio') {
+      return Array.from({ length: 12 }, (_, i) => ({ anio: anioRRHH, mes: i + 1 }));
+    }
+    // Móvil: los 12 que terminan en el período RRHH del final del período
+    // calendario seleccionado. Anclar al final evita cortar la serie antes
+    // de lo que se está mirando.
+    const fin = extrasPeriodoRRHH(periodo.hasta) || { anio: anioRRHH, mes: 12 };
+    return Array.from({ length: 12 }, (_, k) => {
+      const t = fin.anio * 12 + (fin.mes - 1) - 11 + k;
+      return { anio: Math.floor(t / 12), mes: (t % 12) + 1 };
+    });
+  }, [modo12, anioRRHH, periodo.hasta]);
+
+  // Los 12 del acumulado son siempre el año RRHH completo, como la planilla.
+  const periodosAcum = useMemo(
+    () => Array.from({ length: 12 }, (_, i) => ({ anio: anioRRHH, mes: i + 1 })),
+    [anioRRHH]
+  );
+
+  // Una sola consulta cubre las dos ventanas: se toma la unión de rangos.
+  const [importadas, setImportadas] = useState([]);
+  const [appRRHH, setAppRRHH] = useState([]);
+  const [rrhhCargando, setRrhhCargando] = useState(true);
+
+  const anios = useMemo(() => {
+    const s = new Set([...periodos12, ...periodosAcum].map(p => p.anio));
+    return [...s].sort();
+  }, [periodos12, periodosAcum]);
+
+  const rangoRRHH = useMemo(() => {
+    const todos = [...periodos12, ...periodosAcum];
+    const rangos = todos.map(p => extrasRangoRRHH(p.anio, p.mes));
+    return {
+      desde: rangos.reduce((a, r) => (r.desde < a ? r.desde : a), rangos[0].desde),
+      hasta: rangos.reduce((a, r) => (r.hasta > a ? r.hasta : a), rangos[0].hasta)
+    };
+  }, [periodos12, periodosAcum]);
+
+  useEffect(() => {
+    let vigente = true;
+    setRrhhCargando(true);
+    Promise.all([
+      Promise.all(anios.map(a => storage.listImportadas(a))).then(r => r.flat()),
+      storage.listExtrasSerie(rangoRRHH.desde, rangoRRHH.hasta)
+    ])
+      .then(([imp, app]) => {
+        if (!vigente) return;
+        setImportadas(imp); setAppRRHH(app); setRrhhCargando(false);
+      })
+      .catch(() => {
+        if (!vigente) return;
+        setImportadas([]); setAppRRHH([]); setRrhhCargando(false);
+      });
+    return () => { vigente = false; };
+  }, [anios, rangoRRHH.desde, rangoRRHH.hasta]);
+
+  // ── Índice unificado: período RRHH + persona → { aprobadas, pendientes }
+  // Cada celda toma su valor de UNA sola fuente, nunca de las dos: hasta
+  // ago-2026 lo importado, desde sep-2026 la app. Sin doble conteo posible.
+  // Las importadas cuentan como aprobadas: ya están liquidadas.
+  const indiceRRHH = useMemo(() => {
+    const map = new Map();
+    const k = (a, m, p) => `${a}|${m}|${p}`;
+    const add = (a, m, p, campo, h) => {
+      const key = k(a, m, p);
+      const o = map.get(key) || { anio: a, mes: m, persona: p, aprobadas: 0, pendientes: 0, importado: false };
+      o[campo] += h;
+      if (campo === 'aprobadas' && !extrasFuenteEsApp(a, m)) o.importado = true;
+      map.set(key, o);
+    };
+    importadas.forEach(r => {
+      if (!enAlcance(r.persona) || extrasFuenteEsApp(r.anio, r.mes)) return;
+      add(r.anio, r.mes, r.persona, 'aprobadas', Number(r.horas) || 0);
+    });
+    appRRHH.forEach(r => {
+      if (r.anulada_at || !enAlcance(r.tecnico_nombre)) return;
+      if (r.estado !== 'aprobada' && r.estado !== 'pendiente') return;
+      const p = extrasPeriodoRRHH(r.fecha);
+      if (!p || !extrasFuenteEsApp(p.anio, p.mes)) return;
+      add(p.anio, p.mes, r.tecnico_nombre,
+        r.estado === 'aprobada' ? 'aprobadas' : 'pendientes', Number(r.horas) || 0);
+    });
+    return [...map.values()];
+  }, [importadas, appRRHH, enAlcance]);
+
+  // Personas disponibles para el filtro del gráfico.
+  const personasRRHH = useMemo(
+    () => [...new Set(indiceRRHH.map(r => r.persona))].sort(),
+    [indiceRRHH]
+  );
+
+  useEffect(() => {
+    if (personaSel && !personasRRHH.includes(personaSel)) setPersonaSel('');
+  }, [personasRRHH, personaSel]);
+
+  // Grilla del acumulado: persona x 12 períodos del año RRHH.
+  const acumRRHH = useMemo(() => {
+    const map = new Map();
+    indiceRRHH.forEach(r => {
+      if (r.anio !== anioRRHH) return;
+      const c = map.get(r.persona) || { persona: r.persona, meses: Array(12).fill(null) };
+      const v = r.aprobadas;
+      c.meses[r.mes - 1] = (c.meses[r.mes - 1] || 0) + v;
+      map.set(r.persona, c);
+    });
+    return [...map.values()].map(c => {
+      const conDato = c.meses.filter(v => v !== null);
+      const total = conDato.reduce((a, v) => a + v, 0);
+      return {
+        ...c,
+        total,
+        // Promedio sobre los meses CON DATO, no sobre 12: es lo que hace la
+        // planilla de RRHH. BAGGIO ingresó en julio, así que su promedio se
+        // calcula sobre 2 meses (19,8 h) y no sobre 12 (3,3 h).
+        promedio: conDato.length ? total / conDato.length : 0,
+        nMeses: conDato.length
+      };
+    }).sort((a, b) => b.total - a.total);
+  }, [indiceRRHH, anioRRHH]);
+
+  const totalRRHH = useMemo(() => acumRRHH.reduce((a, c) => a + c.total, 0), [acumRRHH]);
+
+  const vivas = useMemo(
+    () => datos.filter(r => !r.anulada_at && enAlcance(r.tecnico_nombre)),
+    [datos, enAlcance]
+  );
+
+  const sumH = (arr) => arr.reduce((a, r) => a + (Number(r.horas) || 0), 0);
+
+  const kpis = useMemo(() => {
+    const ap = vivas.filter(r => r.estado === 'aprobada');
+    const pe = vivas.filter(r => r.estado === 'pendiente');
+    const re = vivas.filter(r => r.estado === 'rechazada');
+    return {
+      hAprobadas: sumH(ap), nAprobadas: ap.length,
+      hPendientes: sumH(pe), nPendientes: pe.length,
+      hRechazadas: sumH(re), nRechazadas: re.length,
+      personas: new Set(vivas.map(r => r.tecnico_nombre)).size
+    };
+  }, [vivas]);
+
+  // Ranking por persona. Ordenado por aprobadas, que es lo que se paga.
+  const porPersona = useMemo(() => {
+    const map = new Map();
+    vivas.forEach(r => {
+      const k = r.tecnico_nombre || '(sin nombre)';
+      const o = map.get(k) || { nombre: k, aprobadas: 0, pendientes: 0 };
+      if (r.estado === 'aprobada') o.aprobadas += Number(r.horas) || 0;
+      else if (r.estado === 'pendiente') o.pendientes += Number(r.horas) || 0;
+      map.set(k, o);
+    });
+    return [...map.values()]
+      .filter(o => o.aprobadas > 0 || o.pendientes > 0)
+      .sort((a, b) => (b.aprobadas + b.pendientes) - (a.aprobadas + a.pendientes));
+  }, [vivas]);
+
+  const porPersonaTop = useMemo(
+    () => (verTodos ? porPersona : porPersona.slice(0, 15)),
+    [porPersona, verTodos]
+  );
+
+  // Evolución: SIEMPRE 12 períodos RRHH, sobre el índice unificado. Una sola
+  // barra no es una evolución. Se recorren los 12 de la ventana y no los que
+  // tienen datos: un período en cero tiene que verse como cero.
+  // `enPeriodo` marca los que se solapan con el período calendario elegido.
+  const porMes = useMemo(() => periodos12.map(({ anio, mes }) => {
+    const filas = indiceRRHH.filter(r =>
+      r.anio === anio && r.mes === mes && (!personaSel || r.persona === personaSel)
+    );
+    const r = extrasRangoRRHH(anio, mes);
+    return {
+      mes: `${MESES_CORTOS[mes - 1]} ${String(anio).slice(2)}`,
+      // El período RRHH se solapa con el período calendario seleccionado.
+      // No es contención exacta — son recortes distintos a propósito.
+      enPeriodo: r.desde <= periodo.hasta && r.hasta >= periodo.desde,
+      importado: !extrasFuenteEsApp(anio, mes),
+      aprobadas: Number(filas.reduce((a, x) => a + x.aprobadas, 0).toFixed(2)),
+      pendientes: Number(filas.reduce((a, x) => a + x.pendientes, 0).toFixed(2))
+    };
+  }), [indiceRRHH, periodos12, periodo, personaSel]);
+
+  // Horas por categoría de motivo. Exacto desde #54: antes era texto libre y
+  // había que normalizar strings, con lo que "Cubrir licencia" y "cubrir
+  // licencia médica" caían en grupos distintos.
+  const porMotivo = useMemo(() => {
+    const map = new Map();
+    vivas.forEach(r => {
+      const k = r.motivo_categoria || '(sin categoría)';
+      const o = map.get(k) || { motivo: k, aprobadas: 0, pendientes: 0, n: 0 };
+      if (r.estado === 'aprobada') o.aprobadas += Number(r.horas) || 0;
+      else if (r.estado === 'pendiente') o.pendientes += Number(r.horas) || 0;
+      o.n += 1;
+      map.set(k, o);
+    });
+    return [...map.values()].sort((a, b) => (b.aprobadas + b.pendientes) - (a.aprobadas + a.pendientes));
+  }, [vivas]);
+
+  // ── Métricas de proceso ──────────────────────────────────────────
+  // Población: solo las RESUELTAS (aprobadas o rechazadas). Las pendientes
+  // no tienen desenlace todavía y meterlas bajaría artificialmente la tasa.
+  //
+  // Las cargas del jefe SE INCLUYEN, por decisión explícita. Como se
+  // autoaprueban, `resuelto_at` se sella en el cliente ANTES de que el insert
+  // ponga su `created_at`, y la diferencia da NEGATIVA. Se cortan en cero: un
+  // tiempo negativo no es un dato, es un artefacto del orden de sellado.
+  const proceso = useMemo(() => {
+    const resueltas = vivas.filter(r => r.estado === 'aprobada' || r.estado === 'rechazada');
+    const conTiempo = resueltas.filter(r => r.created_at && r.resuelto_at);
+    const horasDe = (r) => Math.max(0,
+      (new Date(r.resuelto_at) - new Date(r.created_at)) / 3600000);
+    const prom = (arr) => (arr.length ? arr.reduce((a, r) => a + horasDe(r), 0) / arr.length : null);
+    const planificadas = conTiempo.filter(r => !extrasEsReactivo(r.motivo_categoria));
+    const reactivas = conTiempo.filter(r => extrasEsReactivo(r.motivo_categoria));
+    return {
+      nResueltas: resueltas.length,
+      tasa: resueltas.length
+        ? (resueltas.filter(r => r.estado === 'aprobada').length / resueltas.length) * 100
+        : null,
+      tPlanificadas: prom(planificadas), nPlanificadas: planificadas.length,
+      tReactivas: prom(reactivas), nReactivas: reactivas.length,
+      autoaprobadas: resueltas.filter(r => r.solicitado_por === r.resuelto_por).length
+    };
+  }, [vivas]);
+
+  const btnPeriodo = (t, label) => (
+    <button key={t} onClick={() => setTipo(t)}
+      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+        tipo === t ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+      }`}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* ── Selector de período ─────────────────────────────────── */}
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {btnPeriodo('mes', 'Mensual')}
+            {btnPeriodo('cuatri', 'Cuatrimestral')}
+            {btnPeriodo('anio', 'Anual')}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setOffset(o => o - 1)}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período anterior">
+              <ChevronLeft className="w-4 h-4 text-slate-600" />
+            </button>
+            <span className="text-sm font-bold text-slate-800 min-w-[110px] text-center capitalize">
+              {periodo.label}
+            </span>
+            <button onClick={() => setOffset(o => o + 1)}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período siguiente">
+              <ChevronRight className="w-4 h-4 text-slate-600" />
+            </button>
+            {offset !== 0 && (
+              <button onClick={() => setOffset(0)}
+                className="px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 rounded-lg transition">
+                Hoy
+              </button>
+            )}
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2 num">
+          {formatDateShort(periodo.desde)} — {formatDateShort(periodo.hasta)}
+        </p>
+      </Card>
+
+      {/* Truncamiento: sin esto, un período largo mostraría totales
+          incompletos sin ninguna señal. */}
+      {truncado && (
+        <div className="flex items-start gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="text-xs text-red-800 leading-relaxed">
+            <strong>Datos incompletos.</strong> Se alcanzó el tope de {EXTRAS_DASHBOARD_LIMIT} solicitudes para
+            este período, así que los números de abajo pueden estar por debajo del real.
+            Hay que subir <code>EXTRAS_DASHBOARD_LIMIT</code> o paginar antes de usar esto para liquidación.
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="text-xs text-red-800">No se pudieron cargar los datos del período: {error}</div>
+        </div>
+      )}
+
+      {/* ── Evolución: SIEMPRE 12 meses, ventana propia ─────────────
+          Va FUERA del condicional del período: aunque el período elegido
+          esté vacío, los otros 11 meses siguen teniendo algo que decir. */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SectionTitle icon={BarChart3} accent="emerald">Evolución · 12 períodos RRHH</SectionTitle>
+          <div className="flex flex-wrap items-center gap-1 mb-4">
+            <select value={personaSel} onChange={e => setPersonaSel(e.target.value)}
+              className="px-2 py-1 text-[11px] font-semibold border border-slate-300 rounded-lg bg-white text-slate-700 max-w-[190px]"
+              title="Filtrar la evolución por persona">
+              <option value="">Todas ({personasRRHH.length})</option>
+              {personasRRHH.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <button onClick={() => setModo12('anio')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
+                modo12 === 'anio' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+              }`} title="Los 12 períodos RRHH del año">
+              Año RRHH
+            </button>
+            <button onClick={() => setModo12('movil')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
+                modo12 === 'movil' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+              }`} title="Los 12 períodos que terminan en el seleccionado">
+              Últimos 12
+            </button>
+          </div>
+        </div>
+        {rrhhCargando ? (
+          <div className="text-center text-slate-500 py-16 text-sm">Cargando evolución…</div>
+        ) : (
+          <>
+            <ResponsiveContainer width="100%" height={250}>
+              <BarChart data={porMes}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="mes" tick={{ fontSize: 10 }} interval={0} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatHoras(v)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {/* Los meses fuera del período se atenúan: la ventana es de 12
+                    pero los KPIs de abajo son del período. Sin esta señal, los
+                    dos bloques parecen hablar del mismo recorte y no lo hacen. */}
+                <Bar dataKey="aprobadas" name="Aprobadas" radius={[3, 3, 0, 0]}>
+                  {porMes.map((d, i) => (
+                    <Cell key={i} fill="#059669" fillOpacity={d.enPeriodo ? 1 : 0.35} />
+                  ))}
+                </Bar>
+                <Bar dataKey="pendientes" name="Pendientes" radius={[3, 3, 0, 0]}>
+                  {porMes.map((d, i) => (
+                    <Cell key={i} fill="#d97706" fillOpacity={d.enPeriodo ? 1 : 0.35} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+              Períodos RRHH: cada barra va del 11 del mes anterior al 10 del propio mes. En color pleno, los que se
+              solapan con el período seleccionado ({periodo.label}); el resto va atenuado.
+              {personaSel && <> Filtrado por <strong>{personaSel}</strong>.</>}
+              {' '}Hasta ago 2026 las horas son importadas de RRHH; desde sep 2026 salen de la app.
+              Ningún período mezcla las dos fuentes.
+            </p>
+          </>
+        )}
+      </Card>
+
+      {cargando ? (
+        <Card className="p-5">
+          <div className="text-center text-slate-500 py-10 text-sm">Cargando {periodo.label}…</div>
+        </Card>
+      ) : vivas.length === 0 ? (
+        <Card className="p-5">
+          <EmptyHint>No hay solicitudes en {periodo.label}.</EmptyHint>
+        </Card>
+      ) : (
+        <>
+          {/* ── KPIs ──────────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Aprobadas</div>
+              <div className="text-2xl font-bold text-emerald-700 num mt-1">{formatHoras(kpis.hAprobadas)}</div>
+              <div className="text-[11px] text-slate-400 num">{kpis.nAprobadas} solicitudes · se pagan</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Pendientes</div>
+              <div className="text-2xl font-bold text-amber-700 num mt-1">{formatHoras(kpis.hPendientes)}</div>
+              <div className="text-[11px] text-slate-400 num">{kpis.nPendientes} solicitudes · proyección</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Rechazadas</div>
+              <div className="text-2xl font-bold text-slate-400 num mt-1">{formatHoras(kpis.hRechazadas)}</div>
+              <div className="text-[11px] text-slate-400 num">{kpis.nRechazadas} solicitudes</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Personas</div>
+              <div className="text-2xl font-bold text-slate-800 num mt-1">{kpis.personas}</div>
+              <div className="text-[11px] text-slate-400">con extras en el período</div>
+            </Card>
+          </div>
+
+          {/* ── Ranking por persona ───────────────────────────────── */}
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <SectionTitle icon={Users} accent="emerald">Horas por persona</SectionTitle>
+              {porPersona.length > 15 && (
+                <button onClick={() => setVerTodos(v => !v)}
+                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 mb-4">
+                  {verTodos ? 'Ver solo los primeros 15' : `Ver todos (${porPersona.length})`}
+                </button>
+              )}
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(200, porPersonaTop.length * 30)}>
+              <BarChart data={porPersonaTop} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="nombre" width={150} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatHoras(v)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {/* barSize fijo: sin esto Recharts engorda la franja cuando
+                    hay poca gente. Mismo grosor que las columnas de la
+                    evolución, sea cual sea la cantidad de personas. */}
+                <Bar dataKey="aprobadas" name="Aprobadas" stackId="h" fill="#059669" barSize={14} />
+                <Bar dataKey="pendientes" name="Pendientes" stackId="h" fill="#d97706" barSize={14} />
+              </BarChart>
+            </ResponsiveContainer>
+            {!verTodos && porPersona.length > 15 && (
+              <p className="text-[11px] text-slate-400 mt-2">
+                Mostrando 15 de {porPersona.length}, ordenadas por total. Los KPIs de arriba
+                consideran a las {porPersona.length}.
+              </p>
+            )}
+          </Card>
+
+          {/* ── Acumulado RRHH (#59) ─────────────────────────────────────
+          Períodos 11→10, no calendario. Va fuera del condicional del
+          período: la tabla es del año entero, no del período elegido. */}
+      <Card className="p-5">
+        <SectionTitle icon={FileSpreadsheet} accent="emerald">
+          Acumulado RRHH {anioRRHH} · períodos 11→10
+        </SectionTitle>
+        <p className="text-[11px] text-slate-500 -mt-2 mb-3 leading-relaxed">
+          Cada columna va del <strong>11 del mes anterior al 10 del propio mes</strong>: "Ago" es del 11/07 al 10/08.
+          <strong> No coincide con los bloques de arriba</strong>, que son de mes calendario.
+        </p>
+        {rrhhCargando ? (
+          <div className="text-center text-slate-500 py-10 text-sm">Cargando acumulado…</div>
+        ) : acumRRHH.length === 0 ? (
+          <EmptyHint>No hay horas acumuladas en {anioRRHH}.</EmptyHint>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3 sticky left-0 bg-white">Personal</th>
+                    {MESES_CORTOS.map(m => (
+                      <th key={m} className="py-2 px-1 text-right capitalize">{m}</th>
+                    ))}
+                    <th className="py-2 pl-2 text-right">Total</th>
+                    <th className="py-2 pl-2 text-right">Prom.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {acumRRHH.map(c => (
+                    <tr key={c.persona} className="border-b border-slate-100">
+                      <td className="py-1.5 pr-3 font-semibold text-slate-800 whitespace-nowrap sticky left-0 bg-white">
+                        {c.persona}
+                      </td>
+                      {c.meses.map((v, i) => {
+                        // Umbral mensual: más de EXTRAS_ALERTA_MES horas en un
+                        // período se sombrea. Es señal visual, no un límite:
+                        // no bloquea nada ni cambia ningún total.
+                        const alto = v !== null && v > EXTRAS_ALERTA_MES;
+                        return (
+                          <td key={i}
+                              className={`py-1.5 px-1 num text-right ${alto ? 'bg-red-500/15 font-semibold text-red-800' : v === null ? 'text-slate-300' : 'text-slate-600'}`}
+                              title={v === null ? 'Sin registro'
+                                : `${extrasFuenteEsApp(anioRRHH, i + 1) ? 'Registrado en la app' : 'Importado de RRHH'}${alto ? ` · supera las ${EXTRAS_ALERTA_MES} h del período` : ''}`}>
+                            {v === null ? '·' : v.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
+                          </td>
+                        );
+                      })}
+                      <td className={`py-1.5 pl-2 num text-right font-bold ${c.total > EXTRAS_ALERTA_ANIO ? 'bg-red-500/15 text-red-800' : 'text-slate-900'}`}
+                          title={c.total > EXTRAS_ALERTA_ANIO ? `Supera las ${EXTRAS_ALERTA_ANIO} h en el año` : undefined}>
+                        {c.total.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
+                      </td>
+                      <td className="py-1.5 pl-2 num text-right font-semibold text-emerald-700"
+                          title={`${c.nMeses} ${c.nMeses === 1 ? 'mes' : 'meses'} con registro`}>
+                        {c.promedio.toFixed(1).replace('.', ',')}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-slate-300">
+                    <td className="py-2 pr-3 font-bold text-slate-900 sticky left-0 bg-white">TOTAL</td>
+                    {MESES_CORTOS.map((_, i) => {
+                      const s = acumRRHH.reduce((a, c) => a + (c.meses[i] || 0), 0);
+                      return (
+                        <td key={i} className="py-2 px-1 num text-right font-semibold text-slate-700">
+                          {s ? s.toFixed(2).replace(/\.?0+$/, '').replace('.', ',') : '·'}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2 pl-2 num text-right font-bold text-slate-900">
+                      {totalRRHH.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
+                    </td>
+                    <td className="py-2 pl-2"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-3 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <p>
+                · Hasta el período de <strong>agosto 2026</strong> las horas son <strong>importadas</strong> de la
+                planilla acumulada de RRHH: son totales mensuales sin detalle diario. Desde
+                <strong> septiembre 2026</strong> salen de lo registrado en la app. Ninguna celda mezcla
+                las dos fuentes, así que nada se cuenta dos veces. Pasá el cursor sobre una celda para ver su origen.
+              </p>
+              <p>
+                · De la app entran solo las <strong>aprobadas</strong>: la tabla replica lo que se liquida, y una
+                solicitud pendiente todavía no lo es.
+              </p>
+              <p>
+                · El <strong>promedio</strong> se calcula sobre los meses con registro, no sobre 12. Quien ingresó
+                a mitad de año no queda con un promedio artificialmente bajo. Un punto (·) es ausencia de registro,
+                distinto de un cero.
+              </p>
+              <p>
+                · Sombreado rojo: más de <strong>{EXTRAS_ALERTA_MES} h en un período</strong> o más de
+                <strong> {EXTRAS_ALERTA_ANIO} h en el año</strong>. Es señal visual, no un límite — no bloquea
+                nada ni altera ningún total.
+              </p>
+              <p>
+                · Las horas importadas <strong>no entran</strong> en los KPIs de mes calendario. Sí entran en la
+                evolución de arriba, que trabaja en estos mismos períodos RRHH.
+              </p>
+            </div>
+          </>
+        )}
+      </Card>
+
+          {/* ── Motivos ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={ListChecks} accent="emerald">Horas por motivo</SectionTitle>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3">Categoría</th>
+                    <th className="py-2 pr-3 text-right">Aprobadas</th>
+                    <th className="py-2 pr-3 text-right">Pendientes</th>
+                    <th className="py-2 pr-3 text-right">Solicitudes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {porMotivo.map(m => (
+                    <tr key={m.motivo} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-slate-700">
+                        {m.motivo}
+                        {extrasEsReactivo(m.motivo) && (
+                          <span className="ml-1.5 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
+                                title="Se ejecuta antes de la aprobación">reactivo</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 num text-right font-semibold text-emerald-700">{formatHoras(m.aprobadas)}</td>
+                      <td className="py-2 pr-3 num text-right text-amber-700">{formatHoras(m.pendientes)}</td>
+                      <td className="py-2 pr-3 num text-right text-slate-500">{m.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* ── Proceso ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={Timer} accent="emerald">Proceso de aprobación</SectionTitle>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Tasa de aprobación</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tasa === null ? '—' : `${proceso.tasa.toFixed(0)}%`}
+                </div>
+                <div className="text-[11px] text-slate-400 num">sobre {proceso.nResueltas} resueltas</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · planificadas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tPlanificadas === null ? '—' : formatDuracion(proceso.tPlanificadas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nPlanificadas} solicitudes</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · reactivas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tReactivas === null ? '—' : formatDuracion(proceso.tReactivas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nReactivas} solicitudes</div>
+              </div>
+            </div>
+
+            {/* Notas al pie. Son parte del dato, no decoración: sin esto los
+                números de arriba se leen como algo que no son. */}
+            <div className="mt-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <p>
+                · Planificadas y reactivas se miden por separado a propósito. En las reactivas el trabajo ya se
+                hizo cuando llega la aprobación, así que el tiempo mide demora administrativa, no velocidad de respuesta.
+              </p>
+              <p>
+                · Las {proceso.autoaprobadas} solicitudes cargadas y aprobadas por la misma persona
+                <strong> están incluidas</strong> en ambas métricas. Se autoaprueban en el momento, así que
+                bajan el promedio de resolución y suben la tasa sin haber pasado por ninguna decisión.
+              </p>
+              <p>
+                · Los tiempos negativos se cortan en cero: en las autoaprobadas el sello de resolución se pone
+                milisegundos antes que el de creación, y eso es un artefacto del orden de guardado, no un dato.
+              </p>
+              <p>· Las anuladas no suman en ningún bloque. Aprobadas y pendientes nunca se suman entre sí.</p>
+            </div>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdate, onRefresh }) {
   const esJefe = sesion.rol === 'jefe';
+
+  // Sub-vista (#49). Solo el jefe tiene dashboard; el encargado ve el listado
+  // siempre y no necesita este estado, pero se declara igual para no meter un
+  // hook condicional.
+  const [vista, setVista] = useState('listado');
 
   // Form
   const [tecnico, setTecnico] = useState('');
   const [fecha, setFecha] = useState(todayLocalISO());
   const [horaInicio, setHoraInicio] = useState('');
   const [horaFin, setHoraFin] = useState('');
+  const [motivoCat, setMotivoCat] = useState('');
   const [motivo, setMotivo] = useState('');
-  const [ots, setOts] = useState([]);
   const [editId, setEditId] = useState(null);
   const [msg, setMsg] = useState('');
   const [saving, setSaving] = useState(false);
+  // Segundo click para aceptar un solapamiento detectado (#54).
+  const [solapeOk, setSolapeOk] = useState(false);
 
   // Filtros del listado (también acotan lo que sale al Excel)
   const [filtroEstado, setFiltroEstado] = useState('');
@@ -3896,10 +4848,26 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [rechazarTarget, setRechazarTarget] = useState(null);
 
   // ── Visibilidad por rol (partición de UI, no de datos: ver nota en
-  //    EXTRAS_USUARIOS). Encargado = solo lo que cargó él, por AUTOR.
+  //    EXTRAS_USUARIOS). v3.28 (#58): el criterio pasó de POR AUTOR a POR
+  //    PERSONA. El encargado ve las solicitudes de su gente a cargo aunque
+  //    las haya cargado el jefe, y ya no ve las que él mismo cargó para
+  //    alguien de otro equipo — porque tampoco puede cargarlas.
+  //    Incluye las suyas propias: ver lo que a uno le cargaron es razonable
+  //    aunque no pueda tocarlo.
+  const aCargo = useMemo(
+    () => extrasVisiblesDe(sesion.user, sesion.nombre),
+    [sesion.user, sesion.nombre]
+  );
   const visibles = useMemo(
-    () => (esJefe ? extras : extras.filter(r => r.solicitado_por === sesion.user)),
-    [extras, esJefe, sesion.user]
+    () => (esJefe ? extras : extras.filter(r => aCargo.includes(r.tecnico_nombre))),
+    [extras, esJefe, aCargo]
+  );
+
+  // A quién se le puede cargar: el jefe a cualquiera, el encargado solo a su
+  // gente. No incluye su propio nombre aunque lo vea en el listado.
+  const personalCargable = useMemo(
+    () => (esJefe ? EXTRAS_PERSONAL_NAMES : extrasPersonalDe(sesion.user)),
+    [esJefe, sesion.user]
   );
 
   const listado = useMemo(() => visibles
@@ -3926,13 +4894,40 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const cruza = extrasCruzaMedianoche(horaInicio, horaFin);
   const horasPreview = extrasHorasCalc(fecha, horaInicio, horaFin);
 
+  // ── Solapamiento con extras ya cargados de la misma persona (#54).
+  //    Se busca sobre `extras` COMPLETO, no sobre `visibles`: el encargado no
+  //    ve lo que cargó otro encargado, pero igual tiene que ser advertido si
+  //    se pisa con ello — si no, la duplicación queda invisible justo para
+  //    quien la está creando. Es el único lugar donde la partición de UI se
+  //    saltea a propósito.
+  //    No cuentan las anuladas ni las rechazadas: esas horas no se pagan.
+  const solapes = useMemo(() => {
+    if (!tecnico || !fecha || !horaInicio || !horaFin || horasPreview <= 0) return [];
+    const nueva = {
+      ini: `${fecha}T${horaInicio}`,
+      fin: `${extrasFechaFin(fecha, horaInicio, horaFin)}T${horaFin}`
+    };
+    return extras.filter(r =>
+      r.tecnico_nombre === tecnico &&
+      !r.anulada_at &&
+      r.estado !== 'rechazada' &&
+      r.id !== editId &&
+      extrasSolapan(nueva, extrasVentana(r))
+    );
+  }, [extras, tecnico, fecha, horaInicio, horaFin, horasPreview, editId]);
+
+  // Cualquier cambio en la ventana o la persona invalida la confirmación
+  // anterior: si no, se acepta un solapamiento y después se cambia la hora.
+  useEffect(() => { setSolapeOk(false); }, [tecnico, fecha, horaInicio, horaFin]);
+
   const resetForm = () => {
     setEditId(null);
     setTecnico('');
     setHoraInicio('');
     setHoraFin('');
+    setMotivoCat('');
     setMotivo('');
-    setOts([]);
+    setSolapeOk(false);
     // La fecha NO se resetea: al cargar varios extras del mismo día seguidos,
     // volver a tipearla cada vez es la forma más rápida de equivocarse.
   };
@@ -3943,25 +4938,38 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     setFecha(r.fecha);
     setHoraInicio((r.hora_inicio || '').slice(0, 5));
     setHoraFin((r.hora_fin || '').slice(0, 5));
+    setMotivoCat(r.motivo_categoria || '');
     setMotivo(r.motivo || '');
-    setOts(Array.isArray(r.ots) ? [...r.ots] : []);
+    setSolapeOk(false);
     setMsg('');
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const submit = async () => {
-    if (!tecnico) { setMsg('Error: elegí el técnico.'); return; }
+    if (!tecnico) { setMsg('Error: elegí a la persona.'); return; }
+    // Defensa además del select: si el nombre quedó de una edición previa y
+    // ya no está a cargo, no se guarda. El select solo oculta la opción.
+    if (!personalCargable.includes(tecnico)) {
+      setMsg(`Error: ${tecnico} no está a tu cargo. Esa carga la hace el jefe.`);
+      return;
+    }
     if (!fecha) { setMsg('Error: falta la fecha.'); return; }
     if (!horaInicio || !horaFin) { setMsg('Error: faltan las horas de inicio y fin.'); return; }
     if (horasPreview <= 0) { setMsg('Error: la ventana horaria es inválida.'); return; }
     if (horasPreview > 24) { setMsg('Error: más de 24 h en un solo extra — revisá las horas.'); return; }
-    if (!motivo.trim()) { setMsg('Error: el motivo es obligatorio.'); return; }
+    if (!motivoCat) { setMsg('Error: elegí la categoría del motivo.'); return; }
+    if (extrasRequiereDetalle(motivoCat) && !motivo.trim()) {
+      setMsg(`Error: "${motivoCat}" necesita que detalles el trabajo.`);
+      return;
+    }
 
-    // Las OTs son opcionales, pero las que estén cargadas tienen que ser
-    // canónicas: se descartan las vacías y se rechaza cualquier resto sucio.
-    const otsLimpias = ots.map(o => canonOT(o)).filter(Boolean);
-    if (otsLimpias.length !== ots.filter(o => (o || '').trim()).length) {
-      setMsg('Error: hay una OT incompleta — elegí sector y número, o quitala.');
+    // Aviso blando de solapamiento (#54): no bloquea, pide un segundo click.
+    // Deliberadamente NO es un hard-block: encadenar extras sobre un trabajo
+    // que se extendió es un caso legítimo y frecuente.
+    if (solapes.length > 0 && !solapeOk) {
+      const cual = solapes[0];
+      setSolapeOk(true);
+      setMsg(`Error: ${tecnico} ya tiene un extra que se pisa con este (${formatDateShort(cual.fecha)} ${(cual.hora_inicio || '').slice(0, 5)}–${(cual.hora_fin || '').slice(0, 5)}). Si es correcto, volvé a tocar el botón para confirmar.`);
       return;
     }
 
@@ -3975,8 +4983,14 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         hora_inicio: horaInicio,
         fecha_fin: extrasFechaFin(fecha, horaInicio, horaFin),
         hora_fin: horaFin,
-        motivo: motivo.trim(),
-        ots: otsLimpias
+        motivo_categoria: motivoCat,
+        // Vacío es válido para las categorías de cobertura. La constraint
+        // `horas_extras_motivo_no_vacio` se dropeó en v3.27 justamente para
+        // permitirlo; el Excel muestra la categoría cuando el detalle falta.
+        motivo: motivo.trim()
+        // `ots` NO se manda (#55): la columna sigue existiendo en la base con
+        // DEFAULT '{}' NOT NULL, así que las filas nuevas nacen con array
+        // vacío sin que el cliente la toque.
       };
 
       if (editId) {
@@ -4056,14 +5070,21 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const exportar = () => {
     if (listado.length === 0) { setMsg('Error: no hay filas para exportar con estos filtros.'); return; }
     const rows = listado.map(r => ({
+      // El encabezado sigue diciendo "Técnico" a propósito (#53): renombrarlo
+      // rompería cualquier planilla o proceso que consuma la columna por
+      // nombre. En pantalla sí dice "Personal".
       'Técnico': r.tecnico_nombre,
       'Fecha': r.fecha,
       'Hora inicio': (r.hora_inicio || '').slice(0, 5),
       'Fecha fin': r.fecha_fin,
       'Hora fin': (r.hora_fin || '').slice(0, 5),
       'Horas': Number(r.horas) || 0,
-      'Motivo': r.motivo || '',
-      'OTs asociadas': (r.ots || []).join(' · '),
+      'Categoría': r.motivo_categoria || '',
+      // Fallback deliberado: las categorías de cobertura no exigen detalle, y
+      // una celda vacía en una planilla que puede ir a RRHH se lee como dato
+      // faltante. En la BASE `motivo` queda vacío — no se duplica la categoría
+      // — para que siga siendo consultable cuáles tienen detalle real.
+      'Motivo': (r.motivo || '').trim() || r.motivo_categoria || '',
       'Estado': r.anulada_at ? 'ANULADA' : r.estado,
       'Solicitada por': r.solicitado_por_nombre || '',
       // Trazabilidad: en qué FECHA se pidió y en qué fecha se resolvió, en
@@ -4095,6 +5116,32 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
   return (
     <div className="flex flex-col gap-5">
+      {/* ── Toggle de sub-vista (#49). Desde v3.28 también el encargado,
+             con el dashboard recortado a su gente a cargo (#58). ─────── */}
+      <div className="flex items-center gap-2">
+        <button onClick={() => setVista('listado')}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+            vista === 'listado' ? 'bg-slate-800 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+          }`}>
+          <ListChecks className="w-3.5 h-3.5" />Listado
+        </button>
+        <button onClick={() => setVista('dashboard')}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+            vista === 'dashboard' ? 'bg-slate-800 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
+          }`}>
+          <BarChart3 className="w-3.5 h-3.5" />Dashboard
+        </button>
+        {!esJefe && vista === 'dashboard' && (
+          <span className="text-[11px] text-slate-500">
+            Tu gente a cargo · {extrasPersonalDe(sesion.user).length} personas
+          </span>
+        )}
+      </div>
+
+      {vista === 'dashboard' ? (
+        <ExtrasDashboard soloPersonas={esJefe ? null : aCargo} />
+      ) : (
+      <>
       {/* ── ALTA / EDICIÓN ─────────────────────────────────────────── */}
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4107,13 +5154,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          <Field label="Técnico">
-            {/* EXTRAS_PERSONAL_NAMES, no TECNICO_NAMES: acá también reportan
-                los supervisores y personal que no ejecuta OTs. Ver el catálogo
-                arriba para por qué es una lista separada. */}
+          <Field label="Personal">
+            {/* Jefe: EXTRAS_PERSONAL_NAMES completo. Encargado: solo su gente
+                a cargo (#58). El resto lo carga el jefe. */}
             <select className={inputCls} value={tecnico} onChange={e => setTecnico(e.target.value)}>
               <option value="">—</option>
-              {EXTRAS_PERSONAL_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+              {personalCargable.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
           </Field>
 
@@ -4141,10 +5187,25 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             </div>
           </Field>
 
-          <Field label="Motivo" className="lg:col-span-3">
+          <Field label="Motivo">
+            <select className={inputCls} value={motivoCat}
+              onChange={e => { setMotivoCat(e.target.value); }}>
+              <option value="">—</option>
+              {EXTRAS_MOTIVO_CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+
+          <Field
+            label={extrasRequiereDetalle(motivoCat) ? 'Detalle del trabajo *' : 'Detalle (opcional)'}
+            className="lg:col-span-2">
             <input type="text" className={inputCls} value={motivo}
               onChange={e => setMotivo(e.target.value)}
-              placeholder="Ej: parada de planta de efluentes, cobertura por ausencia…" />
+              placeholder={
+                !motivoCat ? 'Elegí primero una categoría…'
+                  : extrasRequiereDetalle(motivoCat)
+                    ? 'Qué trabajo se hizo — obligatorio para esta categoría'
+                    : 'Opcional: a quién cubre, o cualquier aclaración'
+              } />
           </Field>
 
           <Field label="Duración">
@@ -4152,11 +5213,39 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
               {horasPreview > 0 ? formatHoras(horasPreview) : '—'}
             </div>
           </Field>
-
-          <Field label="OTs asociadas (opcional)" className="lg:col-span-4">
-            <ExtrasOtsInput ots={ots} onChange={setOts} />
-          </Field>
         </div>
+
+        {/* Aviso de solapamiento (#54). Informativo: no impide guardar. */}
+        {solapes.length > 0 && (
+          <div className="mt-4 flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-800 leading-relaxed">
+              <strong>{tecnico}</strong> ya tiene {solapes.length === 1 ? 'un extra' : `${solapes.length} extras`} que se
+              {solapes.length === 1 ? ' pisa' : ' pisan'} con esta ventana:
+              <ul className="mt-1 space-y-0.5">
+                {solapes.slice(0, 4).map(s => (
+                  <li key={s.id} className="num">
+                    · {formatDateShort(s.fecha)} {(s.hora_inicio || '').slice(0, 5)}–{(s.hora_fin || '').slice(0, 5)}
+                    <span className="font-sans"> · {s.motivo_categoria || s.motivo || 'sin motivo'} · {s.estado}</span>
+                  </li>
+                ))}
+                {solapes.length > 4 && <li className="text-amber-700">· y {solapes.length - 4} más</li>}
+              </ul>
+              <div className="mt-1">
+                Si el trabajo se extendió y esto es una continuación, está bien — confirmá y seguí.
+                Si es una carga repetida, corregila: se pagaría dos veces.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Los motivos reactivos se ejecutan antes de la aprobación. */}
+        {extrasEsReactivo(motivoCat) && (
+          <p className="text-[11px] text-slate-500 mt-3 leading-relaxed">
+            Este motivo se registra normalmente <strong>después</strong> de hecho el trabajo. La aprobación queda como
+            acto administrativo posterior, y el dashboard lo cuenta aparte de los motivos planificados.
+          </p>
+        )}
 
         <div className="flex flex-wrap items-center gap-3 mt-4">
           <button onClick={submit} disabled={saving}
@@ -4180,7 +5269,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
           {esJefe
             ? 'Lo que cargues acá queda aprobado en el momento, registrado a tu nombre.'
-            : 'La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular.'}
+            : `La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular. Solo podés cargar a tu gente a cargo (${extrasPersonalDe(sesion.user).length} personas); el resto lo carga el jefe.`}
         </p>
       </Card>
 
@@ -4188,7 +5277,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <SectionTitle icon={ListChecks} accent="slate">
-            {esJefe ? 'Todas las solicitudes' : 'Mis solicitudes'}
+            {esJefe ? 'Todas las solicitudes' : 'Mi gente a cargo'}
           </SectionTitle>
           <div className="flex flex-wrap items-center gap-2">
             <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
@@ -4239,14 +5328,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                  <th className="py-2 pr-3">Técnico</th>
+                  <th className="py-2 pr-3">Personal</th>
                   <th className="py-2 pr-3">Fecha</th>
                   <th className="py-2 pr-3">Horario</th>
                   <th className="py-2 pr-3 text-right">Horas</th>
                   <th className="py-2 pr-3">Motivo</th>
-                  <th className="py-2 pr-3">OTs</th>
                   <th className="py-2 pr-3">Estado</th>
-                  {esJefe && <th className="py-2 pr-3">Solicitó</th>}
+                  {/* v3.28 (#58): visible también para el encargado. Ahora ve
+                      filas que cargó el jefe, y solo puede editar las propias:
+                      sin esta columna no puede saber cuáles son cuáles. */}
+                  <th className="py-2 pr-3">Solicitó</th>
                   <th className="py-2 pr-3">Cargada</th>
                   <th className="py-2 pr-3"></th>
                 </tr>
@@ -4270,12 +5361,14 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                       <td className="py-2 pr-3 num text-right font-semibold text-slate-800 whitespace-nowrap">
                         {formatHoras(r.horas)}
                       </td>
-                      <td className="py-2 pr-3 text-slate-600 max-w-[260px] truncate" title={r.motivo || ''}>
-                        {r.motivo || '—'}
-                      </td>
-                      <td className="py-2 pr-3 num text-slate-500 text-xs max-w-[160px] truncate"
-                          title={(r.ots || []).join(' · ')}>
-                        {(r.ots || []).length ? (r.ots || []).join(' · ') : '—'}
+                      <td className="py-2 pr-3 text-slate-600 max-w-[260px]"
+                          title={[r.motivo_categoria, r.motivo].filter(Boolean).join(' — ')}>
+                        <div className="font-medium text-slate-700 truncate">
+                          {r.motivo_categoria || <span className="text-slate-400 italic">sin categoría</span>}
+                        </div>
+                        {(r.motivo || '').trim() && (
+                          <div className="text-[11px] text-slate-500 truncate">{r.motivo}</div>
+                        )}
                       </td>
                       <td className="py-2 pr-3 whitespace-nowrap">
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${EXTRAS_ESTADO_STYLE[r.estado] || 'bg-slate-200 text-slate-600'}`}
@@ -4299,9 +5392,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           </div>
                         )}
                       </td>
-                      {esJefe && (
-                        <td className="py-2 pr-3 text-slate-500 text-xs whitespace-nowrap">{r.solicitado_por_nombre || '—'}</td>
-                      )}
+                      <td className="py-2 pr-3 text-slate-500 text-xs whitespace-nowrap">
+                        {r.solicitado_por === sesion.user
+                          ? <span className="font-semibold text-slate-700">vos</span>
+                          : (r.solicitado_por_nombre || '—')}
+                      </td>
                       {/* Momento en que el encargado dejó asentada la solicitud. */}
                       <td className="py-2 pr-3 text-slate-400 text-[11px] num whitespace-nowrap">
                         {formatFechaAudit(r.created_at)}
@@ -4348,6 +5443,8 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           quién aprobó — no son un control de acceso ni una firma electrónica.
         </p>
       </Card>
+      </>
+      )}
 
       {rechazarTarget && (
         <ExtrasMotivoDialog
