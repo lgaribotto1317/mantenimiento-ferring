@@ -400,23 +400,6 @@ function extrasPeriodo(tipo, offset) {
   };
 }
 
-// Ventana de 12 meses para el gráfico de evolución (#49).
-// Independiente del período de los KPIs: el gráfico siempre muestra 12 meses,
-// porque una sola barra no es una evolución. `modo` es 'anio' (año calendario
-// que contiene al período) o 'movil' (los 12 meses que terminan en el período).
-// Se ancla en el ÚLTIMO mes del período para que, mirando un cuatrimestre o un
-// año, la ventana móvil no se corte antes de lo que se está mirando.
-function extrasVentana12(periodo, modo) {
-  const ult = periodo.meses[periodo.meses.length - 1];
-  if (modo === 'anio') {
-    return Array.from({ length: 12 }, (_, m) => ({ y: ult.y, m }));
-  }
-  return Array.from({ length: 12 }, (_, k) => {
-    const d = new Date(ult.y, ult.m - 11 + k, 1);
-    return { y: d.getFullYear(), m: d.getMonth() };
-  });
-}
-
 // ── Períodos RRHH (#59, v3.28) ─────────────────────────────────────
 // RRHH liquida del 11 de un mes al 10 del siguiente: el período "agosto" va
 // del 11/07 al 10/08. NO se usa en los KPIs ni en la evolución, que son de
@@ -449,6 +432,12 @@ const EXTRAS_CORTE_APP = { anio: 2026, mes: 9 };
 const extrasFuenteEsApp = (anio, mes) =>
   anio > EXTRAS_CORTE_APP.anio ||
   (anio === EXTRAS_CORTE_APP.anio && mes >= EXTRAS_CORTE_APP.mes);
+
+// Umbrales de alerta del acumulado (#59). Señal visual, NO un límite: no
+// bloquean nada, no cambian ningún total y no impiden cargar. Si alguna vez
+// tienen que ser un tope real, eso es otra feature y necesita su decisión.
+const EXTRAS_ALERTA_MES = 20;
+const EXTRAS_ALERTA_ANIO = 200;
 
 // Duración legible para los tiempos de resolución del dashboard.
 const formatDuracion = (horas) => {
@@ -4172,10 +4161,10 @@ function ExtrasDashboard({ soloPersonas }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
 
-  // Serie del gráfico de evolución: ventana propia de 12 meses, con su modo.
+  // Serie del gráfico de evolución: ventana propia de 12 períodos, con su
+  // modo y un filtro opcional por persona ('' = todas).
   const [modo12, setModo12] = useState('anio');
-  const [serie, setSerie] = useState([]);
-  const [serieCargando, setSerieCargando] = useState(true);
+  const [personaSel, setPersonaSel] = useState('');
 
   // Cambiar de granularidad vuelve al período actual: mantener el offset
   // saltaría a un cuatrimestre de hace años al pasar de mes a cuatrimestre.
@@ -4199,46 +4188,66 @@ function ExtrasDashboard({ soloPersonas }) {
 
   useEffect(() => { setVerTodos(false); }, [periodo.desde, tipo]);
 
-  // ── Ventana de 12 meses del gráfico ──────────────────────────────
-  const meses12 = useMemo(() => extrasVentana12(periodo, modo12), [periodo, modo12]);
-  const rango12 = useMemo(() => {
-    const a = meses12[0], z = meses12[11];
-    return {
-      desde: isoLocalYMD(a.y, a.m, 1),
-      hasta: isoLocalYMD(z.y, z.m, new Date(z.y, z.m + 1, 0).getDate())
-    };
-  }, [meses12]);
-
-  useEffect(() => {
-    let vigente = true;
-    setSerieCargando(true);
-    storage.listExtrasSerie(rango12.desde, rango12.hasta)
-      .then(r => { if (vigente) { setSerie(r); setSerieCargando(false); } })
-      .catch(() => { if (vigente) { setSerie([]); setSerieCargando(false); } });
-    return () => { vigente = false; };
-  }, [rango12.desde, rango12.hasta]);
-
   const truncado = datos.length >= EXTRAS_DASHBOARD_LIMIT;
 
-  // ── Acumulado RRHH (#59) ─────────────────────────────────────────
-  // Tabla persona x mes en períodos RRHH (11→10), la que se le comparte a
-  // RRHH. Vive aparte de los KPIs a propósito: los KPIs son de mes
-  // calendario y estos períodos no lo son.
+  // ═════════════════════════════════════════════════════════════════
+  // DATOS EN PERÍODOS RRHH (#59) — alimentan la evolución Y el acumulado
+  // ═════════════════════════════════════════════════════════════════
+  // Ambos bloques trabajan en períodos RRHH (11→10), no en mes calendario.
+  // La razón es que las horas IMPORTADAS solo existen como total mensual del
+  // 11 al 10, sin detalle diario: repartirlas entre dos meses calendario
+  // exigiría inventar una distribución y escribirla como si fuera medición.
+  // Trabajando en períodos RRHH cada barra y cada celda corresponden a un
+  // dato real. Los KPIs de arriba SÍ son de mes calendario, y por eso el
+  // gráfico aclara qué períodos se solapan con el seleccionado.
   const anioRRHH = periodo.meses[periodo.meses.length - 1].y;
+
+  // Los 12 períodos RRHH de la ventana del gráfico.
+  const periodos12 = useMemo(() => {
+    if (modo12 === 'anio') {
+      return Array.from({ length: 12 }, (_, i) => ({ anio: anioRRHH, mes: i + 1 }));
+    }
+    // Móvil: los 12 que terminan en el período RRHH del final del período
+    // calendario seleccionado. Anclar al final evita cortar la serie antes
+    // de lo que se está mirando.
+    const fin = extrasPeriodoRRHH(periodo.hasta) || { anio: anioRRHH, mes: 12 };
+    return Array.from({ length: 12 }, (_, k) => {
+      const t = fin.anio * 12 + (fin.mes - 1) - 11 + k;
+      return { anio: Math.floor(t / 12), mes: (t % 12) + 1 };
+    });
+  }, [modo12, anioRRHH, periodo.hasta]);
+
+  // Los 12 del acumulado son siempre el año RRHH completo, como la planilla.
+  const periodosAcum = useMemo(
+    () => Array.from({ length: 12 }, (_, i) => ({ anio: anioRRHH, mes: i + 1 })),
+    [anioRRHH]
+  );
+
+  // Una sola consulta cubre las dos ventanas: se toma la unión de rangos.
   const [importadas, setImportadas] = useState([]);
   const [appRRHH, setAppRRHH] = useState([]);
   const [rrhhCargando, setRrhhCargando] = useState(true);
 
+  const anios = useMemo(() => {
+    const s = new Set([...periodos12, ...periodosAcum].map(p => p.anio));
+    return [...s].sort();
+  }, [periodos12, periodosAcum]);
+
+  const rangoRRHH = useMemo(() => {
+    const todos = [...periodos12, ...periodosAcum];
+    const rangos = todos.map(p => extrasRangoRRHH(p.anio, p.mes));
+    return {
+      desde: rangos.reduce((a, r) => (r.desde < a ? r.desde : a), rangos[0].desde),
+      hasta: rangos.reduce((a, r) => (r.hasta > a ? r.hasta : a), rangos[0].hasta)
+    };
+  }, [periodos12, periodosAcum]);
+
   useEffect(() => {
     let vigente = true;
     setRrhhCargando(true);
-    // El año RRHH 2026 abarca del 11/12/2025 al 10/12/2026: arranca en el mes
-    // 1 (11/12 del año anterior) y termina en el 12 (10/12 del propio año).
-    const ini = extrasRangoRRHH(anioRRHH, 1);
-    const fin = extrasRangoRRHH(anioRRHH, 12);
     Promise.all([
-      storage.listImportadas(anioRRHH),
-      storage.listExtrasSerie(ini.desde, fin.hasta)
+      Promise.all(anios.map(a => storage.listImportadas(a))).then(r => r.flat()),
+      storage.listExtrasSerie(rangoRRHH.desde, rangoRRHH.hasta)
     ])
       .then(([imp, app]) => {
         if (!vigente) return;
@@ -4249,35 +4258,56 @@ function ExtrasDashboard({ soloPersonas }) {
         setImportadas([]); setAppRRHH([]); setRrhhCargando(false);
       });
     return () => { vigente = false; };
-  }, [anioRRHH]);
+  }, [anios, rangoRRHH.desde, rangoRRHH.hasta]);
 
-  // Grilla persona x 12 meses. Cada celda toma su valor de UNA sola fuente,
-  // nunca de las dos: hasta ago-2026 lo importado, desde sep-2026 la app.
-  const acumRRHH = useMemo(() => {
+  // ── Índice unificado: período RRHH + persona → { aprobadas, pendientes }
+  // Cada celda toma su valor de UNA sola fuente, nunca de las dos: hasta
+  // ago-2026 lo importado, desde sep-2026 la app. Sin doble conteo posible.
+  // Las importadas cuentan como aprobadas: ya están liquidadas.
+  const indiceRRHH = useMemo(() => {
     const map = new Map();
-    const celda = (persona) => {
-      if (!map.has(persona)) {
-        map.set(persona, { persona, meses: Array(12).fill(null), importados: 0, propios: 0 });
-      }
-      return map.get(persona);
+    const k = (a, m, p) => `${a}|${m}|${p}`;
+    const add = (a, m, p, campo, h) => {
+      const key = k(a, m, p);
+      const o = map.get(key) || { anio: a, mes: m, persona: p, aprobadas: 0, pendientes: 0, importado: false };
+      o[campo] += h;
+      if (campo === 'aprobadas' && !extrasFuenteEsApp(a, m)) o.importado = true;
+      map.set(key, o);
     };
     importadas.forEach(r => {
-      if (!enAlcance(r.persona)) return;
-      if (extrasFuenteEsApp(r.anio, r.mes)) return; // la app gobierna ese período
-      const c = celda(r.persona);
-      c.meses[r.mes - 1] = (c.meses[r.mes - 1] || 0) + Number(r.horas || 0);
-      c.importados += 1;
+      if (!enAlcance(r.persona) || extrasFuenteEsApp(r.anio, r.mes)) return;
+      add(r.anio, r.mes, r.persona, 'aprobadas', Number(r.horas) || 0);
     });
-    // De la app solo las APROBADAS: la tabla replica lo que se liquida, y una
-    // pendiente todavía no lo es.
     appRRHH.forEach(r => {
-      if (r.anulada_at || r.estado !== 'aprobada') return;
-      if (!enAlcance(r.tecnico_nombre)) return;
+      if (r.anulada_at || !enAlcance(r.tecnico_nombre)) return;
+      if (r.estado !== 'aprobada' && r.estado !== 'pendiente') return;
       const p = extrasPeriodoRRHH(r.fecha);
-      if (!p || p.anio !== anioRRHH || !extrasFuenteEsApp(p.anio, p.mes)) return;
-      const c = celda(r.tecnico_nombre);
-      c.meses[p.mes - 1] = (c.meses[p.mes - 1] || 0) + Number(r.horas || 0);
-      c.propios += 1;
+      if (!p || !extrasFuenteEsApp(p.anio, p.mes)) return;
+      add(p.anio, p.mes, r.tecnico_nombre,
+        r.estado === 'aprobada' ? 'aprobadas' : 'pendientes', Number(r.horas) || 0);
+    });
+    return [...map.values()];
+  }, [importadas, appRRHH, enAlcance]);
+
+  // Personas disponibles para el filtro del gráfico.
+  const personasRRHH = useMemo(
+    () => [...new Set(indiceRRHH.map(r => r.persona))].sort(),
+    [indiceRRHH]
+  );
+
+  useEffect(() => {
+    if (personaSel && !personasRRHH.includes(personaSel)) setPersonaSel('');
+  }, [personasRRHH, personaSel]);
+
+  // Grilla del acumulado: persona x 12 períodos del año RRHH.
+  const acumRRHH = useMemo(() => {
+    const map = new Map();
+    indiceRRHH.forEach(r => {
+      if (r.anio !== anioRRHH) return;
+      const c = map.get(r.persona) || { persona: r.persona, meses: Array(12).fill(null) };
+      const v = r.aprobadas;
+      c.meses[r.mes - 1] = (c.meses[r.mes - 1] || 0) + v;
+      map.set(r.persona, c);
     });
     return [...map.values()].map(c => {
       const conDato = c.meses.filter(v => v !== null);
@@ -4292,7 +4322,7 @@ function ExtrasDashboard({ soloPersonas }) {
         nMeses: conDato.length
       };
     }).sort((a, b) => b.total - a.total);
-  }, [importadas, appRRHH, anioRRHH, enAlcance]);
+  }, [indiceRRHH, anioRRHH]);
 
   const totalRRHH = useMemo(() => acumRRHH.reduce((a, c) => a + c.total, 0), [acumRRHH]);
 
@@ -4335,25 +4365,25 @@ function ExtrasDashboard({ soloPersonas }) {
     [porPersona, verTodos]
   );
 
-  // Evolución: SIEMPRE 12 meses, sobre la serie propia y no sobre el período.
-  // Una sola barra no es una evolución. Se recorren los 12 meses de la ventana
-  // y no los que tienen datos: un mes en cero tiene que verse como cero.
-  // `enPeriodo` marca los meses que caen dentro del período de los KPIs, para
-  // que se vea dónde estás parado dentro de la ventana.
-  const porMes = useMemo(() => {
-    const vivasSerie = serie.filter(r => !r.anulada_at && enAlcance(r.tecnico_nombre));
-    return meses12.map(({ y, m }) => {
-      const pre = `${y}-${String(m + 1).padStart(2, '0')}`;
-      const delMes = vivasSerie.filter(r => (r.fecha || '').startsWith(pre));
-      const primero = isoLocalYMD(y, m, 1);
-      return {
-        mes: `${MESES_CORTOS[m]} ${String(y).slice(2)}`,
-        enPeriodo: primero >= periodo.desde.slice(0, 7) + '-01' && primero <= periodo.hasta,
-        aprobadas: Number(sumH(delMes.filter(r => r.estado === 'aprobada')).toFixed(2)),
-        pendientes: Number(sumH(delMes.filter(r => r.estado === 'pendiente')).toFixed(2))
-      };
-    });
-  }, [serie, meses12, periodo, enAlcance]);
+  // Evolución: SIEMPRE 12 períodos RRHH, sobre el índice unificado. Una sola
+  // barra no es una evolución. Se recorren los 12 de la ventana y no los que
+  // tienen datos: un período en cero tiene que verse como cero.
+  // `enPeriodo` marca los que se solapan con el período calendario elegido.
+  const porMes = useMemo(() => periodos12.map(({ anio, mes }) => {
+    const filas = indiceRRHH.filter(r =>
+      r.anio === anio && r.mes === mes && (!personaSel || r.persona === personaSel)
+    );
+    const r = extrasRangoRRHH(anio, mes);
+    return {
+      mes: `${MESES_CORTOS[mes - 1]} ${String(anio).slice(2)}`,
+      // El período RRHH se solapa con el período calendario seleccionado.
+      // No es contención exacta — son recortes distintos a propósito.
+      enPeriodo: r.desde <= periodo.hasta && r.hasta >= periodo.desde,
+      importado: !extrasFuenteEsApp(anio, mes),
+      aprobadas: Number(filas.reduce((a, x) => a + x.aprobadas, 0).toFixed(2)),
+      pendientes: Number(filas.reduce((a, x) => a + x.pendientes, 0).toFixed(2))
+    };
+  }), [indiceRRHH, periodos12, periodo, personaSel]);
 
   // Horas por categoría de motivo. Exacto desde #54: antes era texto libre y
   // había que normalizar strings, con lo que "Cubrir licencia" y "cubrir
@@ -4462,123 +4492,35 @@ function ExtrasDashboard({ soloPersonas }) {
         </div>
       )}
 
-      {/* ── Acumulado RRHH (#59) ─────────────────────────────────────
-          Períodos 11→10, no calendario. Va fuera del condicional del
-          período: la tabla es del año entero, no del período elegido. */}
-      <Card className="p-5">
-        <SectionTitle icon={FileSpreadsheet} accent="emerald">
-          Acumulado RRHH {anioRRHH} · períodos 11→10
-        </SectionTitle>
-        <p className="text-[11px] text-slate-500 -mt-2 mb-3 leading-relaxed">
-          Cada columna va del <strong>11 del mes anterior al 10 del propio mes</strong>: "Ago" es del 11/07 al 10/08.
-          <strong> No coincide con los bloques de arriba</strong>, que son de mes calendario.
-        </p>
-        {rrhhCargando ? (
-          <div className="text-center text-slate-500 py-10 text-sm">Cargando acumulado…</div>
-        ) : acumRRHH.length === 0 ? (
-          <EmptyHint>No hay horas acumuladas en {anioRRHH}.</EmptyHint>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                    <th className="py-2 pr-3 sticky left-0 bg-white">Personal</th>
-                    {MESES_CORTOS.map(m => (
-                      <th key={m} className="py-2 px-1 text-right capitalize">{m}</th>
-                    ))}
-                    <th className="py-2 pl-2 text-right">Total</th>
-                    <th className="py-2 pl-2 text-right">Prom.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {acumRRHH.map(c => (
-                    <tr key={c.persona} className="border-b border-slate-100">
-                      <td className="py-1.5 pr-3 font-semibold text-slate-800 whitespace-nowrap sticky left-0 bg-white">
-                        {c.persona}
-                      </td>
-                      {c.meses.map((v, i) => (
-                        <td key={i} className={`py-1.5 px-1 num text-right ${v === null ? 'text-slate-300' : 'text-slate-600'}`}
-                            title={v === null ? 'Sin registro' : (extrasFuenteEsApp(anioRRHH, i + 1) ? 'Registrado en la app' : 'Importado de RRHH')}>
-                          {v === null ? '·' : v.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
-                        </td>
-                      ))}
-                      <td className="py-1.5 pl-2 num text-right font-bold text-slate-900">
-                        {c.total.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
-                      </td>
-                      <td className="py-1.5 pl-2 num text-right font-semibold text-emerald-700"
-                          title={`${c.nMeses} ${c.nMeses === 1 ? 'mes' : 'meses'} con registro`}>
-                        {c.promedio.toFixed(1).replace('.', ',')}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="border-t-2 border-slate-300">
-                    <td className="py-2 pr-3 font-bold text-slate-900 sticky left-0 bg-white">TOTAL</td>
-                    {MESES_CORTOS.map((_, i) => {
-                      const s = acumRRHH.reduce((a, c) => a + (c.meses[i] || 0), 0);
-                      return (
-                        <td key={i} className="py-2 px-1 num text-right font-semibold text-slate-700">
-                          {s ? s.toFixed(2).replace(/\.?0+$/, '').replace('.', ',') : '·'}
-                        </td>
-                      );
-                    })}
-                    <td className="py-2 pl-2 num text-right font-bold text-slate-900">
-                      {totalRRHH.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
-                    </td>
-                    <td className="py-2 pl-2"></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div className="mt-3 text-[11px] text-slate-500 leading-relaxed space-y-1">
-              <p>
-                · Hasta el período de <strong>agosto 2026</strong> las horas son <strong>importadas</strong> de la
-                planilla acumulada de RRHH: son totales mensuales sin detalle diario. Desde
-                <strong> septiembre 2026</strong> salen de lo registrado en la app. Ninguna celda mezcla
-                las dos fuentes, así que nada se cuenta dos veces. Pasá el cursor sobre una celda para ver su origen.
-              </p>
-              <p>
-                · De la app entran solo las <strong>aprobadas</strong>: la tabla replica lo que se liquida, y una
-                solicitud pendiente todavía no lo es.
-              </p>
-              <p>
-                · El <strong>promedio</strong> se calcula sobre los meses con registro, no sobre 12. Quien ingresó
-                a mitad de año no queda con un promedio artificialmente bajo. Un punto (·) es ausencia de registro,
-                distinto de un cero.
-              </p>
-              <p>
-                · Las horas importadas <strong>no entran</strong> en los KPIs ni en la evolución de arriba: esos
-                bloques son de mes calendario y un total mensual RRHH no se puede repartir en días.
-              </p>
-            </div>
-          </>
-        )}
-      </Card>
-
       {/* ── Evolución: SIEMPRE 12 meses, ventana propia ─────────────
           Va FUERA del condicional del período: aunque el período elegido
           esté vacío, los otros 11 meses siguen teniendo algo que decir. */}
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <SectionTitle icon={BarChart3} accent="emerald">Evolución · 12 meses</SectionTitle>
-          <div className="flex items-center gap-1 mb-4">
+          <SectionTitle icon={BarChart3} accent="emerald">Evolución · 12 períodos RRHH</SectionTitle>
+          <div className="flex flex-wrap items-center gap-1 mb-4">
+            <select value={personaSel} onChange={e => setPersonaSel(e.target.value)}
+              className="px-2 py-1 text-[11px] font-semibold border border-slate-300 rounded-lg bg-white text-slate-700 max-w-[190px]"
+              title="Filtrar la evolución por persona">
+              <option value="">Todas ({personasRRHH.length})</option>
+              {personasRRHH.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
             <button onClick={() => setModo12('anio')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
                 modo12 === 'anio' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
-              }`} title="Enero a diciembre del año del período">
-              Año calendario
+              }`} title="Los 12 períodos RRHH del año">
+              Año RRHH
             </button>
             <button onClick={() => setModo12('movil')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
                 modo12 === 'movil' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
-              }`} title="Los 12 meses que terminan en el período">
+              }`} title="Los 12 períodos que terminan en el seleccionado">
               Últimos 12
             </button>
           </div>
         </div>
-        {serieCargando ? (
-          <div className="text-center text-slate-500 py-16 text-sm">Cargando serie…</div>
+        {rrhhCargando ? (
+          <div className="text-center text-slate-500 py-16 text-sm">Cargando evolución…</div>
         ) : (
           <>
             <ResponsiveContainer width="100%" height={250}>
@@ -4603,9 +4545,12 @@ function ExtrasDashboard({ soloPersonas }) {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-            <p className="text-[11px] text-slate-400 mt-2">
-              En color pleno, los meses del período seleccionado ({periodo.label}). El resto de la ventana
-              va atenuado y no entra en los números de abajo.
+            <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+              Períodos RRHH: cada barra va del 11 del mes anterior al 10 del propio mes. En color pleno, los que se
+              solapan con el período seleccionado ({periodo.label}); el resto va atenuado.
+              {personaSel && <> Filtrado por <strong>{personaSel}</strong>.</>}
+              {' '}Hasta ago 2026 las horas son importadas de RRHH; desde sep 2026 salen de la app.
+              Ningún período mezcla las dos fuentes.
             </p>
           </>
         )}
@@ -4663,8 +4608,11 @@ function ExtrasDashboard({ soloPersonas }) {
                 <YAxis type="category" dataKey="nombre" width={150} tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(v) => formatHoras(v)} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="aprobadas" name="Aprobadas" stackId="h" fill="#059669" />
-                <Bar dataKey="pendientes" name="Pendientes" stackId="h" fill="#d97706" />
+                {/* barSize fijo: sin esto Recharts engorda la franja cuando
+                    hay poca gente. Mismo grosor que las columnas de la
+                    evolución, sea cual sea la cantidad de personas. */}
+                <Bar dataKey="aprobadas" name="Aprobadas" stackId="h" fill="#059669" barSize={14} />
+                <Bar dataKey="pendientes" name="Pendientes" stackId="h" fill="#d97706" barSize={14} />
               </BarChart>
             </ResponsiveContainer>
             {!verTodos && porPersona.length > 15 && (
@@ -4674,6 +4622,114 @@ function ExtrasDashboard({ soloPersonas }) {
               </p>
             )}
           </Card>
+
+          {/* ── Acumulado RRHH (#59) ─────────────────────────────────────
+          Períodos 11→10, no calendario. Va fuera del condicional del
+          período: la tabla es del año entero, no del período elegido. */}
+      <Card className="p-5">
+        <SectionTitle icon={FileSpreadsheet} accent="emerald">
+          Acumulado RRHH {anioRRHH} · períodos 11→10
+        </SectionTitle>
+        <p className="text-[11px] text-slate-500 -mt-2 mb-3 leading-relaxed">
+          Cada columna va del <strong>11 del mes anterior al 10 del propio mes</strong>: "Ago" es del 11/07 al 10/08.
+          <strong> No coincide con los bloques de arriba</strong>, que son de mes calendario.
+        </p>
+        {rrhhCargando ? (
+          <div className="text-center text-slate-500 py-10 text-sm">Cargando acumulado…</div>
+        ) : acumRRHH.length === 0 ? (
+          <EmptyHint>No hay horas acumuladas en {anioRRHH}.</EmptyHint>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3 sticky left-0 bg-white">Personal</th>
+                    {MESES_CORTOS.map(m => (
+                      <th key={m} className="py-2 px-1 text-right capitalize">{m}</th>
+                    ))}
+                    <th className="py-2 pl-2 text-right">Total</th>
+                    <th className="py-2 pl-2 text-right">Prom.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {acumRRHH.map(c => (
+                    <tr key={c.persona} className="border-b border-slate-100">
+                      <td className="py-1.5 pr-3 font-semibold text-slate-800 whitespace-nowrap sticky left-0 bg-white">
+                        {c.persona}
+                      </td>
+                      {c.meses.map((v, i) => {
+                        // Umbral mensual: más de EXTRAS_ALERTA_MES horas en un
+                        // período se sombrea. Es señal visual, no un límite:
+                        // no bloquea nada ni cambia ningún total.
+                        const alto = v !== null && v > EXTRAS_ALERTA_MES;
+                        return (
+                          <td key={i}
+                              className={`py-1.5 px-1 num text-right ${alto ? 'bg-red-500/15 font-semibold text-red-800' : v === null ? 'text-slate-300' : 'text-slate-600'}`}
+                              title={v === null ? 'Sin registro'
+                                : `${extrasFuenteEsApp(anioRRHH, i + 1) ? 'Registrado en la app' : 'Importado de RRHH'}${alto ? ` · supera las ${EXTRAS_ALERTA_MES} h del período` : ''}`}>
+                            {v === null ? '·' : v.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
+                          </td>
+                        );
+                      })}
+                      <td className={`py-1.5 pl-2 num text-right font-bold ${c.total > EXTRAS_ALERTA_ANIO ? 'bg-red-500/15 text-red-800' : 'text-slate-900'}`}
+                          title={c.total > EXTRAS_ALERTA_ANIO ? `Supera las ${EXTRAS_ALERTA_ANIO} h en el año` : undefined}>
+                        {c.total.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
+                      </td>
+                      <td className="py-1.5 pl-2 num text-right font-semibold text-emerald-700"
+                          title={`${c.nMeses} ${c.nMeses === 1 ? 'mes' : 'meses'} con registro`}>
+                        {c.promedio.toFixed(1).replace('.', ',')}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-slate-300">
+                    <td className="py-2 pr-3 font-bold text-slate-900 sticky left-0 bg-white">TOTAL</td>
+                    {MESES_CORTOS.map((_, i) => {
+                      const s = acumRRHH.reduce((a, c) => a + (c.meses[i] || 0), 0);
+                      return (
+                        <td key={i} className="py-2 px-1 num text-right font-semibold text-slate-700">
+                          {s ? s.toFixed(2).replace(/\.?0+$/, '').replace('.', ',') : '·'}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2 pl-2 num text-right font-bold text-slate-900">
+                      {totalRRHH.toFixed(2).replace(/\.?0+$/, '').replace('.', ',')}
+                    </td>
+                    <td className="py-2 pl-2"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-3 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <p>
+                · Hasta el período de <strong>agosto 2026</strong> las horas son <strong>importadas</strong> de la
+                planilla acumulada de RRHH: son totales mensuales sin detalle diario. Desde
+                <strong> septiembre 2026</strong> salen de lo registrado en la app. Ninguna celda mezcla
+                las dos fuentes, así que nada se cuenta dos veces. Pasá el cursor sobre una celda para ver su origen.
+              </p>
+              <p>
+                · De la app entran solo las <strong>aprobadas</strong>: la tabla replica lo que se liquida, y una
+                solicitud pendiente todavía no lo es.
+              </p>
+              <p>
+                · El <strong>promedio</strong> se calcula sobre los meses con registro, no sobre 12. Quien ingresó
+                a mitad de año no queda con un promedio artificialmente bajo. Un punto (·) es ausencia de registro,
+                distinto de un cero.
+              </p>
+              <p>
+                · Sombreado rojo: más de <strong>{EXTRAS_ALERTA_MES} h en un período</strong> o más de
+                <strong> {EXTRAS_ALERTA_ANIO} h en el año</strong>. Es señal visual, no un límite — no bloquea
+                nada ni altera ningún total.
+              </p>
+              <p>
+                · Las horas importadas <strong>no entran</strong> en los KPIs de mes calendario. Sí entran en la
+                evolución de arriba, que trabaja en estos mismos períodos RRHH.
+              </p>
+            </div>
+          </>
+        )}
+      </Card>
 
           {/* ── Motivos ───────────────────────────────────────────── */}
           <Card className="p-5">
