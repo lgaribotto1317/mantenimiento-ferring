@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.28';
+const APP_VERSION = 'v3.29';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -155,70 +155,75 @@ const POOL_PASSWORD = 'Planificador2026';
 // SUPUESTO A VERIFICAR: el mapeo usuario → nombre se infirió de las direcciones
 // de mail que pasó Leo. Si alguno no corresponde, corregir acá: el `nombre` es
 // lo que queda escrito en cada solicitud como solicitante o resolutor.
+
 // ═══════════════════════════════════════════════════════════════════
-// ASIGNACIÓN DE PERSONAL A ENCARGADOS (#58, v3.28)
+// MODO DE LA APP Y SECTOR DE CASA (#62, v3.29)
 // ═══════════════════════════════════════════════════════════════════
-// Define qué gente tiene a cargo cada encargado. Gobierna DOS cosas en la
-// solapa Extras:
-//  1. Qué solicitudes ve el encargado en el listado — su gente, sin importar
-//     quién las cargó. Antes veía lo que él mismo había cargado; el criterio
-//     cambió a "por persona" en v3.28.
-//  2. A quién puede cargarle extras — solo a su gente. El resto lo carga el
-//     jefe, que ve todo.
+// Extras dejó de ser exclusivo de Mantenimiento: Facilities lo usa también,
+// con su propio jefe, sus propios Encargado/Supervisor y su propio personal.
+// El requisito de Leo fue que Facilities NO vea el reporte de turno.
 //
-// Las 22 personas de TECNICOS están asignadas, sin solapes ni faltantes
-// (verificado contra el catálogo al definirlo). Las 7 restantes de
-// EXTRAS_PERSONAL_NAMES — los tres supervisores y los cuatro de
-// EXTRAS_SOLO_PERSONAL — NO tienen encargado a propósito: las carga y las ve
-// únicamente el jefe.
+// SON DOS COSAS SEPARADAS, y conviene no mezclarlas:
 //
-// La clave es el `user` de EXTRAS_USUARIOS, no el nombre: el nombre es dato
-// de presentación y podría cambiar de formato.
+//  1. EL SECTOR particiona los DATOS. Cada fila de `horas_extras` nace con su
+//     `sector` y toda consulta filtra por él. Un sector nunca ve las horas del
+//     otro, ni en el listado, ni en el dashboard, ni en el aviso de pendientes,
+//     ni en el Excel.
 //
-// OJO: esto es partición de UI, no de datos. Vale lo mismo que está
-// documentado arriba de EXTRAS_USUARIOS — no es un control de acceso.
-const EXTRAS_A_CARGO = {
-  'jual3@ferring.com': [
-    'OLIVARES, Victor', 'BARRIOS, Martin', 'BAGGIO, Christian', 'VILLASANTE, Eduardo',
-    'LAGOS, Nicolas', 'TERAN, Cesar', 'LEMA, Sergio', 'FIGUEIRA, Gastón',
-    'MORENO, Jorge', 'CAÑETE, Martin'
-  ],
-  'lufi2@ferring.com': [
-    'ECHAZARRETA, Ricardo', 'VERGARA, Antonio', 'MEDINA, Emanuel',
-    'VALDEZ, Sergio', 'SUAREZ, Alan', 'CACERES, Daniel'
-  ],
-  'gtp@ferring.com': [
-    'GOLINO, Santiago', 'RIVERO, Cristian', 'RAMILO, Rodrigo',
-    'ZAVALA, Emmanuel', 'LEDESMA, Emanuel', 'YEGROS, Lucas'
-  ]
-};
+//  2. EL MODO decide qué se RENDERIZA. En 'full' la app es la de siempre
+//     (reporte de turno + los tres roles). En 'extras' arranca directo en el
+//     login de horas extras y no existe ninguna otra solapa.
+//
+// Cómo se decide: por HOSTNAME, no por variable de entorno. El proyecto ya
+// tuvo env vars que no se inyectaban al build — es la razón por la que las
+// keys de Supabase están hardcodeadas (decisión crítica #1) — y una env var
+// que no llega no falla el build: sirve la app en modo equivocado, o sea el
+// sector de Facilities viendo el reporte de turno. El hostname es verificable
+// en el bundle servido y no depende de la config de Vercel.
+//
+// La regla es "el hostname CONTIENE el slug", no una igualdad: así cubre de
+// una sola vez el dominio de producción del segundo proyecto
+// (extras-facilities.vercel.app) y todos sus previews de branch
+// (extras-facilities-git-dev-….vercel.app), que es donde se prueba.
+//
+// ⚠️ EL SEGUNDO PROYECTO DE VERCEL TIENE QUE LLAMARSE `extras-facilities`.
+//    Vercel deriva el dominio del nombre del proyecto: si se llama distinto,
+//    el hostname no matchea, la app cae al default (Mantenimiento en modo
+//    full) y Facilities termina viendo el reporte de turno. No falla nada
+//    visible — por eso está escrito acá en mayúsculas.
+//
+// ⚠️ ESTO NO ES CONTROL DE ACCESO, igual que todo lo demás en este módulo. El
+//    código del reporte de turno sigue estando en el bundle del deploy de
+//    Facilities aunque no se renderice, y quien tenga la URL de producción la
+//    abre y ve todo. Evita el ruido, que es lo que se pidió; la separación
+//    real sigue siendo BACKLOG #47.
+const EXTRAS_ONLY_SLUG = 'extras-facilities';
 
-// A quién puede CARGARLE extras un encargado: solo su gente.
-const extrasPersonalDe = (user) => EXTRAS_A_CARGO[user] || [];
+const APP_HOSTNAME = (typeof window !== 'undefined' && window.location)
+  ? (window.location.hostname || '').toLowerCase()
+  : '';
 
-// Qué solicitudes VE un encargado: su gente MÁS las suyas propias. Ver las
-// horas extras que a uno le cargaron es razonable aunque no pueda tocarlas;
-// editarlas y anularlas sigue exigiendo ser el autor.
-const extrasVisiblesDe = (user, nombre) => {
-  const base = extrasPersonalDe(user);
-  return nombre && !base.includes(nombre) ? [...base, nombre] : base;
-};
+// Escape hatch SOLO para desarrollo local: permite probar el modo Extras sin
+// tener que crear el proyecto de Vercel. Acotado a localhost a propósito — un
+// query param que funcione en producción convertiría la separación en algo
+// que se saltea escribiendo en la barra de direcciones.
+const APP_IS_LOCALHOST = APP_HOSTNAME === 'localhost' || APP_HOSTNAME === '127.0.0.1';
+const APP_LOCAL_OVERRIDE = (() => {
+  if (!APP_IS_LOCALHOST || typeof window === 'undefined') return '';
+  try {
+    return new URLSearchParams(window.location.search).get('modo') || '';
+  } catch { return ''; }
+})();
 
-const EXTRAS_USUARIOS = [
-  { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
-  { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
-  { user: 'gtp@ferring.com',   pass: 'gtp2026',      nombre: 'PARE, Gustavo',       rol: 'encargado' },
-  { user: 'lgar@ferring.com',  pass: 'Extrasbiomas', nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' }
-];
+const APP_MODE =
+  (APP_HOSTNAME.includes(EXTRAS_ONLY_SLUG) || APP_LOCAL_OVERRIDE === 'extras')
+    ? 'extras'
+    : 'full';
 
-// Autenticación local contra el catálogo de arriba. Devuelve la sesión (sin la
-// password) o null. La comparación de usuario es case-insensitive y trimmed
-// porque el teclado del celular capitaliza la primera letra de un mail solo.
-const extrasAuth = (user, pass) => {
-  const u = (user || '').trim().toLowerCase();
-  const hit = EXTRAS_USUARIOS.find(x => x.user.toLowerCase() === u && x.pass === pass);
-  return hit ? { user: hit.user, nombre: hit.nombre, rol: hit.rol } : null;
-};
+// El sector de casa lo decide el DEPLOY, no el usuario logueado. Tiene que ser
+// así porque el aviso de pendientes se muestra ANTES del login: sin sesión la
+// app no sabe quién está del otro lado, pero la URL sí dice de qué sector es.
+const APP_SECTOR = APP_MODE === 'extras' ? 'Facilities' : 'Mantenimiento';
 
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
@@ -286,11 +291,173 @@ const EXTRAS_SOLO_PERSONAL = [
   'CUENCA, Sergio',
   'LEZCANO, Nahuel'
 ];
-const EXTRAS_PERSONAL_NAMES = [
+const EXTRAS_PERSONAL_MANTENIMIENTO = [
   ...TECNICO_NAMES,
   ...RESPONSABLES.map(r => r.name),
   ...EXTRAS_SOLO_PERSONAL
 ].filter((n, i, arr) => arr.indexOf(n) === i);
+
+// ═══════════════════════════════════════════════════════════════════
+// PERSONAL DE FACILITIES (#62, v3.29) — ⚠️ PENDIENTE: ETAPA 2
+// ═══════════════════════════════════════════════════════════════════
+// Catálogo PROPIO, sin ninguna relación con TECNICOS ni RESPONSABLES:
+// Facilities no carga reporte de turno, así que su gente no debe aparecer en
+// "Equipo del Turno", ni en Preventivos, ni en el export del reporte. Por eso
+// es una lista literal y no un derivado — no hay de qué derivarla.
+//
+// LO QUE FALTA para que el deploy de Facilities sirva de algo (etapa 2):
+//  1. El personal a cargo de cada Encargado/Supervisor. Leo lo va a pasar.
+//  2. Los mails y las contraseñas de los cinco usuarios.
+//
+// Estructura confirmada con Leo el 2026-08-28:
+//  · Jefe: ALARCON, Fernando — carga a cualquiera del sector y autoaprueba.
+//  · Encargado/Supervisor (4): GROVAS, Leandro · GALLEGO, Sergio ·
+//    URUEÑA, Gerardo · AVIO, Raúl. Cada uno con su gente a cargo.
+//  · Los cinco pueden tener horas a su propio nombre y se las carga ALARCON,
+//    igual que los tres supervisores de Mantenimiento (que no tienen
+//    encargado a propósito y los carga el jefe).
+//
+// ⚠️ `URUEÑA` lleva ñ, igual que `CAÑETE`. Cuando se importe su histórico de
+//    RRHH hay que verificarlo por `length()` contra este catálogo: si la ñ se
+//    rompe en el pegado, el UNIQUE de `horas_extras_importadas` no lo detecta
+//    —serían nombres distintos— y el síntoma aparece meses después como una
+//    persona en cero sin ninguna explicación.
+//
+// Mientras las listas estén vacías el deploy de Facilities levanta pero no
+// tiene con qué loguear. Es el estado esperado al terminar la etapa 1: la
+// arquitectura entra en producción sin Facilities, así Mantenimiento se
+// verifica aislado.
+const EXTRAS_ENCARGADOS_FACILITIES = [];   // ETAPA 2
+const EXTRAS_PERSONAL_FACILITIES = [];     // ETAPA 2
+
+// ═══════════════════════════════════════════════════════════════════
+// CONFIGURACIÓN POR SECTOR (#62, v3.29)
+// ═══════════════════════════════════════════════════════════════════
+// Un sector = un catálogo de personal, un catálogo de usuarios, una asignación
+// de gente a cargo, un corte de fuente y sus umbrales. Todo lo que abajo se
+// resuelve contra APP_SECTOR sale de acá.
+//
+// El `label` de cada clave es EXACTAMENTE el string que se guarda en la
+// columna `sector` de `horas_extras`, y está replicado en el CHECK
+// `horas_extras_sector_chk` de Postgres. AGREGAR UN SECTOR ACÁ EXIGE
+// ACTUALIZAR LA CONSTRAINT EN EL MISMO PASO, o el insert lo rechaza la base
+// con un error crudo de la API — mismo régimen que EXTRAS_MOTIVO_CATEGORIAS.
+//
+// 'Facilities' se escribe igual que el label de FAC en SECTORES_OT a
+// propósito: es la misma área de la planta. Son cosas distintas igual (el
+// sector de una OT no tiene relación con el sector de una hora extra), pero
+// dos nombres para la misma área es cómo se empiezan a desalinear los datos.
+const EXTRAS_SECTORES = {
+  Mantenimiento: {
+    label: 'Mantenimiento',
+    // Cómo se llama el nivel intermedio EN PANTALLA. En Mantenimiento son
+    // "encargados"; en Facilities el grupo se llama "Encargado/Supervisor".
+    etiquetaEncargado: 'encargado',
+    personal: EXTRAS_PERSONAL_MANTENIMIENTO,
+    usuarios: [
+      { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
+      { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
+      { user: 'gtp@ferring.com',   pass: 'gtp2026',      nombre: 'PARE, Gustavo',       rol: 'encargado' },
+      { user: 'lgar@ferring.com',  pass: 'Extrasbiomas', nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' }
+    ],
+    // ─── ASIGNACIÓN DE PERSONAL A ENCARGADOS (#58, v3.28) ───────────
+    // Define qué gente tiene a cargo cada encargado. Gobierna DOS cosas:
+    //  1. Qué solicitudes ve en el listado — su gente, sin importar quién las
+    //     cargó. Antes veía lo que él mismo había cargado; el criterio cambió
+    //     a "por persona" en v3.28.
+    //  2. A quién puede cargarle extras — solo a su gente. El resto lo carga
+    //     el jefe, que ve todo.
+    //
+    // Las 22 personas de TECNICOS están asignadas, sin solapes ni faltantes
+    // (verificado contra el catálogo al definirlo). Las 7 restantes del
+    // personal del sector —los tres supervisores y los cuatro de
+    // EXTRAS_SOLO_PERSONAL— NO tienen encargado a propósito: las carga y las
+    // ve únicamente el jefe.
+    //
+    // La clave es el `user`, no el nombre: el nombre es dato de presentación
+    // y podría cambiar de formato.
+    aCargo: {
+      'jual3@ferring.com': [
+        'OLIVARES, Victor', 'BARRIOS, Martin', 'BAGGIO, Christian', 'VILLASANTE, Eduardo',
+        'LAGOS, Nicolas', 'TERAN, Cesar', 'LEMA, Sergio', 'FIGUEIRA, Gastón',
+        'MORENO, Jorge', 'CAÑETE, Martin'
+      ],
+      'lufi2@ferring.com': [
+        'ECHAZARRETA, Ricardo', 'VERGARA, Antonio', 'MEDINA, Emanuel',
+        'VALDEZ, Sergio', 'SUAREZ, Alan', 'CACERES, Daniel'
+      ],
+      'gtp@ferring.com': [
+        'GOLINO, Santiago', 'RIVERO, Cristian', 'RAMILO, Rodrigo',
+        'ZAVALA, Emmanuel', 'LEDESMA, Emanuel', 'YEGROS, Lucas'
+      ]
+    },
+    // Corte entre fuentes. Hasta el período RRHH de agosto 2026 inclusive
+    // manda lo IMPORTADO de la planilla de RRHH; desde septiembre 2026 (11/08
+    // en adelante) manda lo registrado en la app. Nunca se suman las dos
+    // fuentes para un mismo período: eso contaría dos veces las mismas horas.
+    corteApp: { anio: 2026, mes: 9 },
+    alertaMes: 20,
+    alertaAnio: 200
+  },
+
+  Facilities: {
+    label: 'Facilities',
+    etiquetaEncargado: 'Encargado/Supervisor',
+    personal: EXTRAS_PERSONAL_FACILITIES,
+    usuarios: EXTRAS_ENCARGADOS_FACILITIES,   // ETAPA 2
+    aCargo: {},                                // ETAPA 2
+    // ⚠️ PROVISORIO — ETAPA 2. Facilities no tiene histórico importado, así
+    // que hoy TODO su acumulado sale de la app. El corte queda en el pasado
+    // para que ningún período quede esperando una fuente importada que no
+    // existe. Si Leo importa el histórico de RRHH de Facilities, este corte
+    // pasa a ser el mes en que arranca a cargar en la app — y NO es el mismo
+    // que el de Mantenimiento.
+    corteApp: { anio: 2026, mes: 1 },
+    // Leo confirmó que Facilities liquida con el mismo corte 11→10 y usa los
+    // mismos umbrales. El corte 11→10 es política interna confirmada
+    // verbalmente, no algo verificable desde los archivos.
+    alertaMes: 20,
+    alertaAnio: 200
+  }
+};
+
+// ─── Resolución contra el sector de casa ─────────────────────────────
+// Todo lo que sigue son los mismos nombres que usaba el resto del módulo
+// antes de #62, ahora resueltos contra APP_SECTOR. Los ~20 puntos de uso
+// (ExtrasView, ExtrasDashboard, el header) no cambian: leen estas constantes
+// como siempre y reciben lo del sector que corresponde.
+const EXTRAS_SECTOR_CONF = EXTRAS_SECTORES[APP_SECTOR] || EXTRAS_SECTORES.Mantenimiento;
+const EXTRAS_PERSONAL_NAMES = EXTRAS_SECTOR_CONF.personal;
+const EXTRAS_USUARIOS = EXTRAS_SECTOR_CONF.usuarios;
+const EXTRAS_A_CARGO = EXTRAS_SECTOR_CONF.aCargo;
+const EXTRAS_ETIQUETA_ENCARGADO = EXTRAS_SECTOR_CONF.etiquetaEncargado;
+
+// A quién puede CARGARLE extras un encargado: solo su gente.
+const extrasPersonalDe = (user) => EXTRAS_A_CARGO[user] || [];
+
+// Qué solicitudes VE un encargado: su gente MÁS las suyas propias. Ver las
+// horas extras que a uno le cargaron es razonable aunque no pueda tocarlas;
+// editarlas y anularlas sigue exigiendo ser el autor.
+const extrasVisiblesDe = (user, nombre) => {
+  const base = extrasPersonalDe(user);
+  return nombre && !base.includes(nombre) ? [...base, nombre] : base;
+};
+
+// Autenticación local contra el catálogo del SECTOR DE CASA (#62). Devuelve la
+// sesión (sin la password) o null. La comparación de usuario es
+// case-insensitive y trimmed porque el teclado del celular capitaliza la
+// primera letra de un mail solo.
+//
+// Que solo acepte usuarios del sector del deploy es deliberado: el jefe de
+// Facilities no puede loguearse en la app de Mantenimiento aunque le llegue la
+// URL, y al revés tampoco. Refuerza la separación de ruido sin costo — y como
+// Leo confirmó que no necesita el consolidado de los dos sectores, no saca
+// nada que se use.
+const extrasAuth = (user, pass) => {
+  const u = (user || '').trim().toLowerCase();
+  const hit = EXTRAS_USUARIOS.find(x => x.user.toLowerCase() === u && x.pass === pass);
+  return hit ? { user: hit.user, nombre: hit.nombre, rol: hit.rol, sector: APP_SECTOR } : null;
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // MOTIVOS DE HORAS EXTRAS (#54, v3.27)
@@ -424,20 +591,23 @@ function extrasRangoRRHH(anio, mes) {
   };
 }
 
-// Corte entre fuentes. Hasta el período RRHH de agosto 2026 inclusive manda
-// lo IMPORTADO de la planilla de RRHH; desde septiembre 2026 (11/08 en
-// adelante) manda lo registrado en la app. Nunca se suman las dos fuentes
-// para un mismo período: eso contaría dos veces las mismas horas.
-const EXTRAS_CORTE_APP = { anio: 2026, mes: 9 };
+// Corte entre fuentes, POR SECTOR desde #62. En Mantenimiento: hasta el
+// período RRHH de agosto 2026 inclusive manda lo IMPORTADO de la planilla de
+// RRHH; desde septiembre 2026 (11/08 en adelante) manda lo registrado en la
+// app. Nunca se suman las dos fuentes para un mismo período: eso contaría dos
+// veces las mismas horas. Cada sector tiene el suyo — el de Facilities no
+// puede ser el mismo, porque su histórico todavía no está importado.
+const EXTRAS_CORTE_APP = EXTRAS_SECTOR_CONF.corteApp;
 const extrasFuenteEsApp = (anio, mes) =>
   anio > EXTRAS_CORTE_APP.anio ||
   (anio === EXTRAS_CORTE_APP.anio && mes >= EXTRAS_CORTE_APP.mes);
 
-// Umbrales de alerta del acumulado (#59). Señal visual, NO un límite: no
-// bloquean nada, no cambian ningún total y no impiden cargar. Si alguna vez
-// tienen que ser un tope real, eso es otra feature y necesita su decisión.
-const EXTRAS_ALERTA_MES = 20;
-const EXTRAS_ALERTA_ANIO = 200;
+// Umbrales de alerta del acumulado (#59), por sector desde #62. Señal visual,
+// NO un límite: no bloquean nada, no cambian ningún total y no impiden cargar.
+// Si alguna vez tienen que ser un tope real, eso es otra feature y necesita su
+// decisión (BACKLOG #61).
+const EXTRAS_ALERTA_MES = EXTRAS_SECTOR_CONF.alertaMes;
+const EXTRAS_ALERTA_ANIO = EXTRAS_SECTOR_CONF.alertaAnio;
 
 // Duración legible para los tiempos de resolución del dashboard.
 const formatDuracion = (horas) => {
@@ -942,6 +1112,19 @@ const sbHeaders = () => ({
   'Content-Type': 'application/json'
 });
 
+// #62 — Filtro de sector para TODAS las consultas de horas extras.
+//
+// Va en el QUERY, no en el render, y esa diferencia importa por dos motivos
+// que no son cosméticos:
+//  1. `listExtras` tiene un tope de filas (EXTRAS_LIST_LIMIT). Si los dos
+//     sectores compitieran por esas 500 filas, el tope se agotaría en la
+//     mitad de tiempo y cada sector vería de menos SIN NINGÚN AVISO — que es
+//     exactamente el modo de falla de BACKLOG #57, adelantado.
+//  2. Filtrar en el render significa haber traído las filas del otro sector
+//     hasta el browser. No cambia nada de seguridad (la tabla se lee entera
+//     vía REST igual, ver #47), pero es payload que nadie mira.
+const SECTOR_QS = `sector=eq.${encodeURIComponent(APP_SECTOR)}`;
+
 const storage = {
   configured: supabaseConfigured,
 
@@ -1124,7 +1307,7 @@ const storage = {
   async listExtras(limit = EXTRAS_LIST_LIMIT) {
     if (!supabaseConfigured) return [];
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/horas_extras?select=*&order=fecha.desc,hora_inicio.desc&limit=${limit}`,
+      `${SUPABASE_URL}/rest/v1/horas_extras?select=*&${SECTOR_QS}&order=fecha.desc,hora_inicio.desc&limit=${limit}`,
       { headers: sbHeaders() }
     );
     if (!res.ok) throw new Error(`Supabase extras: ${res.status} ${await res.text()}`);
@@ -1145,6 +1328,7 @@ const storage = {
     if (!supabaseConfigured) return [];
     const qs = [
       'select=*',
+      SECTOR_QS,
       `fecha=gte.${encodeURIComponent(desde)}`,
       `fecha=lte.${encodeURIComponent(hasta)}`,
       'order=fecha.desc,hora_inicio.desc',
@@ -1163,6 +1347,7 @@ const storage = {
     if (!supabaseConfigured) return [];
     const qs = [
       'select=fecha,horas,estado,anulada_at,tecnico_nombre',
+      SECTOR_QS,
       `fecha=gte.${encodeURIComponent(desde)}`,
       `fecha=lte.${encodeURIComponent(hasta)}`,
       'order=fecha.asc',
@@ -1183,7 +1368,7 @@ const storage = {
   async listImportadas(anio) {
     if (!supabaseConfigured) return [];
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/horas_extras_importadas?select=persona,anio,mes,horas,origen&anio=eq.${anio}&limit=2000`,
+      `${SUPABASE_URL}/rest/v1/horas_extras_importadas?select=persona,anio,mes,horas,origen&${SECTOR_QS}&anio=eq.${anio}&limit=2000`,
       { headers: sbHeaders() }
     );
     if (!res.ok) throw new Error(`Supabase importadas: ${res.status} ${await res.text()}`);
@@ -1209,13 +1394,18 @@ const storage = {
   // de fecha futura sí cuentan: son el caso normal (se solicita antes de
   // trabajar), no una anomalía a filtrar.
   //
+  // #62 — Filtrada por SECTOR DE CASA. Sin esto el aviso sería cruzado: una
+  // pendiente de Facilities le teñiría el botón al jefe de Mantenimiento y al
+  // revés. El sector sale del deploy y no de la sesión, que es justamente lo
+  // que hace posible que esto funcione ANTES del login.
+  //
   // FAIL-SILENT a propósito: si esto falla no debe ensuciar `connError` ni
   // bloquear nada. Es un aviso, no un dato operativo. Ante la duda, false:
   // preferimos no avisar de más que teñir el header por un error de red.
   async hasExtrasPendientes() {
     if (!supabaseConfigured) return false;
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/horas_extras?select=id&estado=eq.pendiente&anulada_at=is.null&limit=1`,
+      `${SUPABASE_URL}/rest/v1/horas_extras?select=id&${SECTOR_QS}&estado=eq.pendiente&anulada_at=is.null&limit=1`,
       { headers: sbHeaders() }
     );
     if (!res.ok) throw new Error(`Supabase extras (sonda): ${res.status} ${await res.text()}`);
@@ -1724,6 +1914,13 @@ export default function App() {
     // mismo gesto que ya refresca todo: el botón ↻ del header y el arranque de
     // la app. Un camino, no dos.
     loadExtrasPendientes();
+    // #62 — En el deploy solo-Extras no se carga el histórico de reportes.
+    // No es una optimización cosmética: `storage.list()` trae TODOS los
+    // reportes de turno, y en el browser de Facilities eso sería descargar en
+    // cada arranque un dato que esa pantalla no usa y que ese sector no tiene
+    // por qué recibir. Que la tabla sea legible vía REST igual (#47) no es
+    // razón para mandársela.
+    if (APP_MODE === 'extras') return [];
     try {
       setConnError('');
       const data = await storage.list();
@@ -3142,6 +3339,152 @@ export default function App() {
             {PROD_URL}
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // #62 — MODO SOLO-EXTRAS (deploy de Facilities)
+  // ═══════════════════════════════════════════════════════════════════
+  // Early-return con árbol propio, mismo patrón que `versionBlocked`. Es a
+  // propósito que sea un return y no condicionales salpicados por el header y
+  // las tabs: así el reporte de turno NO SE RENDERIZA POR CONSTRUCCIÓN, y no
+  // por acordarse de envolver ocho lugares. Un lugar nuevo que alguien agregue
+  // más adelante al árbol normal tampoco aparece acá.
+  //
+  // Va DESPUÉS de todos los hooks de App y después del gate de versión: el
+  // gate aplica igual en este deploy, porque los dos comparten `app_config`.
+  //
+  // Recordatorio, porque es la parte que se malinterpreta: esto oculta, no
+  // protege. El código del reporte sigue en el bundle. Ver #47.
+  if (APP_MODE === 'extras') {
+    const sinUsuarios = EXTRAS_USUARIOS.length === 0;
+    return (
+      <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+          body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+          .num { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum', 'zero'; }
+        `}</style>
+
+        <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-lg">
+          <div className="max-w-[1600px] mx-auto px-6 py-2 md:py-4 flex items-center justify-between flex-wrap gap-2 md:gap-3">
+            <div className="flex items-center gap-2 md:gap-4">
+              <div className="w-9 h-9 md:w-14 md:h-14 rounded-xl bg-white ring-1 ring-slate-200 flex items-center justify-center p-1 md:p-1.5 shadow-sm flex-shrink-0">
+                <img src="/logo-biomas.jpg" alt="Biomas" className="w-full h-full object-contain"
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-sm md:text-lg font-bold tracking-tight leading-tight flex items-center gap-2">
+                  Horas Extras · {APP_SECTOR}
+                  <span className="px-1.5 py-0.5 bg-slate-700 text-slate-200 rounded text-[10px] font-semibold num md:hidden">{APP_VERSION}</span>
+                </h1>
+                <p className="hidden md:block text-[11px] text-slate-300 mt-0.5">
+                  Solicitud y aprobación de horas extras
+                  <span className="ml-2 px-1.5 py-0.5 bg-slate-700 text-slate-200 rounded text-[10px] font-semibold num">{APP_VERSION}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs">
+              {supabaseConfigured ? (
+                connError
+                  ? <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-red-500/20 text-red-200 rounded ring-1 ring-red-400/30">
+                    <CloudOff className="w-3.5 h-3.5" /><span className="hidden md:inline">Sin conexión</span>
+                  </span>
+                  : <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 text-emerald-200 rounded ring-1 ring-emerald-400/30">
+                    <Cloud className="w-3.5 h-3.5" /><span className="hidden md:inline">Supabase conectado</span>
+                  </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/20 text-amber-200 rounded ring-1 ring-amber-400/30">
+                  <Settings className="w-3.5 h-3.5" /><span className="hidden md:inline">Modo local</span>
+                </span>
+              )}
+              <button onClick={refresh} className="p-1.5 hover:bg-white/10 rounded transition" title="Refrescar">
+                <RefreshCw className="w-4 h-4" />
+              </button>
+              {extrasUser && (
+                <>
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded ring-1 font-semibold ${extrasUser.rol === 'jefe' ? 'bg-teal-500/30 text-teal-100 ring-teal-400/50' : 'bg-cyan-500/30 text-cyan-100 ring-cyan-400/50'}`}
+                        title={`${extrasUser.nombre} · ${extrasUser.rol === 'jefe' ? 'jefe' : EXTRAS_ETIQUETA_ENCARGADO}`}>
+                    <Timer className="w-3.5 h-3.5" />
+                    <span className="hidden md:inline">{extrasUser.nombre}</span>
+                    <span className="md:hidden">{extrasUser.rol === 'jefe' ? 'JEFE' : 'EXTRAS'}</span>
+                  </span>
+                  <button onClick={handleExtrasLogout}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded transition text-[10px]"
+                    title="Cerrar sesión">
+                    <LogOut className="w-3 h-3" />Salir
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-[1600px] mx-auto px-6 py-6">
+          {extrasUser ? (
+            <ExtrasView
+              sesion={extrasUser}
+              extras={extras}
+              extrasLoading={extrasLoading}
+              extrasError={extrasError}
+              onAdd={handleExtrasAdd}
+              onUpdate={handleExtrasUpdate}
+              onRefresh={loadExtras}
+            />
+          ) : (
+            /* Pantalla de ingreso. Acá vive el CHIP PRE-LOGIN: es el
+               equivalente del botón naranja del header en la app completa.
+               No puede decir de quién son las pendientes —todavía no hay
+               sesión— así que habla del sector. El dato preciso por persona
+               lo da el contador post-login, ya adentro. */
+            <div className="max-w-md mx-auto mt-8">
+              <Card className="p-7 text-center">
+                <div className="w-14 h-14 rounded-full bg-cyan-100 flex items-center justify-center mx-auto mb-4">
+                  <Timer className="w-7 h-7 text-cyan-600" />
+                </div>
+                <h2 className="text-lg font-bold text-slate-900 mb-1">Horas extras · {APP_SECTOR}</h2>
+                <p className="text-sm text-slate-600 leading-relaxed mb-5">
+                  Ingresá con tu usuario para cargar o resolver solicitudes.
+                </p>
+
+                {extrasPendientes && (
+                  <div className="mb-5 inline-flex items-center gap-2 px-3 py-2 bg-orange-50 text-orange-800 ring-1 ring-orange-300 rounded-lg text-xs font-semibold">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                    Hay solicitudes sin resolver en el sector
+                  </div>
+                )}
+
+                {sinUsuarios ? (
+                  /* Estado esperado al terminar la etapa 1 de #62: la
+                     arquitectura está deployada pero el catálogo del sector
+                     todavía no se cargó. Se dice explícito en vez de mostrar
+                     un login que rebota cualquier credencial. */
+                  <div className="flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-left">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <span className="text-xs text-amber-800 leading-relaxed">
+                      Todavía no hay usuarios cargados para {APP_SECTOR}. El módulo queda operativo
+                      cuando se den de alta el jefe y los Encargado/Supervisor con su personal a cargo.
+                    </span>
+                  </div>
+                ) : (
+                  <button onClick={() => setExtrasLoginOpen(true)}
+                    className="inline-flex items-center justify-center gap-2 w-full px-4 py-3 text-sm font-semibold text-white bg-cyan-600 hover:bg-cyan-500 rounded-xl transition">
+                    <Lock className="w-4 h-4" />Ingresar
+                  </button>
+                )}
+              </Card>
+            </div>
+          )}
+        </main>
+
+        {extrasLoginOpen && (
+          <ExtrasLoginDialog
+            onConfirm={handleExtrasLogin}
+            onCancel={() => setExtrasLoginOpen(false)}
+          />
+        )}
       </div>
     );
   }
@@ -4891,6 +5234,25 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     };
   }, [listado]);
 
+  // ── Contador post-login (#62). El aviso naranja del header y el chip de la
+  //    pantalla de login son PRE-login: sin sesión la app no sabe quién está
+  //    del otro lado, así que solo pueden hablar del sector entero. Esto es lo
+  //    contrario — ya hay sesión, así que dice exactamente lo que le toca a
+  //    quien está mirando: al jefe lo que tiene para resolver, al encargado
+  //    cuántas de su gente están esperando aprobación.
+  //
+  //    Se calcula sobre `visibles`, NO sobre `listado`: los filtros de estado
+  //    y fecha del listado son para explorar, y un aviso que desaparece porque
+  //    alguien filtró por "aprobadas" no avisa nada. Las anuladas nunca suman.
+  const pendientesPropios = useMemo(
+    () => visibles.filter(r => !r.anulada_at && r.estado === 'pendiente'),
+    [visibles]
+  );
+  const horasPendientes = useMemo(
+    () => pendientesPropios.reduce((a, r) => a + (Number(r.horas) || 0), 0),
+    [pendientesPropios]
+  );
+
   const cruza = extrasCruzaMedianoche(horaInicio, horaFin);
   const horasPreview = extrasHorasCalc(fecha, horaInicio, horaFin);
 
@@ -5002,6 +5364,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         const ahora = new Date().toISOString();
         await onAdd({
           ...datos,
+          // #62 — El sector lo pone el DEPLOY, no el usuario ni un selector.
+          // No se manda en el PATCH de edición: el sector de una fila no
+          // cambia nunca, y dejarlo fuera del update lo vuelve imposible de
+          // pisar por accidente desde la pantalla de edición.
+          sector: APP_SECTOR,
           solicitado_por: sesion.user,
           solicitado_por_nombre: sesion.nombre,
           // El jefe autoaprueba lo que carga: no tiene a quién elevárselo.
@@ -5099,7 +5466,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       'Motivo de anulación': r.anulada_motivo || ''
     }));
     const rango = [filtroDesde || 'inicio', filtroHasta || todayLocalISO()].join('_a_');
-    downloadSingle(rows, 'Horas extras', `HorasExtras_${rango}.xlsx`);
+    // #62 — El sector va en el NOMBRE DEL ARCHIVO, no en una columna nueva.
+    // Cada sector manda su propio archivo a RRHH (Leo confirmó que no hay
+    // consolidado), así que el dato que hacía falta era poder distinguir dos
+    // archivos en la misma carpeta. Agregar una columna habría tocado el
+    // formato de una planilla que ya está en uso, sin que nadie lo pidiera.
+    downloadSingle(rows, 'Horas extras', `HorasExtras_${APP_SECTOR}_${rango}.xlsx`);
     setMsg(`✓ Exportadas ${rows.length} solicitudes`);
   };
 
@@ -5136,6 +5508,28 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             Tu gente a cargo · {extrasPersonalDe(sesion.user).length} personas
           </span>
         )}
+
+        {/* Contador post-login (#62). Visible en las dos sub-vistas, y no se
+            renderiza cuando no hay nada pendiente: un badge en cero es ruido
+            permanente y deja de leerse justo cuando importa. */}
+        {pendientesPropios.length > 0 && (
+          <span
+            className={`ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg ring-1 ${
+              esJefe
+                ? 'bg-orange-50 text-orange-800 ring-orange-300'
+                : 'bg-amber-50 text-amber-800 ring-amber-300'
+            }`}
+            title={esJefe
+              ? 'Solicitudes de tu sector esperando que las apruebes o rechaces'
+              : 'Solicitudes de tu gente a cargo esperando aprobación del jefe'}>
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span className="num">{pendientesPropios.length}</span>
+            {esJefe
+              ? (pendientesPropios.length === 1 ? ' solicitud para resolver' : ' solicitudes para resolver')
+              : (pendientesPropios.length === 1 ? ' de tu gente sin aprobar' : ' de tu gente sin aprobar')}
+            <span className="text-[10px] font-normal opacity-75">· {formatHoras(horasPendientes)}</span>
+          </span>
+        )}
       </div>
 
       {vista === 'dashboard' ? (
@@ -5149,7 +5543,8 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
             {editId ? 'Editar solicitud' : (esJefe ? 'Cargar horas extras' : 'Solicitar horas extras')}
           </SectionTitle>
           <span className="text-xs text-slate-500 mb-4">
-            {sesion.nombre} · <span className="font-semibold">{esJefe ? 'jefe' : 'encargado'}</span>
+            {sesion.nombre} · <span className="font-semibold">{esJefe ? 'jefe' : EXTRAS_ETIQUETA_ENCARGADO}</span>
+            <span className="text-slate-400"> · {APP_SECTOR}</span>
           </span>
         </div>
 
@@ -5270,6 +5665,14 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           {esJefe
             ? 'Lo que cargues acá queda aprobado en el momento, registrado a tu nombre.'
             : `La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular. Solo podés cargar a tu gente a cargo (${extrasPersonalDe(sesion.user).length} personas); el resto lo carga el jefe.`}
+        </p>
+        {/* #62 — Qué sector está registrando. En el deploy solo-Extras es
+            redundante con el header, pero en la app completa es la única
+            señal de que este registro es de Mantenimiento y no del otro
+            sector. Barato, y evita la pregunta. */}
+        <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+          Sector: <strong className="text-slate-500">{APP_SECTOR}</strong>. Cada sector ve y exporta
+          únicamente sus propias horas extras.
         </p>
       </Card>
 
