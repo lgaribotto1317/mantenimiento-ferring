@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.29';
+const APP_VERSION = 'v3.30';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -477,8 +477,9 @@ const EXTRAS_MOTIVO_CATEGORIAS = [
   'Cubrir vacante',
   'Cubrir feriado',
   'Trabajos específicos',
-  'Finalización de trabajos en curso',
-  'Otros'
+  'Finalización de trabajos en curso'
+  // 'Otros' se eliminó (v3.30): quedó reemplazado por "Trabajos específicos".
+  // Sin filas históricas afectadas (verificado: 0 filas con esta categoría).
 ];
 
 // Categorías que exigen detalle. Las cuatro de cobertura se explican solas;
@@ -486,8 +487,7 @@ const EXTRAS_MOTIVO_CATEGORIAS = [
 // Replicado en `horas_extras_motivo_detalle_chk`.
 const EXTRAS_MOTIVO_REQUIERE_DETALLE = [
   'Trabajos específicos',
-  'Finalización de trabajos en curso',
-  'Otros'
+  'Finalización de trabajos en curso'
 ];
 const extrasRequiereDetalle = (cat) => EXTRAS_MOTIVO_REQUIERE_DETALLE.includes(cat);
 
@@ -515,6 +515,16 @@ const extrasVentana = (r) => ({
 // Comparación lexicográfica de ISO: válida porque el formato es de ancho fijo.
 // Bordes que se tocan (una termina 14:00, la otra arranca 14:00) NO solapan.
 const extrasSolapan = (a, b) => a.ini < b.fin && b.ini < a.fin;
+
+// ── ¿Ya se ejecutó? (v3.30, edición post-aprobación) ────────────────
+// Determina qué régimen de edición aplica sobre una fila aprobada: libre
+// (todavía no pasó, #1) o asimétrico solo-a-la-baja (ya pasó, #2). Se
+// deriva de la ventana horaria de la propia fila contra el reloj — sin
+// campo nuevo ni marca manual que el encargado se pueda olvidar de tildar.
+const extrasYaEjecutada = (r) => {
+  const fin = new Date(`${r.fecha_fin}T${(r.hora_fin || '00:00').slice(0, 5)}:00`);
+  return fin.getTime() <= Date.now();
+};
 
 // ── Períodos del dashboard de Extras (#49, v3.27) ──────────────────
 // Cuatrimestres de CALENDARIO FIJO, no móviles: ene–abr, may–ago, sep–dic.
@@ -1404,8 +1414,10 @@ const storage = {
   // preferimos no avisar de más que teñir el header por un error de red.
   async hasExtrasPendientes() {
     if (!supabaseConfigured) return false;
+    // v3.30 (#64): 'modificada' también necesita que el jefe la mire — es un
+    // ajuste a la baja esperando confirmación, mismo criterio que pendiente.
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/horas_extras?select=id&${SECTOR_QS}&estado=eq.pendiente&anulada_at=is.null&limit=1`,
+      `${SUPABASE_URL}/rest/v1/horas_extras?select=id&${SECTOR_QS}&estado=in.(pendiente,modificada)&anulada_at=is.null&limit=1`,
       { headers: sbHeaders() }
     );
     if (!res.ok) throw new Error(`Supabase extras (sonda): ${res.status} ${await res.text()}`);
@@ -4462,9 +4474,14 @@ function TimeInput24({ value, onChange, disabled }) {
 }
 
 const EXTRAS_ESTADO_STYLE = {
-  pendiente: 'bg-amber-100 text-amber-700',
-  aprobada:  'bg-emerald-100 text-emerald-700',
-  rechazada: 'bg-red-100 text-red-700'
+  pendiente:  'bg-amber-100 text-amber-700',
+  aprobada:   'bg-emerald-100 text-emerald-700',
+  rechazada:  'bg-red-100 text-red-700',
+  // Ajuste a la baja sobre algo ya ejecutado, esperando que el jefe lo
+  // confirme (v3.30). Cian para no confundirse con "pendiente" (ámbar):
+  // es una corrección sobre algo que ya se había aprobado, no una carga
+  // nueva sin resolver.
+  modificada: 'bg-cyan-100 text-cyan-700'
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4623,11 +4640,15 @@ function ExtrasDashboard({ soloPersonas }) {
     });
     appRRHH.forEach(r => {
       if (r.anulada_at || !enAlcance(r.tecnico_nombre)) return;
-      if (r.estado !== 'aprobada' && r.estado !== 'pendiente') return;
+      // 'modificada' cuenta como aprobada: son horas que ya estaban liquidadas
+      // y el encargado las bajó tras la ejecución (v3.30). Usa el valor YA
+      // bajado — nunca sobreestima lo que corresponde pagar mientras el jefe
+      // confirma.
+      if (r.estado !== 'aprobada' && r.estado !== 'modificada' && r.estado !== 'pendiente') return;
       const p = extrasPeriodoRRHH(r.fecha);
       if (!p || !extrasFuenteEsApp(p.anio, p.mes)) return;
       add(p.anio, p.mes, r.tecnico_nombre,
-        r.estado === 'aprobada' ? 'aprobadas' : 'pendientes', Number(r.horas) || 0);
+        (r.estado === 'aprobada' || r.estado === 'modificada') ? 'aprobadas' : 'pendientes', Number(r.horas) || 0);
     });
     return [...map.values()];
   }, [importadas, appRRHH, enAlcance]);
@@ -4677,7 +4698,9 @@ function ExtrasDashboard({ soloPersonas }) {
   const sumH = (arr) => arr.reduce((a, r) => a + (Number(r.horas) || 0), 0);
 
   const kpis = useMemo(() => {
-    const ap = vivas.filter(r => r.estado === 'aprobada');
+    // 'modificada' se cuenta junto a las aprobadas (v3.30): son horas que ya
+    // estaban aprobadas y se corrigieron a la baja tras ejecutarse.
+    const ap = vivas.filter(r => r.estado === 'aprobada' || r.estado === 'modificada');
     const pe = vivas.filter(r => r.estado === 'pendiente');
     const re = vivas.filter(r => r.estado === 'rechazada');
     return {
@@ -4694,7 +4717,7 @@ function ExtrasDashboard({ soloPersonas }) {
     vivas.forEach(r => {
       const k = r.tecnico_nombre || '(sin nombre)';
       const o = map.get(k) || { nombre: k, aprobadas: 0, pendientes: 0 };
-      if (r.estado === 'aprobada') o.aprobadas += Number(r.horas) || 0;
+      if (r.estado === 'aprobada' || r.estado === 'modificada') o.aprobadas += Number(r.horas) || 0;
       else if (r.estado === 'pendiente') o.pendientes += Number(r.horas) || 0;
       map.set(k, o);
     });
@@ -4736,7 +4759,7 @@ function ExtrasDashboard({ soloPersonas }) {
     vivas.forEach(r => {
       const k = r.motivo_categoria || '(sin categoría)';
       const o = map.get(k) || { motivo: k, aprobadas: 0, pendientes: 0, n: 0 };
-      if (r.estado === 'aprobada') o.aprobadas += Number(r.horas) || 0;
+      if (r.estado === 'aprobada' || r.estado === 'modificada') o.aprobadas += Number(r.horas) || 0;
       else if (r.estado === 'pendiente') o.pendientes += Number(r.horas) || 0;
       o.n += 1;
       map.set(k, o);
@@ -5175,6 +5198,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [motivoCat, setMotivoCat] = useState('');
   const [motivo, setMotivo] = useState('');
   const [editId, setEditId] = useState(null);
+  // Fila completa en edición (v3.30): el submit necesita el estado, las horas
+  // y la ventana ORIGINALES para decidir qué régimen de edición aplica
+  // (pendiente: libre · aprobada no ejecutada: libre · aprobada/modificada ya
+  // ejecutada: solo a la baja). editId solo no alcanza para esa decisión.
+  const [editRow, setEditRow] = useState(null);
   const [msg, setMsg] = useState('');
   const [saving, setSaving] = useState(false);
   // Segundo click para aceptar un solapamiento detectado (#54).
@@ -5229,8 +5257,10 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       .reduce((a, r) => a + (Number(r.horas) || 0), 0);
     return {
       pendientes: sum('pendiente'),
-      aprobadas: sum('aprobada'),
-      nPendientes: vivas.filter(r => r.estado === 'pendiente').length
+      // 'modificada' suma junto a aprobadas: ya son horas aprobadas, con un
+      // ajuste a la baja esperando confirmación (v3.30).
+      aprobadas: sum('aprobada') + sum('modificada'),
+      nPendientes: vivas.filter(r => r.estado === 'pendiente' || r.estado === 'modificada').length
     };
   }, [listado]);
 
@@ -5245,7 +5275,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   //    y fecha del listado son para explorar, y un aviso que desaparece porque
   //    alguien filtró por "aprobadas" no avisa nada. Las anuladas nunca suman.
   const pendientesPropios = useMemo(
-    () => visibles.filter(r => !r.anulada_at && r.estado === 'pendiente'),
+    () => visibles.filter(r => !r.anulada_at && (r.estado === 'pendiente' || r.estado === 'modificada')),
     [visibles]
   );
   const horasPendientes = useMemo(
@@ -5284,6 +5314,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
   const resetForm = () => {
     setEditId(null);
+    setEditRow(null);
     setTecnico('');
     setHoraInicio('');
     setHoraFin('');
@@ -5296,6 +5327,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
   const cargarParaEditar = (r) => {
     setEditId(r.id);
+    setEditRow(r);
     setTecnico(r.tecnico_nombre || '');
     setFecha(r.fecha);
     setHoraInicio((r.hora_inicio || '').slice(0, 5));
@@ -5356,10 +5388,57 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       };
 
       if (editId) {
-        // Edición de una pendiente propia: solo datos. El estado, el solicitante
-        // y la traza de resolución no se tocan desde acá por diseño.
-        await onUpdate(editId, datos);
-        setMsg('✓ Solicitud actualizada');
+        // v3.30 (#64) — Tres regímenes de edición según el estado ORIGINAL
+        // de la fila (editRow), no del valor que se está por guardar:
+        //
+        // 1. pendiente: como siempre, solo datos. El estado no se toca.
+        //
+        // 2. aprobada, todavía no se ejecutó (fecha_fin+hora_fin en el
+        //    futuro): edición libre, igual que pendiente, pero vuelve a
+        //    'pendiente' — el jefe tiene que volver a mirarla. Resetea la
+        //    traza de resolución porque la constraint de la base exige
+        //    resuelto_por/resuelto_at = NULL para estado='pendiente'.
+        //
+        // 3. aprobada o modificada, YA se ejecutó: el trabajo ya pasó, así
+        //    que solo se puede CORREGIR A LA BAJA (el encargado detectó que
+        //    se hicieron menos horas de las aprobadas). Si el valor nuevo
+        //    es igual o mayor, se bloquea acá mismo — el excedente se carga
+        //    como fila nueva con "Finalización de trabajos en curso", no
+        //    editando esta. Pasa a 'modificada' y conserva resuelto_por/
+        //    resuelto_at (quién había aprobado la versión anterior): el
+        //    jefe la confirma con el mismo botón de aprobar, sin rechazo
+        //    (no tiene sentido rechazar un hecho ya ejecutado).
+        //    horas_previas guarda el valor ANTERIOR solo la primera vez
+        //    (viniendo de 'aprobada'): si ya estaba en 'modificada' y se
+        //    vuelve a bajar, se conserva el original, no el intermedio.
+        if (editRow && editRow.estado === 'aprobada' && !extrasYaEjecutada(editRow)) {
+          await onUpdate(editId, {
+            ...datos,
+            estado: 'pendiente',
+            resuelto_por: null,
+            resuelto_por_nombre: null,
+            resuelto_at: null
+          });
+          setMsg('✓ Solicitud actualizada · vuelve a estar pendiente de aprobación');
+        } else if (editRow && (editRow.estado === 'aprobada' || editRow.estado === 'modificada') && extrasYaEjecutada(editRow)) {
+          const horasAntes = Number(editRow.horas) || 0;
+          if (horasPreview >= horasAntes) {
+            setMsg(`Error: ya se ejecutó — solo se puede corregir a la baja (tenía ${formatHoras(horasAntes)}). Si se hicieron MÁS horas, cargá una solicitud nueva con "Finalización de trabajos en curso".`);
+            setSaving(false);
+            return;
+          }
+          await onUpdate(editId, {
+            ...datos,
+            estado: 'modificada',
+            ...(editRow.estado === 'aprobada' ? { horas_previas: horasAntes } : {})
+          });
+          setMsg('✓ Ajuste registrado · esperando que el jefe lo confirme');
+        } else {
+          // Edición de una pendiente propia: solo datos. El estado, el
+          // solicitante y la traza de resolución no se tocan desde acá.
+          await onUpdate(editId, datos);
+          setMsg('✓ Solicitud actualizada');
+        }
       } else {
         const ahora = new Date().toISOString();
         await onAdd({
@@ -5388,6 +5467,9 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     }
   };
 
+  // Sirve para dos casos (v3.30): aprobar una pendiente nueva, y confirmar
+  // el ajuste a la baja de una 'modificada' — mismo destino (estado
+  // 'aprobada'), mismo botón, mensaje distinto solo para orientar al jefe.
   const aprobar = async (r) => {
     try {
       await onUpdate(r.id, {
@@ -5395,9 +5477,10 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         resuelto_por: sesion.user,
         resuelto_por_nombre: sesion.nombre,
         resuelto_at: new Date().toISOString(),
-        rechazo_motivo: null
+        rechazo_motivo: null,
+        horas_previas: null
       });
-      setMsg(`✓ Aprobada · ${r.tecnico_nombre}`);
+      setMsg(r.estado === 'modificada' ? `✓ Confirmada · ${r.tecnico_nombre}` : `✓ Aprobada · ${r.tecnico_nombre}`);
     } catch (e) {
       setMsg(`Error: ${e.message || 'no se pudo aprobar'}`);
     }
@@ -5425,11 +5508,21 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     setMsg('✓ Solicitud anulada');
   };
 
-  // Permisos de fila. El encargado toca solo lo propio y pendiente; el jefe
-  // resuelve lo pendiente de otros y anula cualquier cosa, en cualquier estado.
-  const puedeEditar = (r) => !r.anulada_at && r.estado === 'pendiente' && r.solicitado_por === sesion.user;
+  // Permisos de fila. El encargado toca solo lo propio; el jefe resuelve lo
+  // pendiente/modificado de otros y anula cualquier cosa, en cualquier estado.
+  //
+  // v3.30 (#64) — puedeEditar se extiende a 'aprobada' y 'modificada': el
+  // botón se muestra en los tres estados, y es el submit el que decide el
+  // régimen exacto (libre → pendiente, o solo-a-la-baja → modificada) según
+  // si la fila ya se ejecutó. 'rechazada' sigue sin edición.
+  const puedeEditar = (r) =>
+    !r.anulada_at &&
+    r.solicitado_por === sesion.user &&
+    (r.estado === 'pendiente' || r.estado === 'aprobada' || r.estado === 'modificada');
   const puedeAnular = (r) => !r.anulada_at && (esJefe || (r.estado === 'pendiente' && r.solicitado_por === sesion.user));
-  const puedeResolver = (r) => esJefe && !r.anulada_at && r.estado === 'pendiente';
+  // 'modificada' se resuelve solo con Confirmar (ver JSX): no tiene sentido
+  // "rechazar" horas que ya se ejecutaron y se corrigieron a la baja.
+  const puedeResolver = (r) => esJefe && !r.anulada_at && (r.estado === 'pendiente' || r.estado === 'modificada');
 
   // ── Export a Excel. Sale EXACTAMENTE lo que se está viendo (mismo rol, mismos
   //    filtros), para que el archivo no pueda contener algo que en pantalla no
@@ -5446,6 +5539,9 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       'Fecha fin': r.fecha_fin,
       'Hora fin': (r.hora_fin || '').slice(0, 5),
       'Horas': Number(r.horas) || 0,
+      // Solo tiene valor en 'modificada' (v3.30): las horas aprobadas antes
+      // de la corrección a la baja. Vacío en el resto — no repite 'Horas'.
+      'Horas previas': r.horas_previas != null ? Number(r.horas_previas) : '',
       'Categoría': r.motivo_categoria || '',
       // Fallback deliberado: las categorías de cobertura no exigen detalle, y
       // una celda vacía en una planilla que puede ir a RRHH se lee como dato
@@ -5762,7 +5858,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                         )}
                       </td>
                       <td className="py-2 pr-3 num text-right font-semibold text-slate-800 whitespace-nowrap">
-                        {formatHoras(r.horas)}
+                        {r.estado === 'modificada' && r.horas_previas != null ? (
+                          <span title="Ajustado tras la ejecución — esperando confirmación">
+                            <span className="text-slate-400 line-through font-normal">{formatHoras(r.horas_previas)}</span>
+                            {' → '}{formatHoras(r.horas)}
+                          </span>
+                        ) : formatHoras(r.horas)}
                       </td>
                       <td className="py-2 pr-3 text-slate-600 max-w-[260px]"
                           title={[r.motivo_categoria, r.motivo].filter(Boolean).join(' — ')}>
@@ -5809,18 +5910,24 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           {puedeResolver(r) && (
                             <>
                               <button onClick={() => aprobar(r)}
-                                className="p-1 hover:bg-emerald-50 rounded transition" title="Aprobar">
+                                className="p-1 hover:bg-emerald-50 rounded transition"
+                                title={r.estado === 'modificada' ? 'Confirmar el ajuste' : 'Aprobar'}>
                                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                               </button>
-                              <button onClick={() => setRechazarTarget(r)}
-                                className="p-1 hover:bg-red-50 rounded transition" title="Rechazar">
-                                <X className="w-4 h-4 text-red-500" />
-                              </button>
+                              {/* 'modificada' no tiene Rechazar: el trabajo ya se ejecutó, no
+                                  hay nada que rechazar, solo tomar nota de la baja. */}
+                              {r.estado === 'pendiente' && (
+                                <button onClick={() => setRechazarTarget(r)}
+                                  className="p-1 hover:bg-red-50 rounded transition" title="Rechazar">
+                                  <X className="w-4 h-4 text-red-500" />
+                                </button>
+                              )}
                             </>
                           )}
                           {puedeEditar(r) && (
                             <button onClick={() => cargarParaEditar(r)}
-                              className="p-1 hover:bg-sky-50 rounded transition" title="Editar (solo mientras esté pendiente)">
+                              className="p-1 hover:bg-sky-50 rounded transition"
+                              title={r.estado === 'pendiente' ? 'Editar' : 'Corregir (solo a la baja si ya se ejecutó)'}>
                               <Edit3 className="w-4 h-4 text-sky-600" />
                             </button>
                           )}
