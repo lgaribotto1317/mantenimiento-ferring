@@ -30,7 +30,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.30';
+const APP_VERSION = 'v3.31';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -524,6 +524,28 @@ const extrasSolapan = (a, b) => a.ini < b.fin && b.ini < a.fin;
 const extrasYaEjecutada = (r) => {
   const fin = new Date(`${r.fecha_fin}T${(r.hora_fin || '00:00').slice(0, 5)}:00`);
   return fin.getTime() <= Date.now();
+};
+
+// ── ¿Se cargó en un día posterior a la ejecución? (v3.31) ──────────
+// Señal de control interno para la columna "Cargada": compara el DÍA
+// calendario LOCAL en que quedó asentada la solicitud (`created_at`)
+// contra el día en que terminó el trabajo (`fecha_fin`). Comparación
+// por DÍA, no por hora exacta — cargar el mismo día que terminó el
+// turno no cuenta como tardío, aunque sea horas después (decisión
+// explícita, 2026-09-01). Comparación lexicográfica de ISO YYYY-MM-DD:
+// válida porque el formato es de ancho fijo (mismo patrón que
+// extrasSolapan). Se excluye "Finalización de trabajos en curso": por
+// definición ese motivo se carga después de terminado el trabajo — no
+// es una carga tardía, es la naturaleza del motivo (a diferencia de
+// "Trabajos específicos", que es igual de reactivo por diseño pero
+// Leo pidió dejarlo afuera de la excepción).
+const extrasCargaTardia = (r) => {
+  if (r.motivo_categoria === 'Finalización de trabajos en curso') return false;
+  if (!r.created_at || !r.fecha_fin) return false;
+  const c = new Date(r.created_at);
+  if (isNaN(c.getTime())) return false;
+  const cargaISO = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(c.getDate()).padStart(2, '0')}`;
+  return cargaISO > r.fecha_fin;
 };
 
 // ── Períodos del dashboard de Extras (#49, v3.27) ──────────────────
@@ -5901,8 +5923,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           ? <span className="font-semibold text-slate-700">vos</span>
                           : (r.solicitado_por_nombre || '—')}
                       </td>
-                      {/* Momento en que el encargado dejó asentada la solicitud. */}
-                      <td className="py-2 pr-3 text-slate-400 text-[11px] num whitespace-nowrap">
+                      {/* Momento en que el encargado dejó asentada la solicitud.
+                          Sombreado rojo translúcido (v3.31) si se cargó en un día
+                          posterior a la ejecución del trabajo — salvo "Finalización
+                          de trabajos en curso", donde eso es lo esperado. */}
+                      <td className={`py-2 px-1 text-[11px] num whitespace-nowrap rounded ${
+                            extrasCargaTardia(r) ? 'bg-red-500/15 text-red-800 font-semibold' : 'text-slate-400'
+                          }`}
+                          title={extrasCargaTardia(r)
+                            ? `Cargada después de que el trabajo terminó (fin: ${formatDateShort(r.fecha_fin)})`
+                            : undefined}>
                         {formatFechaAudit(r.created_at)}
                       </td>
                       <td className="py-2 pr-3">
