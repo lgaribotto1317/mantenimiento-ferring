@@ -225,6 +225,15 @@ const APP_MODE =
 // app no sabe quién está del otro lado, pero la URL sí dice de qué sector es.
 const APP_SECTOR = APP_MODE === 'extras' ? 'Facilities' : 'Mantenimiento';
 
+// `index.html` es el MISMO archivo para los dos deploys (mismo build): el
+// <title> estático queda fijo en "Reporte Diario de Mantenimiento" para los
+// dos. Se corrige en runtime solo para el modo Extras, mismo texto que ya usa
+// el header (`Horas Extras · {APP_SECTOR}`). En modo full no se toca nada:
+// coincide con el <title> por defecto.
+if (typeof document !== 'undefined' && APP_MODE === 'extras') {
+  document.title = `Horas Extras · ${APP_SECTOR}`;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // CATÁLOGOS (matching the Excel template)
 // ═══════════════════════════════════════════════════════════════════
