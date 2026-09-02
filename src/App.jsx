@@ -349,26 +349,36 @@ const EXTRAS_ENCARGADOS_FACILITIES = [
   { user: 'raav@ferring.com',  pass: 'raav2026',  nombre: 'AVIO, Raúl',        rol: 'encargado' },
   { user: 'feal2@ferring.com', pass: 'Fer2026',   nombre: 'ALARCON, Fernando', rol: 'jefe' }
 ];
-// Datos recibidos de Leo el 2026-09-02. ⚠️ ARGAÑARAS y PÉREZ llevan ñ/acento,
-// mismo riesgo de import de RRHH ya documentado para URUEÑA (regla #10 de
-// v3.28): si el pegado del histórico rompe el caracter especial, el UNIQUE de
-// horas_extras_importadas no lo detecta como colisión y la persona queda en
-// cero sin ninguna alerta. Verificar por length() al importar.
+// Datos recibidos de Leo el 2026-09-02, y grafías corregidas el mismo día
+// contra el dato real (no contra el catálogo original) tras cruzar la
+// planilla de RRHH: ARGAÑARAS→ARGAÑARAZ, MAZOLA→MAZZOLA, Jonhatan→Jonathan,
+// PÉREZ→PEREZ (sin acento). Mismo criterio que URUEÑA en su momento (regla
+// #10 de v3.28): se confirma contra el dato real, no contra cómo lo
+// escribió la planilla o el catálogo previo.
+// ZEBALLOS, Yonatan (a cargo de Gallego) causó baja de la empresa — sin
+// filas en horas_extras (verificado por SQL), así que sacarlo del catálogo
+// no deja nada huérfano.
+// ALVARADO, Agustín y QUINTANA, Walter Fabian: de licencia médica, no
+// estaban en el catálogo original — alta confirmada por Leo. Van al grupo
+// compartido de Urueña/Avio porque así vinieron en la planilla de RRHH que
+// mandó Leo (misma hoja que las otras 19 personas de ese grupo) — supuesto
+// declarado, no confirmado letra por letra con Leo.
 const EXTRAS_PERSONAL_FACILITIES = [
   // usuarios (5)
   'ALARCON, Fernando', 'GALLEGO, Sergio', 'GROVAS, Leandro',
   'URUEÑA, Gerardo', 'AVIO, Raúl',
-  // a cargo de Gallego (6)
-  'RIOS, Carlos', 'SUAREZ, Juan Francisco', 'ZEBALLOS, Yonatan',
+  // a cargo de Gallego (5 — ZEBALLOS de baja)
+  'RIOS, Carlos', 'SUAREZ, Juan Francisco',
   'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy',
   // a cargo de Grovas, además de Urueña y Avio (3)
   'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo',
-  // a cargo COMPARTIDO de Urueña y Avio (19) — ver nota en aCargo más abajo
-  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
-  'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+  // a cargo COMPARTIDO de Urueña y Avio (21) — ver nota en aCargo más abajo
+  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAZ, Federico',
+  'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
   'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
-  'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
-  'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+  'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
+  'PEREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo',
+  'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -456,8 +466,8 @@ const EXTRAS_SECTORES = {
     // Leo. ALARCON (jefe) no tiene entrada acá: ve y carga a todo el sector,
     // mismo patrón que el jefe de Mantenimiento.
     aCargo: {
-      'sega2@ferring.com': [ // Gallego
-        'RIOS, Carlos', 'SUAREZ, Juan Francisco', 'ZEBALLOS, Yonatan',
+      'sega2@ferring.com': [ // Gallego — ZEBALLOS de baja (2026-09-02)
+        'RIOS, Carlos', 'SUAREZ, Juan Francisco',
         'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy'
       ],
       'legr@ferring.com': [ // Grovas
@@ -465,18 +475,20 @@ const EXTRAS_SECTORES = {
         'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo'
       ],
       'geur@ferring.com': [ // Urueña — lista compartida con Avio
-        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
-        'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAZ, Federico',
+        'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
         'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
-        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
-        'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
+        'PEREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo',
+        'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
       ],
       'raav@ferring.com': [ // Avio — misma lista que Urueña, a propósito
-        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
-        'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAZ, Federico',
+        'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
         'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
-        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
-        'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
+        'PEREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo',
+        'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
       ]
     },
     // ⚠️ PROVISORIO — ETAPA 2. Facilities no tiene histórico importado, así
