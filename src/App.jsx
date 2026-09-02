@@ -327,8 +327,34 @@ const EXTRAS_PERSONAL_MANTENIMIENTO = [
 // tiene con qué loguear. Es el estado esperado al terminar la etapa 1: la
 // arquitectura entra en producción sin Facilities, así Mantenimiento se
 // verifica aislado.
-const EXTRAS_ENCARGADOS_FACILITIES = [];   // ETAPA 2
-const EXTRAS_PERSONAL_FACILITIES = [];     // ETAPA 2
+const EXTRAS_ENCARGADOS_FACILITIES = [
+  { user: 'sega2@ferring.com', pass: 'Galle2026', nombre: 'GALLEGO, Sergio',   rol: 'encargado' },
+  { user: 'legr@ferring.com',  pass: 'Lea2026',   nombre: 'GROVAS, Leandro',   rol: 'encargado' },
+  { user: 'geur@ferring.com',  pass: 'geur2026',  nombre: 'URUEÑA, Gerardo',   rol: 'encargado' },
+  { user: 'raav@ferring.com',  pass: 'raav2026',  nombre: 'AVIO, Raúl',        rol: 'encargado' },
+  { user: 'feal2@ferring.com', pass: 'Fer2026',   nombre: 'ALARCON, Fernando', rol: 'jefe' }
+];
+// Datos recibidos de Leo el 2026-09-02. ⚠️ ARGAÑARAS y PÉREZ llevan ñ/acento,
+// mismo riesgo de import de RRHH ya documentado para URUEÑA (regla #10 de
+// v3.28): si el pegado del histórico rompe el caracter especial, el UNIQUE de
+// horas_extras_importadas no lo detecta como colisión y la persona queda en
+// cero sin ninguna alerta. Verificar por length() al importar.
+const EXTRAS_PERSONAL_FACILITIES = [
+  // usuarios (5)
+  'ALARCON, Fernando', 'GALLEGO, Sergio', 'GROVAS, Leandro',
+  'URUEÑA, Gerardo', 'AVIO, Raúl',
+  // a cargo de Gallego (6)
+  'RIOS, Carlos', 'SUAREZ, Juan Francisco', 'ZEBALLOS, Yonatan',
+  'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy',
+  // a cargo de Grovas, además de Urueña y Avio (3)
+  'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo',
+  // a cargo COMPARTIDO de Urueña y Avio (19) — ver nota en aCargo más abajo
+  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
+  'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+  'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
+  'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
+  'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+];
 
 // ═══════════════════════════════════════════════════════════════════
 // CONFIGURACIÓN POR SECTOR (#62, v3.29)
@@ -404,8 +430,40 @@ const EXTRAS_SECTORES = {
     label: 'Facilities',
     etiquetaEncargado: 'Encargado/Supervisor',
     personal: EXTRAS_PERSONAL_FACILITIES,
-    usuarios: EXTRAS_ENCARGADOS_FACILITIES,   // ETAPA 2
-    aCargo: {},                                // ETAPA 2
+    usuarios: EXTRAS_ENCARGADOS_FACILITIES,
+    // ⚠️ DIFERENCIA DE DISEÑO respecto de Mantenimiento (confirmado con Leo,
+    // 2026-09-02): acá la asignación NO es sin solapes. Urueña y Avio
+    // comparten literalmente la misma lista de 19 personas — los dos pueden
+    // ver y cargarle horas a cualquiera de ellas, y los dos pueden aprobarle
+    // la misma solicitud a la misma persona. En Mantenimiento el reparto es
+    // sin solapes a propósito (#58) para que no haya ambigüedad de quién
+    // aprueba; en Facilities esa ambigüedad queda aceptada tal cual la pidió
+    // Leo. ALARCON (jefe) no tiene entrada acá: ve y carga a todo el sector,
+    // mismo patrón que el jefe de Mantenimiento.
+    aCargo: {
+      'sega2@ferring.com': [ // Gallego
+        'RIOS, Carlos', 'SUAREZ, Juan Francisco', 'ZEBALLOS, Yonatan',
+        'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy'
+      ],
+      'legr@ferring.com': [ // Grovas
+        'URUEÑA, Gerardo', 'AVIO, Raúl',
+        'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo'
+      ],
+      'geur@ferring.com': [ // Urueña — lista compartida con Avio
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
+        'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+        'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
+        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
+        'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+      ],
+      'raav@ferring.com': [ // Avio — misma lista que Urueña, a propósito
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
+        'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+        'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
+        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
+        'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+      ]
+    },
     // ⚠️ PROVISORIO — ETAPA 2. Facilities no tiene histórico importado, así
     // que hoy TODO su acumulado sale de la app. El corte queda en el pasado
     // para que ningún período quede esperando una fuente importada que no
