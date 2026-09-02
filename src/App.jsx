@@ -351,10 +351,16 @@ const EXTRAS_ENCARGADOS_FACILITIES = [
 ];
 // Datos recibidos de Leo el 2026-09-02, y grafías corregidas el mismo día
 // contra el dato real (no contra el catálogo original) tras cruzar la
-// planilla de RRHH: ARGAÑARAS→ARGAÑARAZ, MAZOLA→MAZZOLA, Jonhatan→Jonathan,
-// PÉREZ→PEREZ (sin acento). Mismo criterio que URUEÑA en su momento (regla
-// #10 de v3.28): se confirma contra el dato real, no contra cómo lo
-// escribió la planilla o el catálogo previo.
+// planilla de RRHH: MAZOLA→MAZZOLA, Jonhatan→Jonathan, PÉREZ→PEREZ (sin
+// acento). Mismo criterio que URUEÑA en su momento (regla #10 de v3.28): se
+// confirma contra el dato real, no contra cómo lo escribió la planilla o el
+// catálogo previo.
+// ARGAÑARAS tuvo DOS correcciones el mismo día: primero a "ARGAÑARAZ"
+// (confirmación verbal de Leo), después a **"ARGARAÑAZ"** —grafía final,
+// tomada de la planilla real de RRHH con legajo adjunto (2301521), que pesa
+// más que la confirmación verbal anterior. Si vuelve a aparecer una
+// discrepancia con este apellido, la planilla con legajo es la fuente de
+// verdad, no lo que se recuerde de memoria.
 // ZEBALLOS, Yonatan (a cargo de Gallego) causó baja de la empresa — sin
 // filas en horas_extras (verificado por SQL), así que sacarlo del catálogo
 // no deja nada huérfano.
@@ -373,7 +379,7 @@ const EXTRAS_PERSONAL_FACILITIES = [
   // a cargo de Grovas, además de Urueña y Avio (3)
   'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo',
   // a cargo COMPARTIDO de Urueña y Avio (21) — ver nota en aCargo más abajo
-  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAZ, Federico',
+  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
   'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
   'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
   'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
@@ -475,7 +481,7 @@ const EXTRAS_SECTORES = {
         'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo'
       ],
       'geur@ferring.com': [ // Urueña — lista compartida con Avio
-        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAZ, Federico',
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
         'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
         'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
         'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
@@ -483,7 +489,7 @@ const EXTRAS_SECTORES = {
         'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
       ],
       'raav@ferring.com': [ // Avio — misma lista que Urueña, a propósito
-        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAZ, Federico',
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
         'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
         'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
         'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
