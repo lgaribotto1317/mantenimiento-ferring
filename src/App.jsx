@@ -497,13 +497,14 @@ const EXTRAS_SECTORES = {
         'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
       ]
     },
-    // ⚠️ PROVISORIO — ETAPA 2. Facilities no tiene histórico importado, así
-    // que hoy TODO su acumulado sale de la app. El corte queda en el pasado
-    // para que ningún período quede esperando una fuente importada que no
-    // existe. Si Leo importa el histórico de RRHH de Facilities, este corte
-    // pasa a ser el mes en que arranca a cargar en la app — y NO es el mismo
-    // que el de Mantenimiento.
-    corteApp: { anio: 2026, mes: 1 },
+    // Corte entre fuentes (#62 etapa 2, actualizado 2026-09-02 tras el
+    // import del histórico RRHH). Hasta el período RRHH de agosto 2026
+    // inclusive manda lo IMPORTADO (29 personas, 5.428 h — ver
+    // horas_extras_importadas); desde septiembre 2026 manda la app. Leo
+    // confirmó que Facilities liquida con el mismo corte 11→10 y el mismo
+    // mes de transición que Mantenimiento — a diferencia de lo que se
+    // esperaba en la etapa 1, terminó siendo el mismo valor exacto.
+    corteApp: { anio: 2026, mes: 9 },
     // Leo confirmó que Facilities liquida con el mismo corte 11→10 y usa los
     // mismos umbrales. El corte 11→10 es política interna confirmada
     // verbalmente, no algo verificable desde los archivos.
