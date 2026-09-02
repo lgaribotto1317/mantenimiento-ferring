@@ -5075,9 +5075,103 @@ function ExtrasDashboard({ soloPersonas }) {
             )}
           </Card>
 
-          {/* ── Acumulado RRHH (#59) ─────────────────────────────────────
-          Períodos 11→10, no calendario. Va fuera del condicional del
-          período: la tabla es del año entero, no del período elegido. */}
+          {/* ── Motivos ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={ListChecks} accent="emerald">Horas por motivo</SectionTitle>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3">Categoría</th>
+                    <th className="py-2 pr-3 text-right">Aprobadas</th>
+                    <th className="py-2 pr-3 text-right">Pendientes</th>
+                    <th className="py-2 pr-3 text-right">Solicitudes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {porMotivo.map(m => (
+                    <tr key={m.motivo} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-slate-700">
+                        {m.motivo}
+                        {extrasEsReactivo(m.motivo) && (
+                          <span className="ml-1.5 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
+                                title="Se ejecuta antes de la aprobación">reactivo</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 num text-right font-semibold text-emerald-700">{formatHoras(m.aprobadas)}</td>
+                      <td className="py-2 pr-3 num text-right text-amber-700">{formatHoras(m.pendientes)}</td>
+                      <td className="py-2 pr-3 num text-right text-slate-500">{m.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* ── Proceso ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={Timer} accent="emerald">Proceso de aprobación</SectionTitle>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Tasa de aprobación</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tasa === null ? '—' : `${proceso.tasa.toFixed(0)}%`}
+                </div>
+                <div className="text-[11px] text-slate-400 num">sobre {proceso.nResueltas} resueltas</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · planificadas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tPlanificadas === null ? '—' : formatDuracion(proceso.tPlanificadas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nPlanificadas} solicitudes</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · reactivas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tReactivas === null ? '—' : formatDuracion(proceso.tReactivas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nReactivas} solicitudes</div>
+              </div>
+            </div>
+
+            {/* Notas al pie. Son parte del dato, no decoración: sin esto los
+                números de arriba se leen como algo que no son. */}
+            <div className="mt-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <p>
+                · Planificadas y reactivas se miden por separado a propósito. En las reactivas el trabajo ya se
+                hizo cuando llega la aprobación, así que el tiempo mide demora administrativa, no velocidad de respuesta.
+              </p>
+              <p>
+                · Las {proceso.autoaprobadas} solicitudes cargadas y aprobadas por la misma persona
+                <strong> están incluidas</strong> en ambas métricas. Se autoaprueban en el momento, así que
+                bajan el promedio de resolución y suben la tasa sin haber pasado por ninguna decisión.
+              </p>
+              <p>
+                · Los tiempos negativos se cortan en cero: en las autoaprobadas el sello de resolución se pone
+                milisegundos antes que el de creación, y eso es un artefacto del orden de guardado, no un dato.
+              </p>
+              <p>· Las anuladas no suman en ningún bloque. Aprobadas y pendientes nunca se suman entre sí.</p>
+            </div>
+          </Card>
+        </>
+      )}
+
+      {/* #67 — Movido fuera del ternario de arriba (vivas.length === 0).
+          Estaba anidado adentro por error desde que se creó (#59, v3.28): el
+          comentario ya decía "va fuera del condicional del período", pero el
+          JSX no lo cumplía. No se notó en Mantenimiento porque para cuando
+          existió esta tabla ya había meses de uso real, así que `vivas`
+          prácticamente nunca daba longitud cero. Se hizo visible recién con
+          Facilities: histórico importado (29 personas, 5.428 h) pero cero
+          filas en `horas_extras` todavía — así que `vivas` da cero para
+          cualquier período y la tabla quedaba tapada por "No hay
+          solicitudes en...", aunque `indiceRRHH` (que la alimenta) sí tenía
+          datos. Ahora es hermano del ternario, no hijo: se ve pase lo que
+          pase con `vivas`, que es exactamente lo que dice su propio
+          comentario de abajo desde que se escribió. */}
+          {/* ── Acumulado RRHH (#59) — la tabla es del año entero, no del
+          período elegido arriba. */}
       <Card className="p-5">
         <SectionTitle icon={FileSpreadsheet} accent="emerald">
           Acumulado RRHH {anioRRHH} · períodos 11→10
@@ -5185,87 +5279,6 @@ function ExtrasDashboard({ soloPersonas }) {
         )}
       </Card>
 
-          {/* ── Motivos ───────────────────────────────────────────── */}
-          <Card className="p-5">
-            <SectionTitle icon={ListChecks} accent="emerald">Horas por motivo</SectionTitle>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                    <th className="py-2 pr-3">Categoría</th>
-                    <th className="py-2 pr-3 text-right">Aprobadas</th>
-                    <th className="py-2 pr-3 text-right">Pendientes</th>
-                    <th className="py-2 pr-3 text-right">Solicitudes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {porMotivo.map(m => (
-                    <tr key={m.motivo} className="border-b border-slate-100">
-                      <td className="py-2 pr-3 text-slate-700">
-                        {m.motivo}
-                        {extrasEsReactivo(m.motivo) && (
-                          <span className="ml-1.5 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
-                                title="Se ejecuta antes de la aprobación">reactivo</span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-3 num text-right font-semibold text-emerald-700">{formatHoras(m.aprobadas)}</td>
-                      <td className="py-2 pr-3 num text-right text-amber-700">{formatHoras(m.pendientes)}</td>
-                      <td className="py-2 pr-3 num text-right text-slate-500">{m.n}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-
-          {/* ── Proceso ───────────────────────────────────────────── */}
-          <Card className="p-5">
-            <SectionTitle icon={Timer} accent="emerald">Proceso de aprobación</SectionTitle>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Tasa de aprobación</div>
-                <div className="text-xl font-bold text-slate-800 num mt-1">
-                  {proceso.tasa === null ? '—' : `${proceso.tasa.toFixed(0)}%`}
-                </div>
-                <div className="text-[11px] text-slate-400 num">sobre {proceso.nResueltas} resueltas</div>
-              </div>
-              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · planificadas</div>
-                <div className="text-xl font-bold text-slate-800 num mt-1">
-                  {proceso.tPlanificadas === null ? '—' : formatDuracion(proceso.tPlanificadas)}
-                </div>
-                <div className="text-[11px] text-slate-400 num">{proceso.nPlanificadas} solicitudes</div>
-              </div>
-              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · reactivas</div>
-                <div className="text-xl font-bold text-slate-800 num mt-1">
-                  {proceso.tReactivas === null ? '—' : formatDuracion(proceso.tReactivas)}
-                </div>
-                <div className="text-[11px] text-slate-400 num">{proceso.nReactivas} solicitudes</div>
-              </div>
-            </div>
-
-            {/* Notas al pie. Son parte del dato, no decoración: sin esto los
-                números de arriba se leen como algo que no son. */}
-            <div className="mt-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
-              <p>
-                · Planificadas y reactivas se miden por separado a propósito. En las reactivas el trabajo ya se
-                hizo cuando llega la aprobación, así que el tiempo mide demora administrativa, no velocidad de respuesta.
-              </p>
-              <p>
-                · Las {proceso.autoaprobadas} solicitudes cargadas y aprobadas por la misma persona
-                <strong> están incluidas</strong> en ambas métricas. Se autoaprueban en el momento, así que
-                bajan el promedio de resolución y suben la tasa sin haber pasado por ninguna decisión.
-              </p>
-              <p>
-                · Los tiempos negativos se cortan en cero: en las autoaprobadas el sello de resolución se pone
-                milisegundos antes que el de creación, y eso es un artefacto del orden de guardado, no un dato.
-              </p>
-              <p>· Las anuladas no suman en ningún bloque. Aprobadas y pendientes nunca se suman entre sí.</p>
-            </div>
-          </Card>
-        </>
-      )}
     </div>
   );
 }
