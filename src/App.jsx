@@ -7,7 +7,13 @@ import {
   CalendarDays, Clock, Image as ImageIcon, FileDown,
   Lock, LogOut, Edit3, Shield, RotateCcw, Inbox, Ban, Timer
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+// #66 — xlsx-js-style en vez de xlsx: mismo motor SheetJS 0.18.5 por dentro
+// (la Community Edition que ya usaba el proyecto no escribe estilos de
+// celda), agrega la propiedad `.s` por celda para poder poner negrita y
+// color de fondo en el Excel de Horas Extras. Mismo import, misma API para
+// todo lo demás — el resto de los exports (Correctivos/Preventivos/etc.) no
+// cambia de comportamiento.
+import * as XLSX from 'xlsx-js-style';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, RadialBarChart, RadialBar, Area, AreaChart
@@ -30,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.31';
+const APP_VERSION = 'v3.32';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -615,56 +621,14 @@ const extrasCargaTardia = (r) => {
   return cargaISO > r.fecha_fin;
 };
 
-// ── Períodos del dashboard de Extras (#49, v3.27) ──────────────────
-// Cuatrimestres de CALENDARIO FIJO, no móviles: ene–abr, may–ago, sep–dic.
-const EXTRAS_CUATRIS = [
-  { label: 'Ene–Abr', ini: 0 },
-  { label: 'May–Ago', ini: 4 },
-  { label: 'Sep–Dic', ini: 8 }
-];
-
+// ── Períodos del dashboard de Extras (#49, v3.27 · reemplazado por #66) ──
+// Hasta v3.31 acá vivían EXTRAS_CUATRIS y extrasPeriodo(tipo, offset), que
+// armaban el período en mes/cuatrimestre/año CALENDARIO para los KPIs y el
+// ranking. Desde #66 esos bloques pasan a período RRHH (ver más abajo), así
+// que quedaron sin uso y se retiraron. isoLocalYMD se mantiene: la sigue
+// usando extrasRangoRRHH.
 const isoLocalYMD = (y, m, d) =>
   `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-
-// Devuelve la ventana del período, su etiqueta y los meses que contiene.
-// `offset` 0 = período actual, -1 = el anterior, +1 = el siguiente.
-// Todo en calendario LOCAL, igual que el resto de la app.
-function extrasPeriodo(tipo, offset) {
-  const hoy = new Date();
-  if (tipo === 'mes') {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() + offset, 1);
-    const y = d.getFullYear(), m = d.getMonth();
-    const ultimo = new Date(y, m + 1, 0).getDate();
-    return {
-      desde: isoLocalYMD(y, m, 1),
-      hasta: isoLocalYMD(y, m, ultimo),
-      label: `${MESES_CORTOS[m]} ${y}`,
-      meses: [{ y, m }]
-    };
-  }
-  if (tipo === 'cuatri') {
-    // Aritmética sobre un índice global de cuatrimestres para que el salto de
-    // año al navegar salga solo, sin casos especiales en diciembre/enero.
-    const total = hoy.getFullYear() * 3 + Math.floor(hoy.getMonth() / 4) + offset;
-    const y = Math.floor(total / 3);
-    const qi = ((total % 3) + 3) % 3;
-    const ini = EXTRAS_CUATRIS[qi].ini;
-    const ultimo = new Date(y, ini + 4, 0).getDate();
-    return {
-      desde: isoLocalYMD(y, ini, 1),
-      hasta: isoLocalYMD(y, ini + 3, ultimo),
-      label: `${EXTRAS_CUATRIS[qi].label} ${y}`,
-      meses: [0, 1, 2, 3].map(k => ({ y, m: ini + k }))
-    };
-  }
-  const y = hoy.getFullYear() + offset;
-  return {
-    desde: isoLocalYMD(y, 0, 1),
-    hasta: isoLocalYMD(y, 11, 31),
-    label: `${y}`,
-    meses: Array.from({ length: 12 }, (_, m) => ({ y, m }))
-  };
-}
 
 // ── Períodos RRHH (#59, v3.28) ─────────────────────────────────────
 // RRHH liquida del 11 de un mes al 10 del siguiente: el período "agosto" va
@@ -4593,8 +4557,16 @@ const EXTRAS_ESTADO_STYLE = {
 // lista de su gente a cargo. El recorte es de UI y no de datos: el fetch trae
 // el período completo y el filtro se aplica acá.
 function ExtrasDashboard({ soloPersonas }) {
-  const [tipo, setTipo] = useState('mes');
-  const [offset, setOffset] = useState(0);
+  // #66 — Selector único de período RRHH (Año + Mes), reemplaza al viejo
+  // Mensual/Cuatrimestral/Anual en mes calendario. Unifica KPIs, ranking y
+  // métricas de Proceso bajo el mismo recorte que ya usaban Evolución y
+  // Acumulado RRHH — antes convivían dos calendarios distintos en la misma
+  // pantalla. Se pierden las vistas Cuatrimestral/Anual de antes; volver a
+  // tenerlas como agregado de períodos RRHH, si hace falta, es aparte.
+  const hoyPeriodo = extrasPeriodoRRHH(todayLocalISO())
+    || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
+  const [anioSel, setAnioSel] = useState(hoyPeriodo.anio);
+  const [mesSel, setMesSel] = useState(hoyPeriodo.mes);
   const [verTodos, setVerTodos] = useState(false);
 
   // Recorte por gente a cargo. Se aplica a TODOS los bloques.
@@ -4615,11 +4587,17 @@ function ExtrasDashboard({ soloPersonas }) {
   const [modo12, setModo12] = useState('anio');
   const [personaSel, setPersonaSel] = useState('');
 
-  // Cambiar de granularidad vuelve al período actual: mantener el offset
-  // saltaría a un cuatrimestre de hace años al pasar de mes a cuatrimestre.
-  useEffect(() => { setOffset(0); }, [tipo]);
+  // Avanza/retrocede un período RRHH completo (con acarreo de año).
+  const irAPeriodo = (delta) => {
+    let m = mesSel + delta, a = anioSel;
+    if (m < 1) { m = 12; a -= 1; } else if (m > 12) { m = 1; a += 1; }
+    setMesSel(m); setAnioSel(a);
+  };
 
-  const periodo = useMemo(() => extrasPeriodo(tipo, offset), [tipo, offset]);
+  const periodo = useMemo(() => {
+    const r = extrasRangoRRHH(anioSel, mesSel);
+    return { ...r, anio: anioSel, mes: mesSel, label: `${MESES_CORTOS[mesSel - 1]} ${anioSel}` };
+  }, [anioSel, mesSel]);
 
   useEffect(() => {
     let vigente = true;
@@ -4635,30 +4613,28 @@ function ExtrasDashboard({ soloPersonas }) {
     return () => { vigente = false; };
   }, [periodo.desde, periodo.hasta]);
 
-  useEffect(() => { setVerTodos(false); }, [periodo.desde, tipo]);
+  useEffect(() => { setVerTodos(false); }, [periodo.desde]);
 
   const truncado = datos.length >= EXTRAS_DASHBOARD_LIMIT;
 
   // ═════════════════════════════════════════════════════════════════
   // DATOS EN PERÍODOS RRHH (#59) — alimentan la evolución Y el acumulado
   // ═════════════════════════════════════════════════════════════════
-  // Ambos bloques trabajan en períodos RRHH (11→10), no en mes calendario.
-  // La razón es que las horas IMPORTADAS solo existen como total mensual del
-  // 11 al 10, sin detalle diario: repartirlas entre dos meses calendario
-  // exigiría inventar una distribución y escribirla como si fuera medición.
-  // Trabajando en períodos RRHH cada barra y cada celda corresponden a un
-  // dato real. Los KPIs de arriba SÍ son de mes calendario, y por eso el
-  // gráfico aclara qué períodos se solapan con el seleccionado.
-  const anioRRHH = periodo.meses[periodo.meses.length - 1].y;
+  // Los tres bloques (KPIs/ranking, evolución, acumulado) trabajan en
+  // períodos RRHH (11→10) desde #66. La razón de fondo es la misma de
+  // siempre: las horas IMPORTADAS solo existen como total mensual del 11 al
+  // 10, sin detalle diario, así que repartirlas en meses calendario exigiría
+  // inventar una distribución. Antes los KPIs eran de mes calendario y el
+  // gráfico aclaraba el desfasaje; ahora todo comparte el mismo recorte.
+  const anioRRHH = periodo.anio;
 
   // Los 12 períodos RRHH de la ventana del gráfico.
   const periodos12 = useMemo(() => {
     if (modo12 === 'anio') {
       return Array.from({ length: 12 }, (_, i) => ({ anio: anioRRHH, mes: i + 1 }));
     }
-    // Móvil: los 12 que terminan en el período RRHH del final del período
-    // calendario seleccionado. Anclar al final evita cortar la serie antes
-    // de lo que se está mirando.
+    // Móvil: los 12 que terminan en el período RRHH seleccionado arriba.
+    // Anclar al final evita cortar la serie antes de lo que se está mirando.
     const fin = extrasPeriodoRRHH(periodo.hasta) || { anio: anioRRHH, mes: 12 };
     return Array.from({ length: 12 }, (_, k) => {
       const t = fin.anio * 12 + (fin.mes - 1) - 11 + k;
@@ -4823,7 +4799,10 @@ function ExtrasDashboard({ soloPersonas }) {
   // Evolución: SIEMPRE 12 períodos RRHH, sobre el índice unificado. Una sola
   // barra no es una evolución. Se recorren los 12 de la ventana y no los que
   // tienen datos: un período en cero tiene que verse como cero.
-  // `enPeriodo` marca los que se solapan con el período calendario elegido.
+  // `enPeriodo` marca la barra que coincide con el período RRHH elegido
+  // arriba. Desde #66 el período elegido ES un período RRHH exacto (antes
+  // era un recorte calendario que solo se solapaba con alguno de los 12),
+  // así que esto da match en como mucho una barra de las 12.
   const porMes = useMemo(() => periodos12.map(({ anio, mes }) => {
     const filas = indiceRRHH.filter(r =>
       r.anio === anio && r.mes === mes && (!personaSel || r.persona === personaSel)
@@ -4831,8 +4810,6 @@ function ExtrasDashboard({ soloPersonas }) {
     const r = extrasRangoRRHH(anio, mes);
     return {
       mes: `${MESES_CORTOS[mes - 1]} ${String(anio).slice(2)}`,
-      // El período RRHH se solapa con el período calendario seleccionado.
-      // No es contención exacta — son recortes distintos a propósito.
       enPeriodo: r.desde <= periodo.hasta && r.hasta >= periodo.desde,
       importado: !extrasFuenteEsApp(anio, mes),
       aprobadas: Number(filas.reduce((a, x) => a + x.aprobadas, 0).toFixed(2)),
@@ -4883,39 +4860,40 @@ function ExtrasDashboard({ soloPersonas }) {
     };
   }, [vivas]);
 
-  const btnPeriodo = (t, label) => (
-    <button key={t} onClick={() => setTipo(t)}
-      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
-        tipo === t ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-300'
-      }`}>
-      {label}
-    </button>
-  );
+  // Años ofrecidos en el selector: ventana fija alrededor del actual, más el
+  // año elegido si por algún motivo cae fuera (deep-link, etc.).
+  const anioOptions = useMemo(() => {
+    const actual = new Date().getFullYear();
+    const arr = [];
+    for (let y = actual - 2; y <= actual + 1; y++) arr.push(y);
+    if (!arr.includes(anioSel)) arr.push(anioSel);
+    return arr.sort((a, b) => a - b);
+  }, [anioSel]);
 
   return (
     <div className="flex flex-col gap-5">
-      {/* ── Selector de período ─────────────────────────────────── */}
+      {/* ── Selector de período RRHH ───────────────────────────── */}
       <Card className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            {btnPeriodo('mes', 'Mensual')}
-            {btnPeriodo('cuatri', 'Cuatrimestral')}
-            {btnPeriodo('anio', 'Anual')}
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setOffset(o => o - 1)}
-              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período anterior">
+            <button onClick={() => irAPeriodo(-1)}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período RRHH anterior">
               <ChevronLeft className="w-4 h-4 text-slate-600" />
             </button>
-            <span className="text-sm font-bold text-slate-800 min-w-[110px] text-center capitalize">
-              {periodo.label}
-            </span>
-            <button onClick={() => setOffset(o => o + 1)}
-              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período siguiente">
+            <select value={mesSel} onChange={e => setMesSel(Number(e.target.value))}
+              className="px-2 py-1.5 text-sm font-semibold bg-white border border-slate-300 rounded-lg capitalize">
+              {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+            <select value={anioSel} onChange={e => setAnioSel(Number(e.target.value))}
+              className="px-2 py-1.5 text-sm font-semibold bg-white border border-slate-300 rounded-lg">
+              {anioOptions.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button onClick={() => irAPeriodo(1)}
+              className="p-1.5 hover:bg-slate-100 rounded-lg transition border border-slate-300" title="Período RRHH siguiente">
               <ChevronRight className="w-4 h-4 text-slate-600" />
             </button>
-            {offset !== 0 && (
-              <button onClick={() => setOffset(0)}
+            {(anioSel !== hoyPeriodo.anio || mesSel !== hoyPeriodo.mes) && (
+              <button onClick={() => { setAnioSel(hoyPeriodo.anio); setMesSel(hoyPeriodo.mes); }}
                 className="px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 rounded-lg transition">
                 Hoy
               </button>
@@ -4923,7 +4901,7 @@ function ExtrasDashboard({ soloPersonas }) {
           </div>
         </div>
         <p className="text-[11px] text-slate-400 mt-2 num">
-          {formatDateShort(periodo.desde)} — {formatDateShort(periodo.hasta)}
+          Período RRHH (11 al 10): {formatDateShort(periodo.desde)} — {formatDateShort(periodo.hasta)}
         </p>
       </Card>
 
@@ -5087,7 +5065,8 @@ function ExtrasDashboard({ soloPersonas }) {
         </SectionTitle>
         <p className="text-[11px] text-slate-500 -mt-2 mb-3 leading-relaxed">
           Cada columna va del <strong>11 del mes anterior al 10 del propio mes</strong>: "Ago" es del 11/07 al 10/08.
-          <strong> No coincide con los bloques de arriba</strong>, que son de mes calendario.
+          Es el <strong>año RRHH completo</strong> — a diferencia de los bloques de arriba, que muestran solo el
+          período (mes) elegido.
         </p>
         {rrhhCargando ? (
           <div className="text-center text-slate-500 py-10 text-sm">Cargando acumulado…</div>
@@ -5178,8 +5157,9 @@ function ExtrasDashboard({ soloPersonas }) {
                 nada ni altera ningún total.
               </p>
               <p>
-                · Las horas importadas <strong>no entran</strong> en los KPIs de mes calendario. Sí entran en la
-                evolución de arriba, que trabaja en estos mismos períodos RRHH.
+                · Las horas importadas <strong>no entran</strong> en los KPIs ni en el ranking de arriba — esos
+                bloques solo leen lo cargado en la app, aunque ahora compartan el mismo recorte por período RRHH.
+                Sí entran en la evolución, que combina las dos fuentes.
               </p>
             </div>
           </>
@@ -5297,10 +5277,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // Segundo click para aceptar un solapamiento detectado (#54).
   const [solapeOk, setSolapeOk] = useState(false);
 
-  // Filtros del listado (también acotan lo que sale al Excel)
+  // Filtros del listado (#66 — también acotan lo que sale al Excel). El
+  // rango de fechas libre de antes (filtroDesde/filtroHasta) se reemplaza por
+  // Año+Mes de período RRHH, más un filtro por persona. Default: el período
+  // RRHH actual.
+  const hoyPeriodoListado = extrasPeriodoRRHH(todayLocalISO())
+    || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
+  const [filtroAnio, setFiltroAnio] = useState(hoyPeriodoListado.anio);
+  const [filtroMes, setFiltroMes] = useState(hoyPeriodoListado.mes);
+  const [filtroPersona, setFiltroPersona] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('');
-  const [filtroDesde, setFiltroDesde] = useState('');
-  const [filtroHasta, setFiltroHasta] = useState('');
   const [verAnuladas, setVerAnuladas] = useState(false);
 
   // Diálogos
@@ -5318,24 +5304,60 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     () => extrasVisiblesDe(sesion.user, sesion.nombre),
     [sesion.user, sesion.nombre]
   );
-  const visibles = useMemo(
-    () => (esJefe ? extras : extras.filter(r => aCargo.includes(r.tecnico_nombre))),
-    [extras, esJefe, aCargo]
-  );
 
   // A quién se le puede cargar: el jefe a cualquiera, el encargado solo a su
-  // gente. No incluye su propio nombre aunque lo vea en el listado.
+  // gente. No incluye su propio nombre aunque lo vea en el listado. Mismo
+  // catálogo que alimenta el selector de "Persona" del filtro (#66).
   const personalCargable = useMemo(
     () => (esJefe ? EXTRAS_PERSONAL_NAMES : extrasPersonalDe(sesion.user)),
     [esJefe, sesion.user]
   );
 
+  // ── Datos del listado por período RRHH (#66) ──────────────────────────
+  // Antes este bloque leía del `extras` cacheado a nivel app (tope
+  // EXTRAS_LIST_LIMIT=500, sin acotar por fecha): con el volumen real de
+  // Facilities+Mantenimiento un período viejo podía quedar afuera del cupo
+  // sin ningún aviso (BACKLOG #57). Ahora se pide por rango, mismo mecanismo
+  // que ya usa el dashboard (`storage.listExtrasRango`), así que cada
+  // período tiene su propia consulta. `extras` (el prop) se sigue usando tal
+  // cual para el aviso de solapamiento del formulario, que necesita ver más
+  // allá del período filtrado acá.
+  const rangoListado = useMemo(() => extrasRangoRRHH(filtroAnio, filtroMes), [filtroAnio, filtroMes]);
+  const [datosListado, setDatosListado] = useState([]);
+  const [listadoLoading, setListadoLoading] = useState(true);
+  const [listadoError, setListadoError] = useState('');
+
+  const cargarListado = useCallback(() => {
+    setListadoLoading(true);
+    setListadoError('');
+    return storage.listExtrasRango(rangoListado.desde, rangoListado.hasta)
+      .then(r => setDatosListado(r))
+      .catch(e => setListadoError(e.message || 'no se pudieron cargar las solicitudes'))
+      .finally(() => setListadoLoading(false));
+  }, [rangoListado.desde, rangoListado.hasta]);
+
+  useEffect(() => { cargarListado(); }, [cargarListado]);
+
+  // Años ofrecidos en el selector del listado: mismo criterio que el del
+  // dashboard (ventana fija alrededor del actual + el elegido si cae afuera).
+  const filtroAnioOptions = useMemo(() => {
+    const actual = new Date().getFullYear();
+    const arr = [];
+    for (let y = actual - 2; y <= actual + 1; y++) arr.push(y);
+    if (!arr.includes(filtroAnio)) arr.push(filtroAnio);
+    return arr.sort((a, b) => a - b);
+  }, [filtroAnio]);
+
+  const visibles = useMemo(
+    () => (esJefe ? datosListado : datosListado.filter(r => aCargo.includes(r.tecnico_nombre))),
+    [datosListado, esJefe, aCargo]
+  );
+
   const listado = useMemo(() => visibles
     .filter(r => (verAnuladas ? true : !r.anulada_at))
     .filter(r => (filtroEstado ? r.estado === filtroEstado : true))
-    .filter(r => (filtroDesde ? r.fecha >= filtroDesde : true))
-    .filter(r => (filtroHasta ? r.fecha <= filtroHasta : true)),
-    [visibles, verAnuladas, filtroEstado, filtroDesde, filtroHasta]);
+    .filter(r => (filtroPersona ? r.tecnico_nombre === filtroPersona : true)),
+    [visibles, verAnuladas, filtroEstado, filtroPersona]);
 
   // Totales sobre lo que se está viendo. Las anuladas NO suman nunca, aunque
   // estén visibles con el checkbox: una hora anulada no se trabaja ni se paga.
@@ -5549,6 +5571,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         setMsg(esJefe ? '✓ Horas extras cargadas y aprobadas' : '✓ Solicitud enviada · queda pendiente de aprobación');
       }
       resetForm();
+      cargarListado();
     } catch (e) {
       setMsg(`Error: ${e.message || 'no se pudo guardar'}`);
     } finally {
@@ -5570,6 +5593,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         horas_previas: null
       });
       setMsg(r.estado === 'modificada' ? `✓ Confirmada · ${r.tecnico_nombre}` : `✓ Aprobada · ${r.tecnico_nombre}`);
+      cargarListado();
     } catch (e) {
       setMsg(`Error: ${e.message || 'no se pudo aprobar'}`);
     }
@@ -5585,6 +5609,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     });
     setRechazarTarget(null);
     setMsg('✓ Solicitud rechazada');
+    cargarListado();
   };
 
   const doAnular = async (motivoAnulacion) => {
@@ -5595,6 +5620,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     });
     setAnularTarget(null);
     setMsg('✓ Solicitud anulada');
+    cargarListado();
   };
 
   // Permisos de fila. El encargado toca solo lo propio; el jefe resuelve lo
@@ -5650,13 +5676,40 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       'Fecha de anulación': r.anulada_at ? formatFechaAudit(r.anulada_at) : '',
       'Motivo de anulación': r.anulada_motivo || ''
     }));
-    const rango = [filtroDesde || 'inicio', filtroHasta || todayLocalISO()].join('_a_');
-    // #62 — El sector va en el NOMBRE DEL ARCHIVO, no en una columna nueva.
-    // Cada sector manda su propio archivo a RRHH (Leo confirmó que no hay
-    // consolidado), así que el dato que hacía falta era poder distinguir dos
-    // archivos en la misma carpeta. Agregar una columna habría tocado el
-    // formato de una planilla que ya está en uso, sin que nadie lo pidiera.
-    downloadSingle(rows, 'Horas extras', `HorasExtras_${APP_SECTOR}_${rango}.xlsx`);
+
+    // #66 — Segunda pestaña: totales por persona sobre EXACTAMENTE las
+    // mismas filas de la pestaña 1 (mismos filtros de estado/persona/
+    // anuladas ya aplicados en `listado`). Si se filtra por un estado
+    // puntual, el total refleja ese estado — no hay un criterio fijo de
+    // "solo aprobadas" que ignore el filtro elegido en pantalla. Orden
+    // alfabético, igual que las planillas de RRHH que arma Leo a mano.
+    const porPersonaMap = new Map();
+    listado.forEach(r => {
+      const k = r.tecnico_nombre || '(sin nombre)';
+      const o = porPersonaMap.get(k) || { persona: k, solicitudes: 0, horas: 0 };
+      o.solicitudes += 1;
+      o.horas += Number(r.horas) || 0;
+      porPersonaMap.set(k, o);
+    });
+    const totalesRows = [...porPersonaMap.values()]
+      .sort((a, b) => a.persona.localeCompare(b.persona, 'es'))
+      .map(o => ({
+        'Persona': o.persona,
+        'Cantidad de solicitudes': o.solicitudes,
+        'Horas totales': Number(o.horas.toFixed(2))
+      }));
+
+    // #62 — El sector va en el NOMBRE DEL ARCHIVO, no en una columna nueva
+    // (Leo confirmó que no hay consolidado entre sectores). #66 — el rango
+    // de fechas libre del nombre pasa a Año-Mes del período RRHH filtrado.
+    const periodoArchivo = `${filtroAnio}-${String(filtroMes).padStart(2, '0')}`;
+    downloadStyledExtras(
+      [
+        { rows, name: 'Horas extras' },
+        { rows: totalesRows, name: 'Totales por persona' }
+      ],
+      `HorasExtras_${APP_SECTOR}_${periodoArchivo}.xlsx`
+    );
     setMsg(`✓ Exportadas ${rows.length} solicitudes`);
   };
 
@@ -5875,10 +5928,22 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
               <option value="aprobada">Aprobadas</option>
               <option value="rechazada">Rechazadas</option>
             </select>
-            <input type="date" className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg num"
-              value={filtroDesde} onChange={e => setFiltroDesde(e.target.value)} title="Desde" />
-            <input type="date" className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg num"
-              value={filtroHasta} onChange={e => setFiltroHasta(e.target.value)} title="Hasta" />
+            {/* #66 — Persona (mismo criterio que el selector de carga: jefe ve
+                todo el personal, encargado solo su gente a cargo) y Año/Mes
+                período RRHH, en vez del rango de fechas libre de antes. */}
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg max-w-[160px]"
+              value={filtroPersona} onChange={e => setFiltroPersona(e.target.value)}>
+              <option value="">Toda la gente</option>
+              {personalCargable.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg capitalize"
+              value={filtroMes} onChange={e => setFiltroMes(Number(e.target.value))}>
+              {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
+              value={filtroAnio} onChange={e => setFiltroAnio(Number(e.target.value))}>
+              {filtroAnioOptions.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
             <label className="flex items-center gap-1.5 text-xs text-slate-600">
               <input type="checkbox" checked={verAnuladas} onChange={e => setVerAnuladas(e.target.checked)} />
               Ver anuladas
@@ -5888,11 +5953,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
               title="Exportar a Excel lo que se ve con estos filtros">
               <Download className="w-3.5 h-3.5" />Excel
             </button>
-            <button onClick={onRefresh} className="p-1.5 hover:bg-slate-100 rounded transition" title="Refrescar">
+            <button onClick={() => { onRefresh(); cargarListado(); }}
+              className="p-1.5 hover:bg-slate-100 rounded transition" title="Refrescar">
               <RefreshCw className="w-4 h-4 text-slate-500" />
             </button>
           </div>
         </div>
+
+        <p className="text-[11px] text-slate-400 -mt-2 mb-3 num">
+          Período RRHH (11 al 10): {formatDateShort(rangoListado.desde)} — {formatDateShort(rangoListado.hasta)}
+        </p>
 
         <div className="flex flex-wrap gap-4 mb-4 text-xs text-slate-600">
           <span><strong className="num text-amber-700">{formatHoras(totales.pendientes)}</strong> pendientes de aprobación
@@ -5901,13 +5971,13 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           <span><strong className="num text-slate-800">{listado.length}</strong> solicitudes en pantalla</span>
         </div>
 
-        {extrasError && (
+        {listadoError && (
           <div className="mb-3 text-xs text-red-600 flex items-center gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5" />{extrasError}
+            <AlertTriangle className="w-3.5 h-3.5" />{listadoError}
           </div>
         )}
 
-        {extrasLoading ? (
+        {listadoLoading ? (
           <div className="text-center text-slate-500 py-10 text-sm">Cargando horas extras…</div>
         ) : listado.length === 0 ? (
           <EmptyHint>No hay solicitudes con estos filtros.</EmptyHint>
@@ -9940,5 +10010,37 @@ function addSheet(wb, rows, name) {
 function downloadSingle(rows, sheetName, fileName) {
   const wb = XLSX.utils.book_new();
   addSheet(wb, rows, sheetName);
+  XLSX.writeFile(wb, fileName);
+}
+
+// ── #66 — Export con estilo (solo Horas Extras) ─────────────────────
+// Usa las propiedades de estilo que agrega xlsx-js-style. NO se mezcla con
+// `addSheet`/`downloadSingle` de arriba porque esas siguen sirviendo a
+// Correctivos/Preventivos/Comentarios/Proveedores tal cual estaban — este
+// pedido de formato fue puntual para Horas Extras, no para todos los
+// exports de la app.
+const EXTRAS_EXCEL_HEADER_STYLE = {
+  font: { bold: true, color: { rgb: 'FFFFFFFF' } },
+  fill: { patternType: 'solid', fgColor: { rgb: 'FF0284C7' } }
+};
+
+function addStyledSheet(wb, rows, name) {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  if (rows.length > 0 && rows[0]) {
+    const headers = Object.keys(rows[0]);
+    ws['!cols'] = headers.map(k => ({ wch: Math.max(12, Math.min(35, k.length + 4)) }));
+    // Fila 1 (encabezados): negrita + fondo celeste de la app, texto blanco.
+    headers.forEach((_, i) => {
+      const addr = XLSX.utils.encode_cell({ r: 0, c: i });
+      if (ws[addr]) ws[addr].s = EXTRAS_EXCEL_HEADER_STYLE;
+    });
+  }
+  XLSX.utils.book_append_sheet(wb, ws, name);
+}
+
+// `sheets`: [{ rows, name }, ...] — una entrada por pestaña, en orden.
+function downloadStyledExtras(sheets, fileName) {
+  const wb = XLSX.utils.book_new();
+  sheets.forEach(({ rows, name }) => addStyledSheet(wb, rows, name));
   XLSX.writeFile(wb, fileName);
 }
