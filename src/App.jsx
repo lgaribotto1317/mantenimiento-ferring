@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.34';
+const APP_VERSION = 'v3.35';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -1532,6 +1532,27 @@ const storage = {
     if (!res.ok) throw new Error(`Supabase extras (sonda): ${res.status} ${await res.text()}`);
     const rows = await res.json();
     return rows.length > 0;
+  },
+
+  // #70 — Todas las pendientes/modificadas del sector, SIN acotar por fecha.
+  // El listado (#66) trae por período RRHH para no pisar el tope de filas
+  // (BACKLOG #57), pero eso escondía pendientes reales cuya `fecha` cae fuera
+  // del período que el jefe tiene seleccionado — ej. una solicitada hoy para
+  // dentro de dos semanas, que el corte 11→10 manda al período siguiente. Lo
+  // que espera resolución no debería depender de qué mes esté mirando el
+  // jefe. Mismo criterio de población que `hasExtrasPendientes` (pendiente +
+  // modificada, sin anuladas); acá sí trae las filas completas, no un booleano.
+  // Volumen esperado bajo — se resuelven rápido, no se acumulan como el
+  // histórico — así que EXTRAS_LIST_LIMIT alcanza de sobra sin el riesgo de
+  // #57.
+  async listExtrasPendientes(limit = EXTRAS_LIST_LIMIT) {
+    if (!supabaseConfigured) return [];
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/horas_extras?select=*&${SECTOR_QS}&estado=in.(pendiente,modificada)&anulada_at=is.null&order=fecha.desc,hora_inicio.desc&limit=${limit}`,
+      { headers: sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase extras pendientes: ${res.status} ${await res.text()}`);
+    return res.json();
   },
 
   async insertExtra(row) {
@@ -5408,14 +5429,24 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // allá del período filtrado acá.
   const rangoListado = useMemo(() => extrasRangoRRHH(filtroAnio, filtroMes), [filtroAnio, filtroMes]);
   const [datosListado, setDatosListado] = useState([]);
+  // #70 — pendientes/modificadas del sector entero, sin acotar por período
+  // (ver storage.listExtrasPendientes). Se combinan con datosListado más
+  // abajo para que una solicitud pendiente nunca dependa del Año/Mes elegido.
+  const [datosPendientes, setDatosPendientes] = useState([]);
   const [listadoLoading, setListadoLoading] = useState(true);
   const [listadoError, setListadoError] = useState('');
 
   const cargarListado = useCallback(() => {
     setListadoLoading(true);
     setListadoError('');
-    return storage.listExtrasRango(rangoListado.desde, rangoListado.hasta)
-      .then(r => setDatosListado(r))
+    return Promise.all([
+      storage.listExtrasRango(rangoListado.desde, rangoListado.hasta),
+      storage.listExtrasPendientes()
+    ])
+      .then(([rango, pendientes]) => {
+        setDatosListado(rango);
+        setDatosPendientes(pendientes);
+      })
       .catch(e => setListadoError(e.message || 'no se pudieron cargar las solicitudes'))
       .finally(() => setListadoLoading(false));
   }, [rangoListado.desde, rangoListado.hasta]);
@@ -5432,9 +5463,17 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     return arr.sort((a, b) => a - b);
   }, [filtroAnio]);
 
+  // #70 — Unión de lo período-acotado con TODAS las pendientes/modificadas,
+  // sin duplicar las que ya caían dentro del período (misma fila puede
+  // aparecer en ambas consultas).
+  const datosCombinados = useMemo(() => {
+    const idsPeriodo = new Set(datosListado.map(r => r.id));
+    return [...datosListado, ...datosPendientes.filter(r => !idsPeriodo.has(r.id))];
+  }, [datosListado, datosPendientes]);
+
   const visibles = useMemo(
-    () => (esJefe ? datosListado : datosListado.filter(r => aCargo.includes(r.tecnico_nombre))),
-    [datosListado, esJefe, aCargo]
+    () => (esJefe ? datosCombinados : datosCombinados.filter(r => aCargo.includes(r.tecnico_nombre))),
+    [datosCombinados, esJefe, aCargo]
   );
 
   const listado = useMemo(() => visibles
@@ -6032,12 +6071,18 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                 {EXTRAS_USUARIOS_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             )}
-            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg capitalize"
-              value={filtroMes} onChange={e => setFiltroMes(Number(e.target.value))}>
+            {/* #70 — Año/Mes no tiene efecto sobre las pendientes (siempre
+                se muestran todas, sin importar el período), así que se
+                deshabilita cuando el filtro de estado está en "Pendientes"
+                para no sugerir que hace algo. */}
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg capitalize disabled:opacity-50 disabled:cursor-not-allowed"
+              value={filtroMes} onChange={e => setFiltroMes(Number(e.target.value))}
+              disabled={filtroEstado === 'pendiente'}>
               {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
             </select>
-            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
-              value={filtroAnio} onChange={e => setFiltroAnio(Number(e.target.value))}>
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              value={filtroAnio} onChange={e => setFiltroAnio(Number(e.target.value))}
+              disabled={filtroEstado === 'pendiente'}>
               {filtroAnioOptions.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
             <label className="flex items-center gap-1.5 text-xs text-slate-600">
@@ -6058,6 +6103,10 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
         <p className="text-[11px] text-slate-400 -mt-2 mb-3 num">
           Período RRHH (11 al 10): {formatDateShort(rangoListado.desde)} — {formatDateShort(rangoListado.hasta)}
+          {/* #70 — aclara por qué Año/Mes está deshabilitado en este filtro. */}
+          {filtroEstado === 'pendiente' && (
+            <span className="text-amber-600"> · mostrando TODAS las pendientes, sin importar el período</span>
+          )}
         </p>
 
         <div className="flex flex-wrap gap-4 mb-4 text-xs text-slate-600">
