@@ -539,6 +539,20 @@ const extrasVisiblesDe = (user, nombre) => {
   return nombre && !base.includes(nombre) ? [...base, nombre] : base;
 };
 
+// #69 — ¿Este usuario comparte alguna persona a cargo con otro encargado?
+// Determina si el filtro "Cargó" tiene sentido para él: si su gente es
+// exclusivamente suya (sin solape con nadie más), el único posible autor de
+// esas solicitudes es él mismo o el jefe — filtrar no aporta nada. Genérico
+// contra EXTRAS_A_CARGO, no hardcodeado a Urueña/Avio: sirve para cualquier
+// sector donde en el futuro se agregue otro solape.
+const extrasTieneGrupoCompartido = (user) => {
+  const propia = new Set(extrasPersonalDe(user));
+  if (propia.size === 0) return false;
+  return Object.entries(EXTRAS_A_CARGO).some(
+    ([otroUser, lista]) => otroUser !== user && lista.some(n => propia.has(n))
+  );
+};
+
 // Autenticación local contra el catálogo del SECTOR DE CASA (#62). Devuelve la
 // sesión (sin la password) o null. La comparación de usuario es
 // case-insensitive y trimmed porque el teclado del celular capitaliza la
@@ -5373,6 +5387,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
     [esJefe, sesion.user]
   );
 
+  // #69 — El filtro "Cargó" solo tiene sentido para quien ve grupos de
+  // personas con más de un posible autor: el jefe (ve todo el sector) o un
+  // encargado cuya gente se solapa con la de otro (hoy, Urueña/Avio en
+  // Facilities). Para un encargado sin solape, su gente solo puede haberla
+  // cargado él mismo o el jefe — no hay nada que el filtro aporte.
+  const mostrarFiltroSolicito = useMemo(
+    () => esJefe || extrasTieneGrupoCompartido(sesion.user),
+    [esJefe, sesion.user]
+  );
+
   // ── Datos del listado por período RRHH (#66) ──────────────────────────
   // Antes este bloque leía del `extras` cacheado a nivel app (tope
   // EXTRAS_LIST_LIMIT=500, sin acotar por fecha): con el volumen real de
@@ -5998,12 +6022,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
               {personalCargable.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
             {/* #69 — filtro por quién cargó la solicitud (columna "Solicitó"),
-                distinto del filtro de Persona (para quién es la hora extra). */}
-            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg max-w-[160px]"
-              value={filtroSolicito} onChange={e => setFiltroSolicito(e.target.value)}>
-              <option value="">Cualquiera cargó</option>
-              {EXTRAS_USUARIOS_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
+                distinto del filtro de Persona (para quién es la hora extra).
+                Solo visible para quien ve grupos con más de un posible autor
+                (jefe, o encargado con personal solapado con otro). */}
+            {mostrarFiltroSolicito && (
+              <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg max-w-[160px]"
+                value={filtroSolicito} onChange={e => setFiltroSolicito(e.target.value)}>
+                <option value="">Cualquiera cargó</option>
+                {EXTRAS_USUARIOS_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
             <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg capitalize"
               value={filtroMes} onChange={e => setFiltroMes(Number(e.target.value))}>
               {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
