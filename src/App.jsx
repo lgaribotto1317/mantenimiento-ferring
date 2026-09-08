@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.33';
+const APP_VERSION = 'v3.34';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -521,6 +521,10 @@ const EXTRAS_SECTORES = {
 const EXTRAS_SECTOR_CONF = EXTRAS_SECTORES[APP_SECTOR] || EXTRAS_SECTORES.Mantenimiento;
 const EXTRAS_PERSONAL_NAMES = EXTRAS_SECTOR_CONF.personal;
 const EXTRAS_USUARIOS = EXTRAS_SECTOR_CONF.usuarios;
+// #69 — nombres para el filtro "Cargó" del listado. Catálogo fijo (todos los
+// usuarios del sector, encargados + jefe), ordenado alfabéticamente para el
+// selector; independiente de qué haya cargado cada uno en el período visto.
+const EXTRAS_USUARIOS_NAMES = EXTRAS_USUARIOS.map(u => u.nombre).sort((a, b) => a.localeCompare(b));
 const EXTRAS_A_CARGO = EXTRAS_SECTOR_CONF.aCargo;
 const EXTRAS_ETIQUETA_ENCARGADO = EXTRAS_SECTOR_CONF.etiquetaEncargado;
 
@@ -533,6 +537,20 @@ const extrasPersonalDe = (user) => EXTRAS_A_CARGO[user] || [];
 const extrasVisiblesDe = (user, nombre) => {
   const base = extrasPersonalDe(user);
   return nombre && !base.includes(nombre) ? [...base, nombre] : base;
+};
+
+// #69 — ¿Este usuario comparte alguna persona a cargo con otro encargado?
+// Determina si el filtro "Cargó" tiene sentido para él: si su gente es
+// exclusivamente suya (sin solape con nadie más), el único posible autor de
+// esas solicitudes es él mismo o el jefe — filtrar no aporta nada. Genérico
+// contra EXTRAS_A_CARGO, no hardcodeado a Urueña/Avio: sirve para cualquier
+// sector donde en el futuro se agregue otro solape.
+const extrasTieneGrupoCompartido = (user) => {
+  const propia = new Set(extrasPersonalDe(user));
+  if (propia.size === 0) return false;
+  return Object.entries(EXTRAS_A_CARGO).some(
+    ([otroUser, lista]) => otroUser !== user && lista.some(n => propia.has(n))
+  );
 };
 
 // Autenticación local contra el catálogo del SECTOR DE CASA (#62). Devuelve la
@@ -638,6 +656,25 @@ const extrasCargaTardia = (r) => {
   if (isNaN(c.getTime())) return false;
   const cargaISO = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(c.getDate()).padStart(2, '0')}`;
   return cargaISO > r.fecha_fin;
+};
+
+// ── ¿Se cargó el mismo día en que se realiza el trabajo? (v3.34) ───
+// Señal de control interno distinta de extrasCargaTardia: esa compara
+// contra fecha_fin (día en que TERMINÓ el trabajo) y por decisión del
+// 2026-09-01 el mismo día no cuenta como tardío. Esta compara contra
+// `fecha` (día en que EMPIEZA el trabajo, no fecha_fin — en turno
+// Noche fecha_fin = fecha+1 y no es lo que importa acá): señala falta
+// de anticipación en la solicitud, sin importar cuándo termina. Misma
+// excepción de motivo que extrasCargaTardia: "Finalización de trabajos
+// en curso" se carga después de ejecutado por diseño, no es un caso de
+// falta de anticipación.
+const extrasCargaMismoDia = (r) => {
+  if (r.motivo_categoria === 'Finalización de trabajos en curso') return false;
+  if (!r.created_at || !r.fecha) return false;
+  const c = new Date(r.created_at);
+  if (isNaN(c.getTime())) return false;
+  const cargaISO = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(c.getDate()).padStart(2, '0')}`;
+  return cargaISO === r.fecha;
 };
 
 // ── Períodos del dashboard de Extras (#49, v3.27 · reemplazado por #66) ──
@@ -5319,6 +5356,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [filtroMes, setFiltroMes] = useState(hoyPeriodoListado.mes);
   const [filtroPersona, setFiltroPersona] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('');
+  // #69 — filtro por quién cargó la solicitud (solicitado_por_nombre), no
+  // confundir con filtroPersona (para quién es la hora extra). Catálogo fijo
+  // de usuarios del sector, no derivado de los datos: así la opción no
+  // desaparece del selector al cambiar de mes/año aunque dé 0 resultados.
+  const [filtroSolicito, setFiltroSolicito] = useState('');
   const [verAnuladas, setVerAnuladas] = useState(false);
 
   // Diálogos
@@ -5342,6 +5384,16 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // catálogo que alimenta el selector de "Persona" del filtro (#66).
   const personalCargable = useMemo(
     () => (esJefe ? EXTRAS_PERSONAL_NAMES : extrasPersonalDe(sesion.user)),
+    [esJefe, sesion.user]
+  );
+
+  // #69 — El filtro "Cargó" solo tiene sentido para quien ve grupos de
+  // personas con más de un posible autor: el jefe (ve todo el sector) o un
+  // encargado cuya gente se solapa con la de otro (hoy, Urueña/Avio en
+  // Facilities). Para un encargado sin solape, su gente solo puede haberla
+  // cargado él mismo o el jefe — no hay nada que el filtro aporte.
+  const mostrarFiltroSolicito = useMemo(
+    () => esJefe || extrasTieneGrupoCompartido(sesion.user),
     [esJefe, sesion.user]
   );
 
@@ -5388,8 +5440,9 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const listado = useMemo(() => visibles
     .filter(r => (verAnuladas ? true : !r.anulada_at))
     .filter(r => (filtroEstado ? r.estado === filtroEstado : true))
-    .filter(r => (filtroPersona ? r.tecnico_nombre === filtroPersona : true)),
-    [visibles, verAnuladas, filtroEstado, filtroPersona]);
+    .filter(r => (filtroPersona ? r.tecnico_nombre === filtroPersona : true))
+    .filter(r => (filtroSolicito ? r.solicitado_por_nombre === filtroSolicito : true)),
+    [visibles, verAnuladas, filtroEstado, filtroPersona, filtroSolicito]);
 
   // Totales sobre lo que se está viendo. Las anuladas NO suman nunca, aunque
   // estén visibles con el checkbox: una hora anulada no se trabaja ni se paga.
@@ -5968,6 +6021,17 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
               <option value="">Toda la gente</option>
               {personalCargable.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
+            {/* #69 — filtro por quién cargó la solicitud (columna "Solicitó"),
+                distinto del filtro de Persona (para quién es la hora extra).
+                Solo visible para quien ve grupos con más de un posible autor
+                (jefe, o encargado con personal solapado con otro). */}
+            {mostrarFiltroSolicito && (
+              <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg max-w-[160px]"
+                value={filtroSolicito} onChange={e => setFiltroSolicito(e.target.value)}>
+                <option value="">Cualquiera cargó</option>
+                {EXTRAS_USUARIOS_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
             <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg capitalize"
               value={filtroMes} onChange={e => setFiltroMes(Number(e.target.value))}>
               {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
@@ -6093,15 +6157,19 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           : (r.solicitado_por_nombre || '—')}
                       </td>
                       {/* Momento en que el encargado dejó asentada la solicitud.
-                          Sombreado rojo translúcido (v3.31) si se cargó en un día
-                          posterior a la ejecución del trabajo — salvo "Finalización
-                          de trabajos en curso", donde eso es lo esperado. */}
+                          Sombreado rojo translúcido si se cargó en un día posterior
+                          a la ejecución del trabajo (v3.31) o el mismo día en que
+                          el trabajo se realiza (v3.34) — salvo "Finalización de
+                          trabajos en curso", donde eso es lo esperado en ambos
+                          casos. */}
                       <td className={`py-2 px-1 text-[11px] num whitespace-nowrap rounded ${
-                            extrasCargaTardia(r) ? 'bg-red-500/15 text-red-800 font-semibold' : 'text-slate-400'
+                            (extrasCargaTardia(r) || extrasCargaMismoDia(r)) ? 'bg-red-500/15 text-red-800 font-semibold' : 'text-slate-400'
                           }`}
                           title={extrasCargaTardia(r)
                             ? `Cargada después de que el trabajo terminó (fin: ${formatDateShort(r.fecha_fin)})`
-                            : undefined}>
+                            : extrasCargaMismoDia(r)
+                              ? `Cargada el mismo día en que se realiza el trabajo (${formatDateShort(r.fecha)})`
+                              : undefined}>
                         {formatFechaAudit(r.created_at)}
                       </td>
                       <td className="py-2 pr-3">
