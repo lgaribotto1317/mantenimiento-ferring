@@ -521,6 +521,10 @@ const EXTRAS_SECTORES = {
 const EXTRAS_SECTOR_CONF = EXTRAS_SECTORES[APP_SECTOR] || EXTRAS_SECTORES.Mantenimiento;
 const EXTRAS_PERSONAL_NAMES = EXTRAS_SECTOR_CONF.personal;
 const EXTRAS_USUARIOS = EXTRAS_SECTOR_CONF.usuarios;
+// #69 — nombres para el filtro "Cargó" del listado. Catálogo fijo (todos los
+// usuarios del sector, encargados + jefe), ordenado alfabéticamente para el
+// selector; independiente de qué haya cargado cada uno en el período visto.
+const EXTRAS_USUARIOS_NAMES = EXTRAS_USUARIOS.map(u => u.nombre).sort((a, b) => a.localeCompare(b));
 const EXTRAS_A_CARGO = EXTRAS_SECTOR_CONF.aCargo;
 const EXTRAS_ETIQUETA_ENCARGADO = EXTRAS_SECTOR_CONF.etiquetaEncargado;
 
@@ -5338,6 +5342,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const [filtroMes, setFiltroMes] = useState(hoyPeriodoListado.mes);
   const [filtroPersona, setFiltroPersona] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('');
+  // #69 — filtro por quién cargó la solicitud (solicitado_por_nombre), no
+  // confundir con filtroPersona (para quién es la hora extra). Catálogo fijo
+  // de usuarios del sector, no derivado de los datos: así la opción no
+  // desaparece del selector al cambiar de mes/año aunque dé 0 resultados.
+  const [filtroSolicito, setFiltroSolicito] = useState('');
   const [verAnuladas, setVerAnuladas] = useState(false);
 
   // Diálogos
@@ -5407,8 +5416,9 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   const listado = useMemo(() => visibles
     .filter(r => (verAnuladas ? true : !r.anulada_at))
     .filter(r => (filtroEstado ? r.estado === filtroEstado : true))
-    .filter(r => (filtroPersona ? r.tecnico_nombre === filtroPersona : true)),
-    [visibles, verAnuladas, filtroEstado, filtroPersona]);
+    .filter(r => (filtroPersona ? r.tecnico_nombre === filtroPersona : true))
+    .filter(r => (filtroSolicito ? r.solicitado_por_nombre === filtroSolicito : true)),
+    [visibles, verAnuladas, filtroEstado, filtroPersona, filtroSolicito]);
 
   // Totales sobre lo que se está viendo. Las anuladas NO suman nunca, aunque
   // estén visibles con el checkbox: una hora anulada no se trabaja ni se paga.
@@ -5986,6 +5996,13 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
               value={filtroPersona} onChange={e => setFiltroPersona(e.target.value)}>
               <option value="">Toda la gente</option>
               {personalCargable.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            {/* #69 — filtro por quién cargó la solicitud (columna "Solicitó"),
+                distinto del filtro de Persona (para quién es la hora extra). */}
+            <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg max-w-[160px]"
+              value={filtroSolicito} onChange={e => setFiltroSolicito(e.target.value)}>
+              <option value="">Cualquiera cargó</option>
+              {EXTRAS_USUARIOS_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
             <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg capitalize"
               value={filtroMes} onChange={e => setFiltroMes(Number(e.target.value))}>
