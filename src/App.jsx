@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.32';
+const APP_VERSION = 'v3.34';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -349,26 +349,42 @@ const EXTRAS_ENCARGADOS_FACILITIES = [
   { user: 'raav@ferring.com',  pass: 'raav2026',  nombre: 'AVIO, Raúl',        rol: 'encargado' },
   { user: 'feal2@ferring.com', pass: 'Fer2026',   nombre: 'ALARCON, Fernando', rol: 'jefe' }
 ];
-// Datos recibidos de Leo el 2026-09-02. ⚠️ ARGAÑARAS y PÉREZ llevan ñ/acento,
-// mismo riesgo de import de RRHH ya documentado para URUEÑA (regla #10 de
-// v3.28): si el pegado del histórico rompe el caracter especial, el UNIQUE de
-// horas_extras_importadas no lo detecta como colisión y la persona queda en
-// cero sin ninguna alerta. Verificar por length() al importar.
+// Datos recibidos de Leo el 2026-09-02, y grafías corregidas el mismo día
+// contra el dato real (no contra el catálogo original) tras cruzar la
+// planilla de RRHH: MAZOLA→MAZZOLA, Jonhatan→Jonathan, PÉREZ→PEREZ (sin
+// acento). Mismo criterio que URUEÑA en su momento (regla #10 de v3.28): se
+// confirma contra el dato real, no contra cómo lo escribió la planilla o el
+// catálogo previo.
+// ARGAÑARAS tuvo DOS correcciones el mismo día: primero a "ARGAÑARAZ"
+// (confirmación verbal de Leo), después a **"ARGARAÑAZ"** —grafía final,
+// tomada de la planilla real de RRHH con legajo adjunto (2301521), que pesa
+// más que la confirmación verbal anterior. Si vuelve a aparecer una
+// discrepancia con este apellido, la planilla con legajo es la fuente de
+// verdad, no lo que se recuerde de memoria.
+// ZEBALLOS, Yonatan (a cargo de Gallego) causó baja de la empresa — sin
+// filas en horas_extras (verificado por SQL), así que sacarlo del catálogo
+// no deja nada huérfano.
+// ALVARADO, Agustín y QUINTANA, Walter Fabian: de licencia médica, no
+// estaban en el catálogo original — alta confirmada por Leo. Van al grupo
+// compartido de Urueña/Avio porque así vinieron en la planilla de RRHH que
+// mandó Leo (misma hoja que las otras 19 personas de ese grupo) — supuesto
+// declarado, no confirmado letra por letra con Leo.
 const EXTRAS_PERSONAL_FACILITIES = [
   // usuarios (5)
   'ALARCON, Fernando', 'GALLEGO, Sergio', 'GROVAS, Leandro',
   'URUEÑA, Gerardo', 'AVIO, Raúl',
-  // a cargo de Gallego (6)
-  'RIOS, Carlos', 'SUAREZ, Juan Francisco', 'ZEBALLOS, Yonatan',
+  // a cargo de Gallego (5 — ZEBALLOS de baja)
+  'RIOS, Carlos', 'SUAREZ, Juan Francisco',
   'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy',
   // a cargo de Grovas, además de Urueña y Avio (3)
   'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo',
-  // a cargo COMPARTIDO de Urueña y Avio (19) — ver nota en aCargo más abajo
-  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
-  'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+  // a cargo COMPARTIDO de Urueña y Avio (21) — ver nota en aCargo más abajo
+  'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
+  'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
   'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
-  'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
-  'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+  'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
+  'PEREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo',
+  'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -456,8 +472,8 @@ const EXTRAS_SECTORES = {
     // Leo. ALARCON (jefe) no tiene entrada acá: ve y carga a todo el sector,
     // mismo patrón que el jefe de Mantenimiento.
     aCargo: {
-      'sega2@ferring.com': [ // Gallego
-        'RIOS, Carlos', 'SUAREZ, Juan Francisco', 'ZEBALLOS, Yonatan',
+      'sega2@ferring.com': [ // Gallego — ZEBALLOS de baja (2026-09-02)
+        'RIOS, Carlos', 'SUAREZ, Juan Francisco',
         'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy'
       ],
       'legr@ferring.com': [ // Grovas
@@ -465,27 +481,30 @@ const EXTRAS_SECTORES = {
         'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo'
       ],
       'geur@ferring.com': [ // Urueña — lista compartida con Avio
-        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
-        'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
+        'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
         'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
-        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
-        'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
+        'PEREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo',
+        'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
       ],
       'raav@ferring.com': [ // Avio — misma lista que Urueña, a propósito
-        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGAÑARAS, Federico',
-        'MONZON, Lucas', 'MAZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
+        'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
+        'MONZON, Lucas', 'MAZZOLA, Leandro', 'RUGNIA, Elisa', 'LAZO, Mirelys',
         'ACOSTA, Dari', 'ZANONI, Ariel', 'CABRERA, Angel', 'PRADO, Brian',
-        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonhatan', 'ANADON, Tomas',
-        'PÉREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo'
+        'FRENKEL, Franco', 'CORDOBA, Matias', 'GODOY, Jonathan', 'ANADON, Tomas',
+        'PEREZ, Brian', 'ZARATE, Federico', 'FERNANDEZ, Gustavo',
+        'ALVARADO, Agustín', 'QUINTANA, Walter Fabian'
       ]
     },
-    // ⚠️ PROVISORIO — ETAPA 2. Facilities no tiene histórico importado, así
-    // que hoy TODO su acumulado sale de la app. El corte queda en el pasado
-    // para que ningún período quede esperando una fuente importada que no
-    // existe. Si Leo importa el histórico de RRHH de Facilities, este corte
-    // pasa a ser el mes en que arranca a cargar en la app — y NO es el mismo
-    // que el de Mantenimiento.
-    corteApp: { anio: 2026, mes: 1 },
+    // Corte entre fuentes (#62 etapa 2, actualizado 2026-09-02 tras el
+    // import del histórico RRHH). Hasta el período RRHH de agosto 2026
+    // inclusive manda lo IMPORTADO (29 personas, 5.428 h — ver
+    // horas_extras_importadas); desde septiembre 2026 manda la app. Leo
+    // confirmó que Facilities liquida con el mismo corte 11→10 y el mismo
+    // mes de transición que Mantenimiento — a diferencia de lo que se
+    // esperaba en la etapa 1, terminó siendo el mismo valor exacto.
+    corteApp: { anio: 2026, mes: 9 },
     // Leo confirmó que Facilities liquida con el mismo corte 11→10 y usa los
     // mismos umbrales. El corte 11→10 es política interna confirmada
     // verbalmente, no algo verificable desde los archivos.
@@ -619,6 +638,25 @@ const extrasCargaTardia = (r) => {
   if (isNaN(c.getTime())) return false;
   const cargaISO = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(c.getDate()).padStart(2, '0')}`;
   return cargaISO > r.fecha_fin;
+};
+
+// ── ¿Se cargó el mismo día en que se realiza el trabajo? (v3.34) ───
+// Señal de control interno distinta de extrasCargaTardia: esa compara
+// contra fecha_fin (día en que TERMINÓ el trabajo) y por decisión del
+// 2026-09-01 el mismo día no cuenta como tardío. Esta compara contra
+// `fecha` (día en que EMPIEZA el trabajo, no fecha_fin — en turno
+// Noche fecha_fin = fecha+1 y no es lo que importa acá): señala falta
+// de anticipación en la solicitud, sin importar cuándo termina. Misma
+// excepción de motivo que extrasCargaTardia: "Finalización de trabajos
+// en curso" se carga después de ejecutado por diseño, no es un caso de
+// falta de anticipación.
+const extrasCargaMismoDia = (r) => {
+  if (r.motivo_categoria === 'Finalización de trabajos en curso') return false;
+  if (!r.created_at || !r.fecha) return false;
+  const c = new Date(r.created_at);
+  if (isNaN(c.getTime())) return false;
+  const cargaISO = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(c.getDate()).padStart(2, '0')}`;
+  return cargaISO === r.fecha;
 };
 
 // ── Períodos del dashboard de Extras (#49, v3.27 · reemplazado por #66) ──
@@ -5056,9 +5094,103 @@ function ExtrasDashboard({ soloPersonas }) {
             )}
           </Card>
 
-          {/* ── Acumulado RRHH (#59) ─────────────────────────────────────
-          Períodos 11→10, no calendario. Va fuera del condicional del
-          período: la tabla es del año entero, no del período elegido. */}
+          {/* ── Motivos ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={ListChecks} accent="emerald">Horas por motivo</SectionTitle>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3">Categoría</th>
+                    <th className="py-2 pr-3 text-right">Aprobadas</th>
+                    <th className="py-2 pr-3 text-right">Pendientes</th>
+                    <th className="py-2 pr-3 text-right">Solicitudes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {porMotivo.map(m => (
+                    <tr key={m.motivo} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-slate-700">
+                        {m.motivo}
+                        {extrasEsReactivo(m.motivo) && (
+                          <span className="ml-1.5 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
+                                title="Se ejecuta antes de la aprobación">reactivo</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 num text-right font-semibold text-emerald-700">{formatHoras(m.aprobadas)}</td>
+                      <td className="py-2 pr-3 num text-right text-amber-700">{formatHoras(m.pendientes)}</td>
+                      <td className="py-2 pr-3 num text-right text-slate-500">{m.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* ── Proceso ───────────────────────────────────────────── */}
+          <Card className="p-5">
+            <SectionTitle icon={Timer} accent="emerald">Proceso de aprobación</SectionTitle>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Tasa de aprobación</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tasa === null ? '—' : `${proceso.tasa.toFixed(0)}%`}
+                </div>
+                <div className="text-[11px] text-slate-400 num">sobre {proceso.nResueltas} resueltas</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · planificadas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tPlanificadas === null ? '—' : formatDuracion(proceso.tPlanificadas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nPlanificadas} solicitudes</div>
+              </div>
+              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · reactivas</div>
+                <div className="text-xl font-bold text-slate-800 num mt-1">
+                  {proceso.tReactivas === null ? '—' : formatDuracion(proceso.tReactivas)}
+                </div>
+                <div className="text-[11px] text-slate-400 num">{proceso.nReactivas} solicitudes</div>
+              </div>
+            </div>
+
+            {/* Notas al pie. Son parte del dato, no decoración: sin esto los
+                números de arriba se leen como algo que no son. */}
+            <div className="mt-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <p>
+                · Planificadas y reactivas se miden por separado a propósito. En las reactivas el trabajo ya se
+                hizo cuando llega la aprobación, así que el tiempo mide demora administrativa, no velocidad de respuesta.
+              </p>
+              <p>
+                · Las {proceso.autoaprobadas} solicitudes cargadas y aprobadas por la misma persona
+                <strong> están incluidas</strong> en ambas métricas. Se autoaprueban en el momento, así que
+                bajan el promedio de resolución y suben la tasa sin haber pasado por ninguna decisión.
+              </p>
+              <p>
+                · Los tiempos negativos se cortan en cero: en las autoaprobadas el sello de resolución se pone
+                milisegundos antes que el de creación, y eso es un artefacto del orden de guardado, no un dato.
+              </p>
+              <p>· Las anuladas no suman en ningún bloque. Aprobadas y pendientes nunca se suman entre sí.</p>
+            </div>
+          </Card>
+        </>
+      )}
+
+      {/* #67 — Movido fuera del ternario de arriba (vivas.length === 0).
+          Estaba anidado adentro por error desde que se creó (#59, v3.28): el
+          comentario ya decía "va fuera del condicional del período", pero el
+          JSX no lo cumplía. No se notó en Mantenimiento porque para cuando
+          existió esta tabla ya había meses de uso real, así que `vivas`
+          prácticamente nunca daba longitud cero. Se hizo visible recién con
+          Facilities: histórico importado (29 personas, 5.428 h) pero cero
+          filas en `horas_extras` todavía — así que `vivas` da cero para
+          cualquier período y la tabla quedaba tapada por "No hay
+          solicitudes en...", aunque `indiceRRHH` (que la alimenta) sí tenía
+          datos. Ahora es hermano del ternario, no hijo: se ve pase lo que
+          pase con `vivas`, que es exactamente lo que dice su propio
+          comentario de abajo desde que se escribió. */}
+          {/* ── Acumulado RRHH (#59) — la tabla es del año entero, no del
+          período elegido arriba. */}
       <Card className="p-5">
         <SectionTitle icon={FileSpreadsheet} accent="emerald">
           Acumulado RRHH {anioRRHH} · períodos 11→10
@@ -5166,87 +5298,6 @@ function ExtrasDashboard({ soloPersonas }) {
         )}
       </Card>
 
-          {/* ── Motivos ───────────────────────────────────────────── */}
-          <Card className="p-5">
-            <SectionTitle icon={ListChecks} accent="emerald">Horas por motivo</SectionTitle>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                    <th className="py-2 pr-3">Categoría</th>
-                    <th className="py-2 pr-3 text-right">Aprobadas</th>
-                    <th className="py-2 pr-3 text-right">Pendientes</th>
-                    <th className="py-2 pr-3 text-right">Solicitudes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {porMotivo.map(m => (
-                    <tr key={m.motivo} className="border-b border-slate-100">
-                      <td className="py-2 pr-3 text-slate-700">
-                        {m.motivo}
-                        {extrasEsReactivo(m.motivo) && (
-                          <span className="ml-1.5 text-[9px] px-1 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold"
-                                title="Se ejecuta antes de la aprobación">reactivo</span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-3 num text-right font-semibold text-emerald-700">{formatHoras(m.aprobadas)}</td>
-                      <td className="py-2 pr-3 num text-right text-amber-700">{formatHoras(m.pendientes)}</td>
-                      <td className="py-2 pr-3 num text-right text-slate-500">{m.n}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-
-          {/* ── Proceso ───────────────────────────────────────────── */}
-          <Card className="p-5">
-            <SectionTitle icon={Timer} accent="emerald">Proceso de aprobación</SectionTitle>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Tasa de aprobación</div>
-                <div className="text-xl font-bold text-slate-800 num mt-1">
-                  {proceso.tasa === null ? '—' : `${proceso.tasa.toFixed(0)}%`}
-                </div>
-                <div className="text-[11px] text-slate-400 num">sobre {proceso.nResueltas} resueltas</div>
-              </div>
-              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · planificadas</div>
-                <div className="text-xl font-bold text-slate-800 num mt-1">
-                  {proceso.tPlanificadas === null ? '—' : formatDuracion(proceso.tPlanificadas)}
-                </div>
-                <div className="text-[11px] text-slate-400 num">{proceso.nPlanificadas} solicitudes</div>
-              </div>
-              <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Resolución · reactivas</div>
-                <div className="text-xl font-bold text-slate-800 num mt-1">
-                  {proceso.tReactivas === null ? '—' : formatDuracion(proceso.tReactivas)}
-                </div>
-                <div className="text-[11px] text-slate-400 num">{proceso.nReactivas} solicitudes</div>
-              </div>
-            </div>
-
-            {/* Notas al pie. Son parte del dato, no decoración: sin esto los
-                números de arriba se leen como algo que no son. */}
-            <div className="mt-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
-              <p>
-                · Planificadas y reactivas se miden por separado a propósito. En las reactivas el trabajo ya se
-                hizo cuando llega la aprobación, así que el tiempo mide demora administrativa, no velocidad de respuesta.
-              </p>
-              <p>
-                · Las {proceso.autoaprobadas} solicitudes cargadas y aprobadas por la misma persona
-                <strong> están incluidas</strong> en ambas métricas. Se autoaprueban en el momento, así que
-                bajan el promedio de resolución y suben la tasa sin haber pasado por ninguna decisión.
-              </p>
-              <p>
-                · Los tiempos negativos se cortan en cero: en las autoaprobadas el sello de resolución se pone
-                milisegundos antes que el de creación, y eso es un artefacto del orden de guardado, no un dato.
-              </p>
-              <p>· Las anuladas no suman en ningún bloque. Aprobadas y pendientes nunca se suman entre sí.</p>
-            </div>
-          </Card>
-        </>
-      )}
     </div>
   );
 }
@@ -6061,15 +6112,19 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           : (r.solicitado_por_nombre || '—')}
                       </td>
                       {/* Momento en que el encargado dejó asentada la solicitud.
-                          Sombreado rojo translúcido (v3.31) si se cargó en un día
-                          posterior a la ejecución del trabajo — salvo "Finalización
-                          de trabajos en curso", donde eso es lo esperado. */}
+                          Sombreado rojo translúcido si se cargó en un día posterior
+                          a la ejecución del trabajo (v3.31) o el mismo día en que
+                          el trabajo se realiza (v3.34) — salvo "Finalización de
+                          trabajos en curso", donde eso es lo esperado en ambos
+                          casos. */}
                       <td className={`py-2 px-1 text-[11px] num whitespace-nowrap rounded ${
-                            extrasCargaTardia(r) ? 'bg-red-500/15 text-red-800 font-semibold' : 'text-slate-400'
+                            (extrasCargaTardia(r) || extrasCargaMismoDia(r)) ? 'bg-red-500/15 text-red-800 font-semibold' : 'text-slate-400'
                           }`}
                           title={extrasCargaTardia(r)
                             ? `Cargada después de que el trabajo terminó (fin: ${formatDateShort(r.fecha_fin)})`
-                            : undefined}>
+                            : extrasCargaMismoDia(r)
+                              ? `Cargada el mismo día en que se realiza el trabajo (${formatDateShort(r.fecha)})`
+                              : undefined}>
                         {formatFechaAudit(r.created_at)}
                       </td>
                       <td className="py-2 pr-3">
