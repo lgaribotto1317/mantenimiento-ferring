@@ -471,14 +471,23 @@ const EXTRAS_SECTORES = {
     // aprueba; en Facilities esa ambigüedad queda aceptada tal cual la pidió
     // Leo. ALARCON (jefe) no tiene entrada acá: ve y carga a todo el sector,
     // mismo patrón que el jefe de Mantenimiento.
+    // #71 (2026-09-09): cruce asimétrico Gallego/Grovas, a pedido de Leo.
+    // Grovas ve y carga TODO (lo suyo + lo de Gallego, incluidos Urueña y
+    // Avio); Gallego suma solo los 3 no-encargados de Grovas (MORENO, SANTA
+    // ANA, MORAS) — Urueña y Avio quedan exclusivos de Grovas, sin pasar a
+    // Gallego. A diferencia del espejo exacto de Urueña/Avio (#62), acá las
+    // dos listas NO son idénticas a propósito.
     aCargo: {
-      'sega2@ferring.com': [ // Gallego — ZEBALLOS de baja (2026-09-02)
+      'sega2@ferring.com': [ // Gallego — propia gente + cruce con Grovas (#71)
+        'RIOS, Carlos', 'SUAREZ, Juan Francisco',
+        'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy',
+        'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo'
+      ],
+      'legr@ferring.com': [ // Grovas — propia gente (incl. Urueña/Avio) + la de Gallego (#71)
+        'URUEÑA, Gerardo', 'AVIO, Raúl',
+        'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo',
         'RIOS, Carlos', 'SUAREZ, Juan Francisco',
         'MORLAS, Matias', 'AHUMADA, Cristian', 'LOBOS, Roy'
-      ],
-      'legr@ferring.com': [ // Grovas
-        'URUEÑA, Gerardo', 'AVIO, Raúl',
-        'MORENO, Matias', 'SANTA ANA, Damian', 'MORAS, Leonardo'
       ],
       'geur@ferring.com': [ // Urueña — lista compartida con Avio
         'LUQUEZ, Natanael', 'OLEAS, Fabian', 'AMAYA, Lucas', 'ARGARAÑAZ, Federico',
