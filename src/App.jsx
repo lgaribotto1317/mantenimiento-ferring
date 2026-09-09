@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.35';
+const APP_VERSION = 'v3.36';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -576,6 +576,41 @@ const extrasAuth = (user, pass) => {
   const u = (user || '').trim().toLowerCase();
   const hit = EXTRAS_USUARIOS.find(x => x.user.toLowerCase() === u && x.pass === pass);
   return hit ? { user: hit.user, nombre: hit.nombre, rol: hit.rol, sector: APP_SECTOR } : null;
+};
+
+// #72 (2026-09-09) — Persistencia de sesión de Extras, SOLO Facilities.
+// Decisión de Leo: en Mantenimiento la sesión de Extras sigue sin persistir
+// entre recargas (mismo criterio que adminMode/poolMode, ver comentario junto
+// al useState); en Facilities el dispositivo queda logueado hasta logout
+// manual, sin volver a pedir usuario/contraseña. Guarda lo mismo que devuelve
+// extrasAuth (sin password, ya la descarta). Versión en la key por si el
+// shape de la sesión cambia a futuro y hay que invalidar sesiones viejas.
+const EXTRAS_SESION_KEY = 'extras_sesion_v1';
+
+const extrasSesionGuardar = (sess) => {
+  if (APP_SECTOR !== 'Facilities') return;
+  try { localStorage.setItem(EXTRAS_SESION_KEY, JSON.stringify(sess)); } catch { /* fail-silent */ }
+};
+
+// Valida contra el catálogo VIGENTE, no solo contra lo guardado: si el
+// usuario fue dado de baja del catálogo (mismo caso que ZEBALLOS) desde que
+// se guardó la sesión, no restaura una sesión fantasma.
+const extrasSesionCargar = () => {
+  if (APP_SECTOR !== 'Facilities') return null;
+  try {
+    const raw = localStorage.getItem(EXTRAS_SESION_KEY);
+    if (!raw) return null;
+    const sess = JSON.parse(raw);
+    const vigente = EXTRAS_USUARIOS.find(u => u.user.toLowerCase() === (sess.user || '').toLowerCase());
+    if (!vigente) return null;
+    // Nombre/rol se refrescan contra el catálogo vigente por si cambiaron
+    // (p.ej. corrección de grafía) desde que se guardó la sesión.
+    return { user: vigente.user, nombre: vigente.nombre, rol: vigente.rol, sector: APP_SECTOR };
+  } catch { return null; }
+};
+
+const extrasSesionBorrar = () => {
+  try { localStorage.removeItem(EXTRAS_SESION_KEY); } catch { /* fail-silent */ }
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1990,9 +2025,13 @@ export default function App() {
 
   // BACKLOG #46 (v3.25) — Sesión de Extras. Independiente de adminMode y de
   // poolMode: son tres roles distintos y ninguno implica a los otros.
-  // extrasUser = null | { user, nombre, rol }. No persiste entre recargas a
-  // propósito (mismo criterio que los otros dos roles).
-  const [extrasUser, setExtrasUser] = useState(null);
+  // extrasUser = null | { user, nombre, rol, sector }. Seguía sin persistir
+  // entre recargas a propósito (mismo criterio que los otros dos roles) hasta
+  // #72 (2026-09-09): a pedido de Leo, en Facilities el dispositivo queda
+  // logueado (localStorage, ver extrasSesionCargar/Guardar/Borrar) hasta
+  // logout manual; en Mantenimiento sigue sin persistir, la excepción es
+  // deliberada y NO se extiende a adminMode/poolMode.
+  const [extrasUser, setExtrasUser] = useState(() => extrasSesionCargar());
   const [extrasLoginOpen, setExtrasLoginOpen] = useState(false);
   const [extras, setExtras] = useState([]);
   const [extrasLoading, setExtrasLoading] = useState(false);
@@ -3036,6 +3075,7 @@ export default function App() {
     const sess = extrasAuth(user, pass);
     if (sess) {
       setExtrasUser(sess);
+      extrasSesionGuardar(sess); // #72 — no-op fuera de Facilities
       setExtrasLoginOpen(false);
       setTab('extras');
       return true;
@@ -3045,6 +3085,7 @@ export default function App() {
 
   const handleExtrasLogout = () => {
     setExtrasUser(null);
+    extrasSesionBorrar(); // #72 — sin esto, un refresh volvería a loguear solo en Facilities
     setExtras([]);
     // Si estaba parado en la solapa de Extras, vuelve a Carga: la tab deja de existir.
     setTab(t => (t === 'extras' ? 'form' : t));
