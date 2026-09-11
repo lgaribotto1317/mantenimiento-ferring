@@ -415,7 +415,7 @@ const EXTRAS_SECTORES = {
       { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
       { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
       { user: 'gtp@ferring.com',   pass: 'gtp2026',      nombre: 'PARE, Gustavo',       rol: 'encargado' },
-      { user: 'lgar@ferring.com',  pass: 'Extrasbiomas', nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' }
+      { user: 'lgar@ferring.com',  pass: 'Extras',       nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' }
     ],
     // ─── ASIGNACIÓN DE PERSONAL A ENCARGADOS (#58, v3.28) ───────────
     // Define qué gente tiene a cargo cada encargado. Gobierna DOS cosas:
