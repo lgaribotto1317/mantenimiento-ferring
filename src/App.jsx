@@ -189,12 +189,12 @@ const POOL_PASSWORD = 'Planificador2026';
 //
 // La regla es "el hostname CONTIENE el slug", no una igualdad: así cubre de
 // una sola vez el dominio de producción de cada deploy adicional
-// (extras-facilities.vercel.app, extras-rrhh.vercel.app) y todos sus
+// (extras-facilities.vercel.app, extras-mantenimiento.vercel.app) y todos sus
 // previews de branch (extras-facilities-git-dev-….vercel.app), que es donde
 // se prueba.
 //
 // ⚠️ CADA DEPLOY ADICIONAL DE VERCEL TIENE QUE LLAMARSE EXACTO COMO SU CLAVE
-//    ACÁ ABAJO (`extras-facilities`, `extras-rrhh`). Vercel deriva el
+//    ACÁ ABAJO (`extras-facilities`, `extras-mantenimiento`). Vercel deriva el
 //    dominio del nombre del proyecto: si se llama distinto, el hostname no
 //    matchea, la app cae al default (Mantenimiento en modo full) y ese
 //    deploy termina viendo el reporte de turno completo. No falla nada
@@ -206,7 +206,7 @@ const POOL_PASSWORD = 'Planificador2026';
 //    todo. Evita el ruido, que es lo que se pidió; la separación real sigue
 //    siendo BACKLOG #47.
 //
-// #73 (2026-09-15) — `extras-rrhh` es el segundo deploy que usa este
+// #73 (2026-09-15) — `extras-mantenimiento` es el segundo deploy que usa este
 // mecanismo, y el primero que NO suma un sector nuevo: resuelve a
 // 'Mantenimiento', el mismo que ya usa el deploy 'full'. Comparten
 // exactamente los mismos datos (misma entrada de EXTRAS_SECTORES, mismo
@@ -217,7 +217,7 @@ const POOL_PASSWORD = 'Planificador2026';
 // app completa, como siempre.
 const EXTRAS_ONLY_SLUGS = {
   'extras-facilities': 'Facilities',
-  'extras-rrhh': 'Mantenimiento',
+  'extras-mantenimiento': 'Mantenimiento',
 };
 
 const APP_HOSTNAME = (typeof window !== 'undefined' && window.location)
@@ -229,7 +229,7 @@ const APP_HOSTNAME = (typeof window !== 'undefined' && window.location)
 // query param que funcione en producción convertiría la separación en algo
 // que se saltea escribiendo en la barra de direcciones. `?modo=extras` es el
 // valor legacy (pre-#73) y sigue apuntando a Facilities por retrocompatibilidad;
-// para probar `extras-rrhh` en local se usa el nombre del slug directo.
+// para probar `extras-mantenimiento` en local se usa el nombre del slug directo.
 const APP_IS_LOCALHOST = APP_HOSTNAME === 'localhost' || APP_HOSTNAME === '127.0.0.1';
 const APP_LOCAL_OVERRIDE = (() => {
   if (!APP_IS_LOCALHOST || typeof window === 'undefined') return '';
@@ -439,7 +439,7 @@ const EXTRAS_SECTORES = {
       { user: 'gtp@ferring.com',   pass: 'gtp2026',      nombre: 'PARE, Gustavo',       rol: 'encargado' },
       { user: 'lgar@ferring.com',  pass: 'Extras',       nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' },
       // #73 (2026-09-15) — RRHH y gerencia, solo lectura. Entran por el
-      // deploy `extras-rrhh`, no por la app completa. Ven todo el sector
+      // deploy `extras-mantenimiento`, no por la app completa. Ven todo el sector
       // (dashboard + listado + exportar a Excel), igual que el jefe, pero
       // nunca cargan, aprueban, rechazan, editan ni anulan nada —
       // `rol: 'lectura'` desactiva el formulario y los botones de acción en
@@ -617,7 +617,7 @@ const extrasAuth = (user, pass) => {
 // adminMode/poolMode, ver comentario junto al useState) — ahí la solapa
 // Extras es una más dentro de un dispositivo que puede pasar de mano en
 // mano durante el turno. En los deploys solo-Extras (Facilities, y desde
-// #73 también extras-rrhh) el dispositivo queda logueado hasta logout
+// #73 también extras-mantenimiento) el dispositivo queda logueado hasta logout
 // manual, sin volver a pedir usuario/contraseña — son links de uso
 // personal, no un kiosco compartido. Por eso el corte es por APP_MODE, no
 // por el nombre del sector: lo que importa es el TIPO de deploy, no de qué
@@ -5441,7 +5441,7 @@ function ExtrasDashboard({ soloPersonas }) {
 
 function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdate, onRefresh }) {
   const esJefe = sesion.rol === 'jefe';
-  // #73 — rol de solo lectura (RRHH/gerencia, deploy `extras-rrhh`). Ve todo
+  // #73 — rol de solo lectura (RRHH/gerencia, deploy `extras-mantenimiento`). Ve todo
   // el sector igual que el jefe (dashboard, listado, Excel), pero el
   // formulario de carga ni se renderiza para este rol, y los helpers de
   // permisos (puedeResolver, puedeEditar, puedeAnular) ya excluían a
