@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.36';
+const APP_VERSION = 'v3.37';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -188,22 +188,37 @@ const POOL_PASSWORD = 'Planificador2026';
 // en el bundle servido y no depende de la config de Vercel.
 //
 // La regla es "el hostname CONTIENE el slug", no una igualdad: así cubre de
-// una sola vez el dominio de producción del segundo proyecto
-// (extras-facilities.vercel.app) y todos sus previews de branch
-// (extras-facilities-git-dev-….vercel.app), que es donde se prueba.
+// una sola vez el dominio de producción de cada deploy adicional
+// (extras-facilities.vercel.app, extras-mantenimiento.vercel.app) y todos sus
+// previews de branch (extras-facilities-git-dev-….vercel.app), que es donde
+// se prueba.
 //
-// ⚠️ EL SEGUNDO PROYECTO DE VERCEL TIENE QUE LLAMARSE `extras-facilities`.
-//    Vercel deriva el dominio del nombre del proyecto: si se llama distinto,
-//    el hostname no matchea, la app cae al default (Mantenimiento en modo
-//    full) y Facilities termina viendo el reporte de turno. No falla nada
+// ⚠️ CADA DEPLOY ADICIONAL DE VERCEL TIENE QUE LLAMARSE EXACTO COMO SU CLAVE
+//    ACÁ ABAJO (`extras-facilities`, `extras-mantenimiento`). Vercel deriva el
+//    dominio del nombre del proyecto: si se llama distinto, el hostname no
+//    matchea, la app cae al default (Mantenimiento en modo full) y ese
+//    deploy termina viendo el reporte de turno completo. No falla nada
 //    visible — por eso está escrito acá en mayúsculas.
 //
 // ⚠️ ESTO NO ES CONTROL DE ACCESO, igual que todo lo demás en este módulo. El
-//    código del reporte de turno sigue estando en el bundle del deploy de
-//    Facilities aunque no se renderice, y quien tenga la URL de producción la
-//    abre y ve todo. Evita el ruido, que es lo que se pidió; la separación
-//    real sigue siendo BACKLOG #47.
-const EXTRAS_ONLY_SLUG = 'extras-facilities';
+//    código del reporte de turno sigue estando en el bundle de estos deploys
+//    aunque no se renderice, y quien tenga la URL de producción la abre y ve
+//    todo. Evita el ruido, que es lo que se pidió; la separación real sigue
+//    siendo BACKLOG #47.
+//
+// #73 (2026-09-15) — `extras-mantenimiento` es el segundo deploy que usa este
+// mecanismo, y el primero que NO suma un sector nuevo: resuelve a
+// 'Mantenimiento', el mismo que ya usa el deploy 'full'. Comparten
+// exactamente los mismos datos (misma entrada de EXTRAS_SECTORES, mismo
+// array `usuarios`) — no hay nada que sincronizar entre los dos, es una
+// sola fuente. Lo único que cambia es QUIÉN entra por acá: los usuarios
+// `rol: 'lectura'` (ver EXTRAS_SECTORES.Mantenimiento más abajo) están
+// pensados para este deploy; el personal operativo sigue entrando por la
+// app completa, como siempre.
+const EXTRAS_ONLY_SLUGS = {
+  'extras-facilities': 'Facilities',
+  'extras-mantenimiento': 'Mantenimiento',
+};
 
 const APP_HOSTNAME = (typeof window !== 'undefined' && window.location)
   ? (window.location.hostname || '').toLowerCase()
@@ -212,7 +227,9 @@ const APP_HOSTNAME = (typeof window !== 'undefined' && window.location)
 // Escape hatch SOLO para desarrollo local: permite probar el modo Extras sin
 // tener que crear el proyecto de Vercel. Acotado a localhost a propósito — un
 // query param que funcione en producción convertiría la separación en algo
-// que se saltea escribiendo en la barra de direcciones.
+// que se saltea escribiendo en la barra de direcciones. `?modo=extras` es el
+// valor legacy (pre-#73) y sigue apuntando a Facilities por retrocompatibilidad;
+// para probar `extras-mantenimiento` en local se usa el nombre del slug directo.
 const APP_IS_LOCALHOST = APP_HOSTNAME === 'localhost' || APP_HOSTNAME === '127.0.0.1';
 const APP_LOCAL_OVERRIDE = (() => {
   if (!APP_IS_LOCALHOST || typeof window === 'undefined') return '';
@@ -220,16 +237,21 @@ const APP_LOCAL_OVERRIDE = (() => {
     return new URLSearchParams(window.location.search).get('modo') || '';
   } catch { return ''; }
 })();
+const APP_LOCAL_SLUG = APP_LOCAL_OVERRIDE === 'extras' ? 'extras-facilities' : APP_LOCAL_OVERRIDE;
 
-const APP_MODE =
-  (APP_HOSTNAME.includes(EXTRAS_ONLY_SLUG) || APP_LOCAL_OVERRIDE === 'extras')
-    ? 'extras'
-    : 'full';
+// Slug efectivo: el del hostname si matchea alguno de los deploys conocidos;
+// si no, el override local (solo en localhost). Ninguno de los dos → cadena
+// vacía → modo 'full'.
+const APP_EXTRAS_SLUG =
+  Object.keys(EXTRAS_ONLY_SLUGS).find(slug => APP_HOSTNAME.includes(slug))
+  || (EXTRAS_ONLY_SLUGS[APP_LOCAL_SLUG] ? APP_LOCAL_SLUG : '');
+
+const APP_MODE = APP_EXTRAS_SLUG ? 'extras' : 'full';
 
 // El sector de casa lo decide el DEPLOY, no el usuario logueado. Tiene que ser
 // así porque el aviso de pendientes se muestra ANTES del login: sin sesión la
 // app no sabe quién está del otro lado, pero la URL sí dice de qué sector es.
-const APP_SECTOR = APP_MODE === 'extras' ? 'Facilities' : 'Mantenimiento';
+const APP_SECTOR = APP_MODE === 'extras' ? EXTRAS_ONLY_SLUGS[APP_EXTRAS_SLUG] : 'Mantenimiento';
 
 // `index.html` es el MISMO archivo para los dos deploys (mismo build): el
 // <title> estático queda fijo en "Reporte Diario de Mantenimiento" para los
@@ -415,7 +437,18 @@ const EXTRAS_SECTORES = {
       { user: 'jual3@ferring.com', pass: 'juan2026',     nombre: 'ALASIA, Juan',        rol: 'encargado' },
       { user: 'lufi2@ferring.com', pass: 'lufi2',        nombre: 'FIORETTI, Luciano',   rol: 'encargado' },
       { user: 'gtp@ferring.com',   pass: 'gtp2026',      nombre: 'PARE, Gustavo',       rol: 'encargado' },
-      { user: 'lgar@ferring.com',  pass: 'Extras',       nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' }
+      { user: 'lgar@ferring.com',  pass: 'Extras',       nombre: 'GARIBOTTO, Leonardo', rol: 'jefe' },
+      // #73 (2026-09-15) — RRHH y gerencia, solo lectura. Entran por el
+      // deploy `extras-mantenimiento`, no por la app completa. Ven todo el sector
+      // (dashboard + listado + exportar a Excel), igual que el jefe, pero
+      // nunca cargan, aprueban, rechazan, editan ni anulan nada —
+      // `rol: 'lectura'` desactiva el formulario y los botones de acción en
+      // ExtrasView. Datos y contraseñas recibidos de Leo el 2026-09-15.
+      { user: 'caro1@ferring.com', pass: 'Carlos2026', nombre: 'ROSIC, Carlos',       rol: 'lectura' },
+      { user: 'sepa1@ferring.com', pass: 'Sergio2026', nombre: 'PARCHEICZUK, Sergio', rol: 'lectura' },
+      { user: 'gide1@ferring.com', pass: 'Gime2026',   nombre: 'DEL RIO, Gimena',     rol: 'lectura' },
+      { user: 'leor@ferring.com',  pass: 'Leo2026',    nombre: 'ORELLANA, Leonardo',  rol: 'lectura' },
+      { user: 'rova3@ferring.com', pass: 'Rodo2026',   nombre: 'VALENTINI, Rodolfo',  rol: 'lectura' }
     ],
     // ─── ASIGNACIÓN DE PERSONAL A ENCARGADOS (#58, v3.28) ───────────
     // Define qué gente tiene a cargo cada encargado. Gobierna DOS cosas:
@@ -578,17 +611,23 @@ const extrasAuth = (user, pass) => {
   return hit ? { user: hit.user, nombre: hit.nombre, rol: hit.rol, sector: APP_SECTOR } : null;
 };
 
-// #72 (2026-09-09) — Persistencia de sesión de Extras, SOLO Facilities.
-// Decisión de Leo: en Mantenimiento la sesión de Extras sigue sin persistir
-// entre recargas (mismo criterio que adminMode/poolMode, ver comentario junto
-// al useState); en Facilities el dispositivo queda logueado hasta logout
-// manual, sin volver a pedir usuario/contraseña. Guarda lo mismo que devuelve
-// extrasAuth (sin password, ya la descarta). Versión en la key por si el
-// shape de la sesión cambia a futuro y hay que invalidar sesiones viejas.
+// #72 (2026-09-09) — Persistencia de sesión de Extras, solo en deploys
+// solo-Extras. Decisión de Leo: en el deploy 'full' de Mantenimiento la
+// sesión de Extras sigue sin persistir entre recargas (mismo criterio que
+// adminMode/poolMode, ver comentario junto al useState) — ahí la solapa
+// Extras es una más dentro de un dispositivo que puede pasar de mano en
+// mano durante el turno. En los deploys solo-Extras (Facilities, y desde
+// #73 también extras-mantenimiento) el dispositivo queda logueado hasta logout
+// manual, sin volver a pedir usuario/contraseña — son links de uso
+// personal, no un kiosco compartido. Por eso el corte es por APP_MODE, no
+// por el nombre del sector: lo que importa es el TIPO de deploy, no de qué
+// sector es. Guarda lo mismo que devuelve extrasAuth (sin password, ya la
+// descarta). Versión en la key por si el shape de la sesión cambia a futuro
+// y hay que invalidar sesiones viejas.
 const EXTRAS_SESION_KEY = 'extras_sesion_v1';
 
 const extrasSesionGuardar = (sess) => {
-  if (APP_SECTOR !== 'Facilities') return;
+  if (APP_MODE !== 'extras') return;
   try { localStorage.setItem(EXTRAS_SESION_KEY, JSON.stringify(sess)); } catch { /* fail-silent */ }
 };
 
@@ -596,7 +635,7 @@ const extrasSesionGuardar = (sess) => {
 // usuario fue dado de baja del catálogo (mismo caso que ZEBALLOS) desde que
 // se guardó la sesión, no restaura una sesión fantasma.
 const extrasSesionCargar = () => {
-  if (APP_SECTOR !== 'Facilities') return null;
+  if (APP_MODE !== 'extras') return null;
   try {
     const raw = localStorage.getItem(EXTRAS_SESION_KEY);
     if (!raw) return null;
@@ -3597,11 +3636,20 @@ export default function App() {
               </button>
               {extrasUser && (
                 <>
-                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded ring-1 font-semibold ${extrasUser.rol === 'jefe' ? 'bg-teal-500/30 text-teal-100 ring-teal-400/50' : 'bg-cyan-500/30 text-cyan-100 ring-cyan-400/50'}`}
-                        title={`${extrasUser.nombre} · ${extrasUser.rol === 'jefe' ? 'jefe' : EXTRAS_ETIQUETA_ENCARGADO}`}>
+                  {/* #73 — tercer color (slate) para lectura: distinto de un
+                      vistazo de jefe (teal) y encargado (cyan), para que se
+                      note que esta sesión no puede cargar ni aprobar nada. */}
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded ring-1 font-semibold ${
+                      extrasUser.rol === 'jefe' ? 'bg-teal-500/30 text-teal-100 ring-teal-400/50'
+                      : extrasUser.rol === 'lectura' ? 'bg-slate-500/30 text-slate-100 ring-slate-400/50'
+                      : 'bg-cyan-500/30 text-cyan-100 ring-cyan-400/50'}`}
+                        title={`${extrasUser.nombre} · ${
+                          extrasUser.rol === 'jefe' ? 'jefe'
+                          : extrasUser.rol === 'lectura' ? 'solo lectura'
+                          : EXTRAS_ETIQUETA_ENCARGADO}`}>
                     <Timer className="w-3.5 h-3.5" />
                     <span className="hidden md:inline">{extrasUser.nombre}</span>
-                    <span className="md:hidden">{extrasUser.rol === 'jefe' ? 'JEFE' : 'EXTRAS'}</span>
+                    <span className="md:hidden">{extrasUser.rol === 'jefe' ? 'JEFE' : extrasUser.rol === 'lectura' ? 'LECTURA' : 'EXTRAS'}</span>
                   </span>
                   <button onClick={handleExtrasLogout}
                     className="inline-flex items-center gap-1 px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded transition text-[10px]"
@@ -5393,6 +5441,13 @@ function ExtrasDashboard({ soloPersonas }) {
 
 function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdate, onRefresh }) {
   const esJefe = sesion.rol === 'jefe';
+  // #73 — rol de solo lectura (RRHH/gerencia, deploy `extras-mantenimiento`). Ve todo
+  // el sector igual que el jefe (dashboard, listado, Excel), pero el
+  // formulario de carga ni se renderiza para este rol, y los helpers de
+  // permisos (puedeResolver, puedeEditar, puedeAnular) ya excluían a
+  // cualquiera que no sea `esJefe` o el propio autor — como lectura nunca es
+  // autor de nada, esos tres ya devuelven false sin tocarlos.
+  const esLectura = sesion.rol === 'lectura';
 
   // Sub-vista (#49). Solo el jefe tiene dashboard; el encargado ve el listado
   // siempre y no necesita este estado, pero se declara igual para no meter un
@@ -5454,8 +5509,8 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // gente. No incluye su propio nombre aunque lo vea en el listado. Mismo
   // catálogo que alimenta el selector de "Persona" del filtro (#66).
   const personalCargable = useMemo(
-    () => (esJefe ? EXTRAS_PERSONAL_NAMES : extrasPersonalDe(sesion.user)),
-    [esJefe, sesion.user]
+    () => ((esJefe || esLectura) ? EXTRAS_PERSONAL_NAMES : extrasPersonalDe(sesion.user)),
+    [esJefe, esLectura, sesion.user]
   );
 
   // #69 — El filtro "Cargó" solo tiene sentido para quien ve grupos de
@@ -5464,8 +5519,8 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // Facilities). Para un encargado sin solape, su gente solo puede haberla
   // cargado él mismo o el jefe — no hay nada que el filtro aporte.
   const mostrarFiltroSolicito = useMemo(
-    () => esJefe || extrasTieneGrupoCompartido(sesion.user),
-    [esJefe, sesion.user]
+    () => esJefe || esLectura || extrasTieneGrupoCompartido(sesion.user),
+    [esJefe, esLectura, sesion.user]
   );
 
   // ── Datos del listado por período RRHH (#66) ──────────────────────────
@@ -5522,8 +5577,8 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   }, [datosListado, datosPendientes]);
 
   const visibles = useMemo(
-    () => (esJefe ? datosCombinados : datosCombinados.filter(r => aCargo.includes(r.tecnico_nombre))),
-    [datosCombinados, esJefe, aCargo]
+    () => ((esJefe || esLectura) ? datosCombinados : datosCombinados.filter(r => aCargo.includes(r.tecnico_nombre))),
+    [datosCombinados, esJefe, esLectura, aCargo]
   );
 
   const listado = useMemo(() => visibles
@@ -5915,7 +5970,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           }`}>
           <BarChart3 className="w-3.5 h-3.5" />Dashboard
         </button>
-        {!esJefe && vista === 'dashboard' && (
+        {!esJefe && !esLectura && vista === 'dashboard' && (
           <span className="text-[11px] text-slate-500">
             Tu gente a cargo · {extrasPersonalDe(sesion.user).length} personas
           </span>
@@ -5923,8 +5978,11 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
         {/* Contador post-login (#62). Visible en las dos sub-vistas, y no se
             renderiza cuando no hay nada pendiente: un badge en cero es ruido
-            permanente y deja de leerse justo cuando importa. */}
-        {pendientesPropios.length > 0 && (
+            permanente y deja de leerse justo cuando importa. Tampoco se
+            renderiza para lectura (#73): no tiene nada para "resolver" ni
+            gente "a cargo" — cualquiera de las dos leyendas sería engañosa
+            para ese rol. */}
+        {pendientesPropios.length > 0 && !esLectura && (
           <span
             className={`ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg ring-1 ${
               esJefe
@@ -5945,10 +6003,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
       </div>
 
       {vista === 'dashboard' ? (
-        <ExtrasDashboard soloPersonas={esJefe ? null : aCargo} />
+        <ExtrasDashboard soloPersonas={(esJefe || esLectura) ? null : aCargo} />
       ) : (
       <>
       {/* ── ALTA / EDICIÓN ─────────────────────────────────────────── */}
+      {/* #73 — no se renderiza para lectura: ese rol no carga ni aprueba nada. */}
+      {!esLectura && (
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <SectionTitle icon={Timer} accent={esJefe ? 'emerald' : 'cyan'}>
@@ -6087,12 +6147,13 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           únicamente sus propias horas extras.
         </p>
       </Card>
+      )}
 
       {/* ── LISTADO ────────────────────────────────────────────────── */}
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <SectionTitle icon={ListChecks} accent="slate">
-            {esJefe ? 'Todas las solicitudes' : 'Mi gente a cargo'}
+            {(esJefe || esLectura) ? 'Todas las solicitudes' : 'Mi gente a cargo'}
           </SectionTitle>
           <div className="flex flex-wrap items-center gap-2">
             <select className="px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
