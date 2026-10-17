@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.37';
+const APP_VERSION = 'v3.38';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -2125,6 +2125,23 @@ export default function App() {
     setDashboardOverride(null);
   }, []);
 
+  // #73 (v3.38) — ¿El turno en carga está guardado tal cual se ve?
+  // Causa raíz de los 17+ turnos Mañana perdidos (may–oct 2026): el Dashboard
+  // muestra el estado EN MEMORIA, se exportaba PNG/PDF y se mandaba por mail
+  // sin que el reporte existiera en la base (o con una validación que había
+  // frenado el guardado). Este flag habilita el export solo si lo que está en
+  // pantalla coincide con lo último guardado.
+  // Reusa el snapshot `originalReport` (V2.9) y `reportsEqual` (#7): se setea
+  // al cargar un turno existente desde la base y después de cada guardado OK.
+  //   - originalReport null      → turno nuevo, nunca guardado → false
+  //   - snapshot de otro turno   → false (defensivo: fecha/turno cambiados)
+  //   - contenido distinto       → hay cambios sin guardar → false
+  const activeReportSaved = useMemo(() => {
+    if (!originalReport || !report) return false;
+    if (`${originalReport.date}-${originalReport.shift}` !== `${report.date}-${report.shift}`) return false;
+    return reportsEqual(report, originalReport);
+  }, [report, originalReport]);
+
   // BACKLOG #50 (v3.26) — Sonda de pendientes de Extras.
   // try/catch PROPIO y separado del de `refresh`: un fallo acá no debe setear
   // `connError` ni abortar la carga del histórico, que es el dato que la app
@@ -3975,6 +3992,8 @@ export default function App() {
           setDashboardOverride={setDashboardOverride}
           adminMode={adminMode}
           onEditFromDashboard={editFromDashboard}
+          activeReportSaved={activeReportSaved}
+          onGoToForm={() => setTab('form')}
         />}
         {!loading && tab === 'stats' && <StatsView history={history} adminMode={adminMode} />}
         {!loading && tab === 'history' && <HistoryView history={history}
@@ -8488,7 +8507,7 @@ function CorrectiveSubsection({ title, count, items, showStateBadge, showAvanceM
 //   Mantiene: selector de turnos guardados + export PNG/PDF (fuera del área capturada),
 //   filtro de OTs del turno (V2.3/V2.4), particiones V2.5, click-to-edit admin (V2.6).
 // ═══════════════════════════════════════════════════════════════════
-function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride, adminMode, onEditFromDashboard }) {
+function DashboardView({ report, history = [], activeReport, dashboardOverride, setDashboardOverride, adminMode, onEditFromDashboard, activeReportSaved = false, onGoToForm }) {
   const dateLabel = useMemo(() => formatDateLong(report.date), [report.date]);
   const dateShort = useMemo(() => formatDateShort(report.date), [report.date]);
   const p = report.servicios.plantaCaldera;
@@ -8517,6 +8536,10 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   }, [history]);
 
   const isViewerMode = !!dashboardOverride;
+  // #73 (v3.38) — Export solo de lo que existe en la base. En modo visor el
+  // reporte viene del histórico (ya guardado por definición); en el turno en
+  // carga depende de que el form coincida con lo último guardado.
+  const canExport = isViewerMode || activeReportSaved;
   const currentKey = `${report.date}|${report.shift}`;
   const currentIdx = savedShifts.findIndex(s => s.key === currentKey);
 
@@ -8691,7 +8714,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   };
 
   const exportPNG = async () => {
-    if (exporting) return;
+    if (exporting || !canExport) return;
     setExporting('png');
     setExportMsg('Generando imagen…');
     try {
@@ -8711,7 +8734,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   };
 
   const exportPDF = async () => {
-    if (exporting) return;
+    if (exporting || !canExport) return;
     setExporting('pdf');
     setExportMsg('Generando PDF…');
     try {
@@ -8815,12 +8838,14 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
                 {exportMsg}
               </span>
             )}
-            <button onClick={exportPNG} disabled={!!exporting}
+            <button onClick={exportPNG} disabled={!!exporting || !canExport}
+              title={canExport ? 'Exportar a PNG' : 'Guardá el reporte antes de exportar'}
               className={`${buttonCls} bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
               <ImageIcon className="w-4 h-4" />
               {exporting === 'png' ? 'Generando…' : 'Exportar PNG'}
             </button>
-            <button onClick={exportPDF} disabled={!!exporting}
+            <button onClick={exportPDF} disabled={!!exporting || !canExport}
+              title={canExport ? 'Exportar a PDF' : 'Guardá el reporte antes de exportar'}
               className={`${buttonCls} bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed`}>
               <FileDown className="w-4 h-4" />
               {exporting === 'pdf' ? 'Generando…' : 'Exportar PDF'}
@@ -8828,6 +8853,28 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
           </div>
         </div>
       </div>
+
+      {/* #73 (v3.38) — Aviso de turno sin guardar. Fuera del área capturada y
+          oculto en mobile, igual que los botones de export. Explica por qué el
+          export está deshabilitado y lleva directo a guardar. */}
+      {!canExport && (
+        <div className="hidden md:flex items-center justify-between gap-3 px-3 py-2 bg-amber-50 border border-amber-300 rounded-lg">
+          <div className="flex items-start gap-2 text-[12px] text-amber-900 leading-relaxed">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <strong>Este turno no está guardado</strong> (o tiene cambios sin guardar). Lo que ves es lo que hay en
+              pantalla, no lo registrado en la base. Guardá el reporte antes de exportar; si al guardar aparece un
+              error, corregilo primero.
+            </div>
+          </div>
+          {onGoToForm && (
+            <button onClick={onGoToForm}
+              className={`${buttonCls} bg-amber-600 text-white hover:bg-amber-500 text-xs px-3 py-1.5 flex-shrink-0`}>
+              <Save className="w-3.5 h-3.5" />Ir a guardar
+            </button>
+          )}
+        </div>
+      )}
 
       {/* V2.6 — Banner de modo admin */}
       {adminMode && (
