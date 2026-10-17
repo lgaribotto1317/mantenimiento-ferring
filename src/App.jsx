@@ -2125,7 +2125,7 @@ export default function App() {
     setDashboardOverride(null);
   }, []);
 
-  // #73 (v3.38) — ¿El turno en carga está guardado tal cual se ve?
+  // #74 (v3.38) — ¿El turno en carga está guardado tal cual se ve?
   // Causa raíz de los 17+ turnos Mañana perdidos (may–oct 2026): el Dashboard
   // muestra el estado EN MEMORIA, se exportaba PNG/PDF y se mandaba por mail
   // sin que el reporte existiera en la base (o con una validación que había
@@ -8536,7 +8536,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
   }, [history]);
 
   const isViewerMode = !!dashboardOverride;
-  // #73 (v3.38) — Export solo de lo que existe en la base. En modo visor el
+  // #74 (v3.38) — Export solo de lo que existe en la base. En modo visor el
   // reporte viene del histórico (ya guardado por definición); en el turno en
   // carga depende de que el form coincida con lo último guardado.
   const canExport = isViewerMode || activeReportSaved;
@@ -8854,7 +8854,7 @@ function DashboardView({ report, history = [], activeReport, dashboardOverride, 
         </div>
       </div>
 
-      {/* #73 (v3.38) — Aviso de turno sin guardar. Fuera del área capturada y
+      {/* #74 (v3.38) — Aviso de turno sin guardar. Fuera del área capturada y
           oculto en mobile, igual que los botones de export. Explica por qué el
           export está deshabilitado y lleva directo a guardar. */}
       {!canExport && (
