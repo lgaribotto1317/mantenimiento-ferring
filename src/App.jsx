@@ -36,7 +36,7 @@ const supabaseConfigured =
 // ═══════════════════════════════════════════════════════════════════
 // VERSION
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = 'v3.38';
+const APP_VERSION = 'v3.39';
 
 // ═══════════════════════════════════════════════════════════════════
 // PWA / RESPONSIVE HELPERS (PR-1)
@@ -717,6 +717,45 @@ const extrasSolapan = (a, b) => a.ini < b.fin && b.ini < a.fin;
 const extrasYaEjecutada = (r) => {
   const fin = new Date(`${r.fecha_fin}T${(r.hora_fin || '00:00').slice(0, 5)}:00`);
   return fin.getTime() <= Date.now();
+};
+
+// ── Edición del jefe sobre filas ajenas (#78, v3.39) ───────────────
+// Campos que el formulario puede cambiar. Se usan para dos cosas: decidir
+// si la edición del jefe cambió algo de verdad (si no cambió nada, no se
+// deja marca de edición), y armar el snapshot `edicion_previa` con los
+// valores INMEDIATAMENTE ANTERIORES a esa edición. Las horas no están en la
+// lista porque son columna generada; van en el snapshot como dato de
+// lectura, no como criterio de cambio (se derivan de la ventana).
+const EXTRAS_CAMPOS_EDITABLES = ['tecnico_nombre', 'fecha', 'hora_inicio', 'fecha_fin', 'hora_fin', 'motivo_categoria', 'motivo'];
+const extrasNormCampo = (k, v) =>
+  (k === 'hora_inicio' || k === 'hora_fin') ? String(v || '').slice(0, 5) : String(v ?? '').trim();
+const extrasCambioCampos = (antes, despues) =>
+  EXTRAS_CAMPOS_EDITABLES.some(k => extrasNormCampo(k, antes[k]) !== extrasNormCampo(k, despues[k]));
+const extrasSnapshotEdicion = (r) => ({
+  tecnico_nombre: r.tecnico_nombre,
+  fecha: r.fecha,
+  hora_inicio: (r.hora_inicio || '').slice(0, 5),
+  fecha_fin: r.fecha_fin,
+  hora_fin: (r.hora_fin || '').slice(0, 5),
+  horas: r.horas != null ? Number(r.horas) : null,
+  motivo_categoria: r.motivo_categoria || null,
+  motivo: r.motivo || '',
+  estado: r.estado
+});
+// Texto para el tooltip de la marca "editada" en el listado. Solo pantalla:
+// por decisión de Leo (2026-11-04) la traza NO sale en el Excel de RRHH.
+const extrasDescribirEdicion = (r) => {
+  const p = r.edicion_previa;
+  const quien = `Editada por ${r.editado_por_nombre || r.editado_por || '—'} el ${formatFechaAudit(r.editado_at)}`;
+  if (!p || typeof p !== 'object') return quien;
+  const antes = [
+    p.tecnico_nombre && p.tecnico_nombre !== r.tecnico_nombre ? `Personal: ${p.tecnico_nombre}` : '',
+    `${formatDateShort(p.fecha)} ${p.hora_inicio || ''}–${p.hora_fin || ''}${p.fecha_fin && p.fecha_fin !== p.fecha ? ' (+1)' : ''}`,
+    p.horas != null ? formatHoras(p.horas) : '',
+    [p.motivo_categoria, p.motivo].filter(Boolean).join(' — '),
+    p.estado ? `estado: ${p.estado}` : ''
+  ].filter(Boolean).join(' · ');
+  return `${quien}\nAntes: ${antes}`;
 };
 
 // ── ¿Se cargó en un día posterior a la ejecución? (v3.31) ──────────
@@ -4541,6 +4580,9 @@ function PoolView({ pool, poolLoading, poolError, onAdd, onAnular, onRefresh }) 
 //     rotan y un turno fijo por usuario se rompería en la primera rotación).
 //   - Un JEFE ve todas, aprueba o rechaza. También puede cargar, y lo que
 //     carga nace ya aprobado (se autoaprueba: no tiene a quién elevarlo).
+//     Desde v3.39 (#78) también edita lo que cargaron los encargados: guardar
+//     deja la fila aprobada a su nombre y, si cambió algo, con traza
+//     (editado_por/_at + edicion_previa) visible solo en pantalla.
 //   - Las fechas FUTURAS son válidas y son el caso normal: se solicita antes
 //     de hacer el trabajo, no después. Al revés que los reportes, que bloquean
 //     el futuro (#11).
@@ -5511,6 +5553,9 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // Diálogos
   const [anularTarget, setAnularTarget] = useState(null);
   const [rechazarTarget, setRechazarTarget] = useState(null);
+  // #78 — id de la fila cuyo detalle de edición está desplegado (tap en la
+  // marca "editada"; el tooltip solo no sirve en mobile).
+  const [edicionAbierta, setEdicionAbierta] = useState(null);
 
   // ── Visibilidad por rol (partición de UI, no de datos: ver nota en
   //    EXTRAS_USUARIOS). v3.28 (#58): el criterio pasó de POR AUTOR a POR
@@ -5770,7 +5815,40 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
         //    horas_previas guarda el valor ANTERIOR solo la primera vez
         //    (viniendo de 'aprobada'): si ya estaba en 'modificada' y se
         //    vuelve a bajar, se conserva el original, no el intermedio.
-        if (editRow && editRow.estado === 'aprobada' && !extrasYaEjecutada(editRow)) {
+        //
+        // #78 (v3.39) — El JEFE tiene un régimen propio que va antes de los
+        // tres anteriores, sea la fila suya o de un encargado (decisión de
+        // Leo 2026-11-04: 1b todo rol jefe, 2a editar = aprobar, 3a libre
+        // también si ya se ejecutó). Guardar deja la fila 'aprobada' a su
+        // nombre: en una pendiente es "aprobar con cambios", en una
+        // modificada la confirma, en una aprobada re-sella quién aprobó la
+        // versión vigente. Sin tope a la baja: el jefe puede subir horas ya
+        // ejecutadas (caso del ajuste a la fichada de RRHH, #76).
+        // Si la fila es AJENA y algún campo cambió, deja traza: editado_por/
+        // _nombre/_at + `edicion_previa` (jsonb con los valores
+        // inmediatamente anteriores a esta edición). Si es propia, o no
+        // cambió nada, la traza que ya tuviera no se toca.
+        if (esJefe && editRow) {
+          const ajena = editRow.solicitado_por !== sesion.user;
+          const huboCambio = extrasCambioCampos(editRow, datos);
+          const ahoraJefe = new Date().toISOString();
+          await onUpdate(editId, {
+            ...datos,
+            estado: 'aprobada',
+            resuelto_por: sesion.user,
+            resuelto_por_nombre: sesion.nombre,
+            resuelto_at: ahoraJefe,
+            rechazo_motivo: null,
+            horas_previas: null,
+            ...(ajena && huboCambio ? {
+              editado_por: sesion.user,
+              editado_por_nombre: sesion.nombre,
+              editado_at: ahoraJefe,
+              edicion_previa: extrasSnapshotEdicion(editRow)
+            } : {})
+          });
+          setMsg(huboCambio ? '✓ Cambios guardados · queda aprobada a tu nombre' : '✓ Sin cambios en los datos · queda aprobada a tu nombre');
+        } else if (editRow && editRow.estado === 'aprobada' && !extrasYaEjecutada(editRow)) {
           await onUpdate(editId, {
             ...datos,
             estado: 'pendiente',
@@ -5878,9 +5956,13 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
   // botón se muestra en los tres estados, y es el submit el que decide el
   // régimen exacto (libre → pendiente, o solo-a-la-baja → modificada) según
   // si la fila ya se ejecutó. 'rechazada' sigue sin edición.
+  //
+  // #78 (v3.39) — el jefe edita también las filas de los encargados (antes
+  // solo las propias). Mismos estados: 'rechazada' y anuladas siguen sin
+  // edición. El régimen al guardar lo decide submit (rama esJefe).
   const puedeEditar = (r) =>
     !r.anulada_at &&
-    r.solicitado_por === sesion.user &&
+    (esJefe || r.solicitado_por === sesion.user) &&
     (r.estado === 'pendiente' || r.estado === 'aprobada' || r.estado === 'modificada');
   const puedeAnular = (r) => !r.anulada_at && (esJefe || (r.estado === 'pendiente' && r.solicitado_por === sesion.user));
   // 'modificada' se resuelve solo con Confirmar (ver JSX): no tiene sentido
@@ -6137,7 +6219,7 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
           <button onClick={submit} disabled={saving}
             className={`inline-flex items-center gap-2 px-5 py-2.5 text-white rounded-xl font-bold text-sm transition disabled:opacity-50 shadow-md ${esJefe ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-cyan-600 hover:bg-cyan-500'}`}>
             {editId ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-            {saving ? 'Guardando…' : (editId ? 'Guardar cambios' : (esJefe ? 'Cargar y aprobar' : 'Solicitar'))}
+            {saving ? 'Guardando…' : (editId ? (esJefe ? 'Guardar y aprobar' : 'Guardar cambios') : (esJefe ? 'Cargar y aprobar' : 'Solicitar'))}
           </button>
           {editId && (
             <button onClick={() => { resetForm(); setMsg(''); }}
@@ -6154,7 +6236,12 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
 
         <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
           {esJefe
-            ? 'Lo que cargues acá queda aprobado en el momento, registrado a tu nombre.'
+            ? (editId
+                // #78 — en edición, aclarar el efecto antes de guardar.
+                ? (editRow && editRow.solicitado_por !== sesion.user
+                    ? `Estás editando una solicitud de ${editRow.solicitado_por_nombre || editRow.solicitado_por}. Al guardar queda aprobada a tu nombre, y en el listado queda marcada como editada, con los valores anteriores.`
+                    : 'Al guardar queda aprobada a tu nombre.')
+                : 'Lo que cargues acá queda aprobado en el momento, registrado a tu nombre.')
             : `La solicitud queda pendiente hasta que el jefe la apruebe. Mientras esté pendiente la podés editar o anular. Solo podés cargar a tu gente a cargo (${extrasPersonalDe(sesion.user).length} personas); el resto lo carga el jefe.`}
         </p>
         {/* #62 — Qué sector está registrando. En el deploy solo-Extras es
@@ -6322,6 +6409,23 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                             anulada
                           </span>
                         )}
+                        {/* #78 (v3.39) — traza de edición del jefe sobre una fila
+                            ajena. Solo pantalla (no va al Excel de RRHH, decisión
+                            de Leo). El detalle de los valores anteriores va en el
+                            tooltip para no ensanchar la tabla. */}
+                        {r.editado_at && (
+                          <button type="button"
+                                onClick={() => setEdicionAbierta(edicionAbierta === r.id ? null : r.id)}
+                                className="ml-1 text-[10px] px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-700 hover:bg-violet-200"
+                                title={extrasDescribirEdicion(r)}>
+                            editada
+                          </button>
+                        )}
+                        {r.editado_at && edicionAbierta === r.id && (
+                          <div className="mt-1 text-[10px] text-violet-800 bg-violet-50 border border-violet-200 rounded px-1.5 py-1 whitespace-pre-line max-w-[260px]">
+                            {extrasDescribirEdicion(r)}
+                          </div>
+                        )}
                         {/* Cuándo se resolvió y quién, debajo del estado. */}
                         {r.resuelto_at && (
                           <div className="text-[10px] text-slate-400 num whitespace-nowrap mt-0.5"
@@ -6373,7 +6477,9 @@ function ExtrasView({ sesion, extras, extrasLoading, extrasError, onAdd, onUpdat
                           {puedeEditar(r) && (
                             <button onClick={() => cargarParaEditar(r)}
                               className="p-1 hover:bg-sky-50 rounded transition"
-                              title={r.estado === 'pendiente' ? 'Editar' : 'Corregir (solo a la baja si ya se ejecutó)'}>
+                              title={esJefe
+                                ? (r.solicitado_por === sesion.user ? 'Editar (queda aprobada)' : 'Editar (queda aprobada a tu nombre, con traza de la edición)')
+                                : (r.estado === 'pendiente' ? 'Editar' : 'Corregir (solo a la baja si ya se ejecutó)')}>
                               <Edit3 className="w-4 h-4 text-sky-600" />
                             </button>
                           )}
