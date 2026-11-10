@@ -287,6 +287,7 @@ const TECNICOS = [
   { id: 12, name: 'CACERES, Daniel' },
   { id: 13, name: 'VALDEZ, Sergio' },
   { id: 14, name: 'SUAREZ, Alan' },
+  { id: 23, name: 'INSAURRALDE, Ezequiel' },
   { id: 15, name: 'MEDINA, Emanuel' },
   { id: 16, name: 'GOLINO, Santiago' },
   { id: 17, name: 'RIVERO, Cristian' },
@@ -458,7 +459,7 @@ const EXTRAS_SECTORES = {
     //  2. A quién puede cargarle extras — solo a su gente. El resto lo carga
     //     el jefe, que ve todo.
     //
-    // Las 22 personas de TECNICOS están asignadas, sin solapes ni faltantes
+    // Las 23 personas de TECNICOS están asignadas, sin solapes ni faltantes
     // (verificado contra el catálogo al definirlo). Las 7 restantes del
     // personal del sector —los tres supervisores y los cuatro de
     // EXTRAS_SOLO_PERSONAL— NO tienen encargado a propósito: las carga y las
@@ -474,7 +475,7 @@ const EXTRAS_SECTORES = {
       ],
       'lufi2@ferring.com': [
         'ECHAZARRETA, Ricardo', 'VERGARA, Antonio', 'MEDINA, Emanuel',
-        'VALDEZ, Sergio', 'SUAREZ, Alan', 'CACERES, Daniel'
+        'VALDEZ, Sergio', 'SUAREZ, Alan', 'INSAURRALDE, Ezequiel', 'CACERES, Daniel'
       ],
       'gtp@ferring.com': [
         'GOLINO, Santiago', 'RIVERO, Cristian', 'RAMILO, Rodrigo',
